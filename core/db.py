@@ -350,25 +350,30 @@ def get_events(
     )
 
 
-def get_unprocessed_events(
+def get_unprocessed_domains(
     limit: int = 100,
 ) -> list[sqlite3.Row]:
     """
-    Return events waiting for AI analysis.
+    Return one row for each unprocessed domain.
+
+    This avoids returning duplicate domains that would
+    otherwise be analyzed multiple times.
     """
 
     return query_all(
         """
         SELECT
 
-            id,
-            device,
+            MIN(id) AS id,
             domain,
-            timestamp
+            MIN(device) AS device,
+            MIN(timestamp) AS timestamp
 
         FROM events
 
         WHERE processed = 0
+
+        GROUP BY domain
 
         ORDER BY id ASC
 
@@ -485,7 +490,32 @@ def get_analysis(
         """,
         (domain,),
     )
+def analysis_exists(
+    domain: str,
+) -> bool:
+    """
+    Return True if a domain has already been analyzed.
+    """
 
+    return get_analysis(domain) is not None
+
+def mark_processed_by_domain(
+    domain: str,
+) -> None:
+    """
+    Mark every event for a domain as processed.
+    """
+
+    execute(
+        """
+        UPDATE events
+
+        SET processed = 1
+
+        WHERE domain = ?
+        """,
+        (domain,),
+    )
 
 # ============================================================================
 # Domain Memory
