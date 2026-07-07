@@ -124,7 +124,7 @@ class Settings:
 
     ollama_model: str = os.getenv(
         "PIHOLE_AI_OLLAMA_MODEL",
-        "llama3.2:3b",
+        "llama3.2:1b",
     )
 
     ai_enabled: bool = (
