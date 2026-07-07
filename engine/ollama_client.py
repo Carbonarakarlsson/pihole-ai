@@ -3,22 +3,20 @@ PiHole-AI Ollama Client
 
 Centralized interface for communicating with a local Ollama server.
 
-Features
---------
-- Server availability checks
-- Model discovery
-- Model validation
-- Structured logging
-- Centralized configuration
+All AI communication should pass through this class.
 
-All communication with Ollama should go through this class.
+Responsibilities
+----------------
+- Server availability
+- Installed model discovery
+- Model validation
+- Text generation
+- Structured logging
 """
+
 from __future__ import annotations
 
-
-from dataclasses import dataclass
-from time import perf_counter
-from typing import List, Optional
+from typing import Any
 
 import ollama
 
@@ -48,6 +46,60 @@ class OllamaClient:
         )
 
     # ------------------------------------------------------------------
+    # Text Generation
+    # ------------------------------------------------------------------
+
+    def generate(
+        self,
+        system: str,
+        prompt: str,
+        temperature: float = 0.2,
+    ) -> str:
+        """
+        Generate a response from the configured model.
+        """
+
+        self.logger.info(
+            "Generating response using '%s'.",
+            self.model,
+        )
+
+        try:
+
+            response: Any = self.client.chat(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system,
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    },
+                ],
+                options={
+                    "temperature": temperature,
+                },
+            )
+
+            content = response["message"]["content"]
+
+            self.logger.info(
+                "Generation completed successfully."
+            )
+
+            return content
+
+        except Exception:
+
+            self.logger.exception(
+                "Generation failed."
+            )
+
+            raise
+
+    # ------------------------------------------------------------------
     # Server
     # ------------------------------------------------------------------
 
@@ -57,49 +109,63 @@ class OllamaClient:
         """
 
         try:
+
             self.client.ps()
+
             return True
 
         except Exception as exc:
+
             self.logger.error(
                 "Unable to reach Ollama server: %s",
                 exc,
             )
-            return False
 
-    # ------------------------------------------------------------------
+            return False
+            # ------------------------------------------------------------------
     # Models
     # ------------------------------------------------------------------
 
-    def list_models(self) -> List[str]:
+    def list_models(self) -> list[str]:
         """
-        Return installed model names.
+        Return a sorted list of installed model names.
         """
 
         try:
+
             response = self.client.list()
 
-            models = []
+            models: list[str] = []
 
+            #
+            # Compatible with current Ollama Python client.
+            #
             for model in response.models:
                 models.append(model.model)
+
+            models.sort()
 
             self.logger.info(
                 "Discovered %d installed model(s).",
                 len(models),
             )
 
-            return sorted(models)
+            return models
 
         except Exception as exc:
+
             self.logger.exception(
                 "Failed to retrieve installed models."
             )
+
             raise RuntimeError(
                 "Unable to retrieve installed Ollama models."
             ) from exc
 
-    def model_exists(self, model: str | None = None) -> bool:
+    def model_exists(
+        self,
+        model: str | None = None,
+    ) -> bool:
         """
         Check whether a model exists locally.
         """
@@ -115,20 +181,28 @@ class OllamaClient:
 
     def validate(self) -> bool:
         """
-        Validate server connectivity and configured model.
+        Validate the configured Ollama installation.
+
+        Checks:
+            - server reachable
+            - configured model installed
         """
 
         if not self.is_available():
+
             self.logger.error(
                 "Ollama server is unavailable."
             )
+
             return False
 
         if not self.model_exists():
+
             self.logger.error(
                 "Configured model '%s' is not installed.",
                 self.model,
             )
+
             return False
 
         self.logger.info(
@@ -136,8 +210,7 @@ class OllamaClient:
         )
 
         return True
-
-    # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
     # Information
     # ------------------------------------------------------------------
 
@@ -154,3 +227,37 @@ class OllamaClient:
         """
 
         return self.host
+
+    # ------------------------------------------------------------------
+    # Diagnostics
+    # ------------------------------------------------------------------
+
+    def health(self) -> dict[str, object]:
+        """
+        Return health information for the Ollama server.
+        """
+
+        import time
+
+        start = time.perf_counter()
+
+        available = self.is_available()
+
+        latency_ms = round(
+            (time.perf_counter() - start) * 1000,
+            2,
+        )
+
+        return {
+            "available": available,
+            "host": self.host,
+            "model": self.model,
+            "latency_ms": latency_ms,
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"OllamaClient("
+            f"host='{self.host}', "
+            f"model='{self.model}')"
+        )
