@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     export = subcommands.add_parser(
         "export",
-        help="Export events, analyses, or actions.",
+        help="Export events, analyses, actions, or reputations.",
     )
     export.add_argument(
         "dataset",
@@ -57,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
             "analysis",
             "events",
             "actions",
+            "reputations",
         ],
         help="Dataset to export.",
     )

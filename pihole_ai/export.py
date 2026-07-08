@@ -14,6 +14,7 @@ from ui.dashboard import (
     get_recent_actions,
     get_recent_analyses,
     get_recent_events,
+    get_reputations,
 )
 
 
@@ -43,6 +44,14 @@ EXPORT_FIELDS = {
         "reason",
         "risk",
         "created_at",
+    ],
+    "reputations": [
+        "domain",
+        "score",
+        "confidence",
+        "signals",
+        "source",
+        "updated_at",
     ],
 }
 
@@ -76,6 +85,13 @@ def get_export_rows(
         return get_recent_actions(
             limit=limit,
             search=search,
+        )
+
+    if dataset == "reputations":
+        return get_reputations(
+            limit=limit,
+            search=search,
+            min_score=min_risk,
         )
 
     raise ValueError(

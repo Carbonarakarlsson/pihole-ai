@@ -147,6 +147,31 @@ class DashboardTests(unittest.TestCase):
             decision="allow",
         )
 
+    def test_reputations_endpoint_returns_learned_reputation(self) -> None:
+        reputations = [
+            {
+                "domain": "bad.example",
+                "score": 80,
+                "confidence": 85,
+                "signals": "[\"previous alert audit\"]",
+                "source": "local-learning",
+                "updated_at": 123.0,
+            }
+        ]
+
+        with patch("ui.dashboard.get_reputations", return_value=reputations) as get_reputations:
+            response = self.client.get(
+                "/api/reputations?q=bad&limit=25&min_score=70"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), reputations)
+        get_reputations.assert_called_once_with(
+            limit=25,
+            search="bad",
+            min_score=70,
+        )
+
     def test_create_rule_endpoint_saves_domain_rule(self) -> None:
         with patch("ui.dashboard.add_rule") as add_rule:
             response = self.client.post(

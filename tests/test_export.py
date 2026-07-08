@@ -89,6 +89,32 @@ class ExportTests(unittest.TestCase):
             search="example",
         )
 
+    def test_get_export_rows_for_reputations(self) -> None:
+        rows = [
+            {
+                "domain": "bad.example",
+                "score": 80,
+            }
+        ]
+
+        with patch(
+            "pihole_ai.export.get_reputations",
+            return_value=rows,
+        ) as get_reputations:
+            result = get_export_rows(
+                dataset="reputations",
+                limit=10,
+                search="bad",
+                min_risk=70,
+            )
+
+        self.assertEqual(result, rows)
+        get_reputations.assert_called_once_with(
+            limit=10,
+            search="bad",
+            min_score=70,
+        )
+
     def test_write_json(self) -> None:
         output = io.StringIO()
 

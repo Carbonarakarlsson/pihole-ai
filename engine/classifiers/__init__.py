@@ -1,10 +1,3 @@
-from .base import BaseClassifier
-from .pipeline import ClassifierPipeline
-from .rule_engine import RuleEngine
-from .reputation import ReputationClassifier
-from .heuristics import HeuristicsEngine
-from .ai_classifier import AIClassifier
-
 __all__ = [
     "BaseClassifier",
     "ClassifierPipeline",
@@ -13,3 +6,43 @@ __all__ = [
     "HeuristicsEngine",
     "AIClassifier",
 ]
+
+
+def __getattr__(name: str):
+    """
+    Lazily expose classifiers without importing Ollama for every package import.
+    """
+
+    if name == "BaseClassifier":
+        from .base import BaseClassifier
+
+        return BaseClassifier
+
+    if name == "ClassifierPipeline":
+        from .pipeline import ClassifierPipeline
+
+        return ClassifierPipeline
+
+    if name == "RuleEngine":
+        from .rule_engine import RuleEngine
+
+        return RuleEngine
+
+    if name == "ReputationClassifier":
+        from .reputation import ReputationClassifier
+
+        return ReputationClassifier
+
+    if name == "HeuristicsEngine":
+        from .heuristics import HeuristicsEngine
+
+        return HeuristicsEngine
+
+    if name == "AIClassifier":
+        from .ai_classifier import AIClassifier
+
+        return AIClassifier
+
+    raise AttributeError(
+        f"module {__name__!r} has no attribute {name!r}"
+    )

@@ -245,6 +245,7 @@ Endpoints:
 - `GET /api/devices`
 - `GET /api/actions`
 - `GET /api/rules`
+- `GET /api/reputations`
 - `POST /api/rules`
 - `DELETE /api/rules/<domain>`
 - `GET /api/health`
@@ -262,6 +263,7 @@ Useful query parameters:
 - `action`: exact action, supported by `/api/actions`
 - `status`: exact status, supported by `/api/actions`
 - `decision`: exact rule decision, supported by `/api/rules`
+- `min_score`: minimum score, supported by `/api/reputations`
 - `ollama`: `1`, supported by `/api/health` to include Ollama status
 
 The dashboard can promote action audit entries into manual `allow` or `block` rules and remove active rules.
@@ -366,12 +368,13 @@ pihole-ai rules block bad.example --apply
 pihole-ai rules remove example.com
 ```
 
-Export analysis or events:
+Export analysis, events, actions, or reputations:
 
 ```bash
 pihole-ai export analysis --format json --output exports/analysis.json
 pihole-ai export events --format csv --output exports/events.csv
 pihole-ai export actions --format csv --output exports/actions.csv
+pihole-ai export reputations --format csv --output exports/reputations.csv
 ```
 
 Exports support `--limit`, `--q`, `--min-risk`, and `--category`.

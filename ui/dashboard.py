@@ -11,6 +11,7 @@ from core.db import (
     query_all,
 )
 from core.logger import get_logger
+from pihole_ai.learn import get_reputations as load_reputations
 from pihole_ai.rules import (
     add_rule,
     get_rules as load_domain_rules,
@@ -299,6 +300,20 @@ th {
             <tbody id="rules"></tbody>
         </table>
     </section>
+    <section class="panel">
+        <h2>Learned Reputation</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Domain</th>
+                    <th>Score</th>
+                    <th>Confidence</th>
+                    <th>Signals</th>
+                </tr>
+            </thead>
+            <tbody id="reputations"></tbody>
+        </table>
+    </section>
 </main>
 <script>
 const text = (value) => String(value ?? "-");
@@ -455,6 +470,19 @@ function renderRules(rules) {
     });
 }
 
+function renderReputations(reputations) {
+    const target = document.getElementById("reputations");
+    clear(target);
+    reputations.forEach((reputation) => {
+        target.appendChild(row([
+            reputation.domain,
+            [reputation.score, riskClass(reputation.score)],
+            reputation.confidence,
+            reputation.signals,
+        ]));
+    });
+}
+
 async function saveRule(domain, decision) {
     await fetch("/api/rules", {
         method: "POST",
@@ -486,13 +514,14 @@ async function load() {
     params.set("limit", limit);
 
     const suffix = `?${params.toString()}`;
-    const [stats, events, analysis, devices, actions, rules] = await Promise.all([
+    const [stats, events, analysis, devices, actions, rules, reputations] = await Promise.all([
         fetch("/api/stats").then((res) => res.json()),
         fetch(`/api/events${suffix}`).then((res) => res.json()),
         fetch(`/api/analysis${suffix}`).then((res) => res.json()),
         fetch(`/api/devices${suffix}`).then((res) => res.json()),
         fetch(`/api/actions${suffix}`).then((res) => res.json()),
         fetch(`/api/rules${suffix}`).then((res) => res.json()),
+        fetch(`/api/reputations${suffix}`).then((res) => res.json()),
     ]);
 
     renderStats(stats);
@@ -501,6 +530,7 @@ async function load() {
     renderDevices(devices);
     renderActions(actions);
     renderRules(rules);
+    renderReputations(reputations);
     document.getElementById("updated").textContent =
         new Date().toLocaleTimeString();
 }
@@ -760,6 +790,22 @@ def get_domain_rules(
     )
 
 
+def get_reputations(
+    limit: int = 100,
+    search: str = "",
+    min_score: int = 0,
+) -> list[dict[str, Any]]:
+    """
+    Return learned reputation rows for the dashboard/API.
+    """
+
+    return load_reputations(
+        limit=limit,
+        search=search,
+        min_score=min_score,
+    )
+
+
 def create_app() -> Flask:
     """
     Create the Flask dashboard application.
@@ -829,6 +875,16 @@ def create_app() -> Flask:
                 limit=parse_limit(request.args.get("limit")),
                 search=request.args.get("q", "").strip(),
                 decision=request.args.get("decision", "").strip(),
+            )
+        )
+
+    @app.get("/api/reputations")
+    def reputations():
+        return jsonify(
+            get_reputations(
+                limit=parse_limit(request.args.get("limit")),
+                search=request.args.get("q", "").strip(),
+                min_score=parse_int(request.args.get("min_score")),
             )
         )
 
