@@ -37,20 +37,222 @@ class CLITests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         collector_main.assert_called_once_with()
 
+    def test_collect_dispatches_to_collector_main(self) -> None:
+        with patch("collector.scan.main") as collector_main:
+            exit_code = cli.main(["collect"])
+
+        self.assertEqual(exit_code, 0)
+        collector_main.assert_called_once_with()
+
+    def test_run_engine_dispatches_to_continuous_worker(self) -> None:
+        with patch("engine.engine.AnalysisEngine") as analysis_engine:
+            exit_code = cli.main(["run-engine"])
+
+        self.assertEqual(exit_code, 0)
+        analysis_engine.assert_called_once_with()
+        analysis_engine.return_value.run_loop.assert_called_once_with()
+
     def test_dashboard_dispatches_to_dashboard_main(self) -> None:
         with patch("ui.dashboard.main") as dashboard_main:
-            exit_code = cli.main(["dashboard"])
+            exit_code = cli.main(
+                [
+                    "dashboard",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "9000",
+                ]
+            )
 
         self.assertEqual(exit_code, 0)
-        dashboard_main.assert_called_once_with()
+        dashboard_main.assert_called_once_with(
+            host="127.0.0.1",
+            port=9000,
+        )
 
     def test_status_dispatches_to_status_printer(self) -> None:
-        with patch("pihole_ai.status.print_status") as print_status:
-            exit_code = cli.main(["status", "--no-ollama"])
+        with patch("pihole_ai.service.service_status") as service_status:
+            exit_code = cli.main(["status", "--no-ollama", "--dry-run"])
 
         self.assertEqual(exit_code, 0)
-        print_status.assert_called_once_with(
+        service_status.assert_called_once_with(
             include_ollama=False,
+            dry_run=True,
+        )
+
+    def test_explain_dispatches_to_explanation_printer(self) -> None:
+        with patch("pihole_ai.explain.print_explanation") as print_explanation:
+            exit_code = cli.main(
+                [
+                    "explain",
+                    "Example.COM",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        print_explanation.assert_called_once_with(
+            domain="Example.COM",
+            as_json=True,
+        )
+
+    def test_feedback_dispatches_with_options(self) -> None:
+        with patch("pihole_ai.feedback.print_feedback") as print_feedback:
+            exit_code = cli.main(
+                [
+                    "feedback",
+                    "Example.COM",
+                    "false-negative",
+                    "--reason",
+                    "Confirmed bad.",
+                    "--promote",
+                    "--apply",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        print_feedback.assert_called_once_with(
+            domain="Example.COM",
+            verdict="false-negative",
+            reason="Confirmed bad.",
+            promote=True,
+            apply_block=True,
+        )
+
+    def test_evaluate_dispatches_with_options(self) -> None:
+        with patch("pihole_ai.evaluate.print_benchmark") as print_benchmark:
+            exit_code = cli.main(
+                [
+                    "evaluate",
+                    "fixtures/domains.json",
+                    "--risk-tolerance",
+                    "20",
+                    "--include-ai",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        print_benchmark.assert_called_once_with(
+            path="fixtures/domains.json",
+            risk_tolerance=20,
+            include_ai=True,
+            as_json=True,
+        )
+
+    def test_service_install_dispatches_with_dry_run(self) -> None:
+        with patch("pihole_ai.service.service_install") as service_install:
+            exit_code = cli.main(
+                [
+                    "service",
+                    "install",
+                    "--dry-run",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        service_install.assert_called_once_with(
+            dry_run=True,
+        )
+
+    def test_install_dispatches_with_dry_run(self) -> None:
+        with patch("pihole_ai.service.service_install") as service_install:
+            exit_code = cli.main(
+                [
+                    "install",
+                    "--dry-run",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        service_install.assert_called_once_with(
+            dry_run=True,
+        )
+
+    def test_service_uninstall_dispatches_with_dry_run(self) -> None:
+        with patch("pihole_ai.service.service_uninstall") as service_uninstall:
+            exit_code = cli.main(
+                [
+                    "service",
+                    "uninstall",
+                    "--dry-run",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        service_uninstall.assert_called_once_with(
+            dry_run=True,
+        )
+
+    def test_uninstall_dispatches_with_dry_run(self) -> None:
+        with patch("pihole_ai.service.service_uninstall") as service_uninstall:
+            exit_code = cli.main(
+                [
+                    "uninstall",
+                    "--dry-run",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        service_uninstall.assert_called_once_with(
+            dry_run=True,
+        )
+
+    def test_enable_disable_dispatch_with_dry_run(self) -> None:
+        cases = [
+            ("enable", "pihole_ai.service.service_enable"),
+            ("disable", "pihole_ai.service.service_disable"),
+        ]
+
+        for command, target in cases:
+            with self.subTest(command=command), patch(target) as handler:
+                exit_code = cli.main(
+                    [
+                        command,
+                        "--dry-run",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            handler.assert_called_once_with(
+                dry_run=True,
+            )
+
+    def test_start_stop_restart_dispatch_to_service_action(self) -> None:
+        for command in ("start", "stop", "restart"):
+            with self.subTest(command=command), patch(
+                "pihole_ai.service.service_action",
+            ) as service_action:
+                exit_code = cli.main(
+                    [
+                        command,
+                        "--dry-run",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            service_action.assert_called_once_with(
+                action=command,
+                dry_run=True,
+            )
+
+    def test_logs_dispatches_with_options(self) -> None:
+        with patch("pihole_ai.service.service_logs") as service_logs:
+            exit_code = cli.main(
+                [
+                    "logs",
+                    "--lines",
+                    "25",
+                    "--follow",
+                    "--dry-run",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        service_logs.assert_called_once_with(
+            lines=25,
+            follow=True,
+            dry_run=True,
         )
 
     def test_export_dispatches_with_options(self) -> None:
@@ -128,6 +330,57 @@ class CLITests(unittest.TestCase):
             limit=10,
             min_score=60,
             audit=False,
+        )
+
+    def test_intel_import_hosts_dispatches_with_options(self) -> None:
+        with patch("pihole_ai.intel.import_hosts_file", return_value=2) as import_hosts_file, \
+             patch("sys.stdout", io.StringIO()):
+            exit_code = cli.main(
+                [
+                    "intel",
+                    "import-hosts",
+                    "feeds/hosts.txt",
+                    "--source",
+                    "test-feed",
+                    "--category",
+                    "phishing",
+                    "--confidence",
+                    "85",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        import_hosts_file.assert_called_once_with(
+            path="feeds/hosts.txt",
+            source="test-feed",
+            category="phishing",
+            confidence=85,
+        )
+
+    def test_intel_list_dispatches_with_options(self) -> None:
+        with patch("pihole_ai.intel.print_intel", return_value=1) as print_intel, \
+             patch("sys.stdout", io.StringIO()):
+            exit_code = cli.main(
+                [
+                    "intel",
+                    "list",
+                    "--limit",
+                    "10",
+                    "--q",
+                    "bad",
+                    "--source",
+                    "test-feed",
+                    "--category",
+                    "malware",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        print_intel.assert_called_once_with(
+            limit=10,
+            search="bad",
+            source="test-feed",
+            category="malware",
         )
 
     def test_rules_list_dispatches_with_options(self) -> None:

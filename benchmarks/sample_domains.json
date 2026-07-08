@@ -1,0 +1,17 @@
+[
+  {
+    "domain": "localhost",
+    "category": "infrastructure",
+    "risk": 0
+  },
+  {
+    "domain": "login-secure-wallet-verify-123456789.xyz",
+    "category": "suspicious",
+    "risk": 70
+  },
+  {
+    "domain": "example.com",
+    "category": "unknown",
+    "risk": 50
+  }
+]

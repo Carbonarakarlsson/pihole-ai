@@ -267,6 +267,32 @@ def init_db() -> None:
             """
         )
 
+        # --------------------------------------------------------------
+        # Threat Intelligence
+        # --------------------------------------------------------------
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS threat_intel (
+
+                domain TEXT NOT NULL,
+
+                source TEXT NOT NULL,
+
+                category TEXT NOT NULL,
+
+                confidence INTEGER NOT NULL,
+
+                first_seen REAL NOT NULL,
+
+                last_seen REAL NOT NULL,
+
+                PRIMARY KEY (domain, source)
+
+            )
+            """
+        )
+
         _create_indexes(cur)
         _migrate_schema(cur)
 
@@ -336,6 +362,20 @@ def _create_indexes(cursor: sqlite3.Cursor) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_domain_reputation_score
         ON domain_reputation(score)
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_threat_intel_domain
+        ON threat_intel(domain)
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_threat_intel_source
+        ON threat_intel(source)
         """
     )
     # ============================================================================
@@ -1162,6 +1202,149 @@ def get_reputation_candidates(
 
 
 # ============================================================================
+# Threat Intelligence
+# ============================================================================
+
+
+def save_threat_intel(
+    domain: str,
+    source: str,
+    category: str = "malware",
+    confidence: int = 90,
+    first_seen: float | None = None,
+    last_seen: float | None = None,
+) -> None:
+    """
+    Save or update a threat-intel domain hit.
+    """
+
+    if first_seen is None or last_seen is None:
+        import time
+
+        now = time.time()
+
+        if first_seen is None:
+            first_seen = now
+
+        if last_seen is None:
+            last_seen = now
+
+    execute(
+        """
+        INSERT INTO threat_intel
+        (
+            domain,
+            source,
+            category,
+            confidence,
+            first_seen,
+            last_seen
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+
+        ON CONFLICT(domain, source)
+
+        DO UPDATE SET
+
+            category = excluded.category,
+            confidence = excluded.confidence,
+            last_seen = excluded.last_seen
+        """,
+        (
+            domain,
+            source,
+            category,
+            max(0, min(confidence, 100)),
+            first_seen,
+            last_seen,
+        ),
+    )
+
+
+def get_threat_intel(
+    domain: str,
+) -> sqlite3.Row | None:
+    """
+    Return the highest-confidence threat-intel hit for a domain.
+    """
+
+    return query_one(
+        """
+        SELECT
+
+            domain,
+            source,
+            category,
+            confidence,
+            first_seen,
+            last_seen
+
+        FROM threat_intel
+
+        WHERE domain = ?
+
+        ORDER BY confidence DESC, last_seen DESC
+
+        LIMIT 1
+        """,
+        (domain,),
+    )
+
+
+def list_threat_intel(
+    limit: int = 100,
+    search: str = "",
+    source: str = "",
+    category: str = "",
+) -> list[sqlite3.Row]:
+    """
+    Return threat-intel rows with optional filters.
+    """
+
+    where = []
+    params: list[Any] = []
+
+    if search:
+        where.append("domain LIKE ?")
+        params.append(f"%{search}%")
+
+    if source:
+        where.append("source = ?")
+        params.append(source)
+
+    if category:
+        where.append("category = ?")
+        params.append(category)
+
+    where_sql = ""
+
+    if where:
+        where_sql = "WHERE " + " AND ".join(where)
+
+    return query_all(
+        f"""
+        SELECT
+
+            domain,
+            source,
+            category,
+            confidence,
+            first_seen,
+            last_seen
+
+        FROM threat_intel
+
+        {where_sql}
+
+        ORDER BY last_seen DESC, domain ASC
+
+        LIMIT ?
+        """,
+        tuple(params + [limit]),
+    )
+
+
+# ============================================================================
 # Domain Memory
 # ============================================================================
 
@@ -1410,6 +1593,14 @@ def database_stats() -> dict[str, int]:
         """
     )
 
+    threat_intel_count = query_one(
+        """
+        SELECT COUNT(*) AS count
+
+        FROM threat_intel
+        """
+    )
+
     return {
         "events": event_count["count"] if event_count else 0,
         "processed": processed_count["count"] if processed_count else 0,
@@ -1417,6 +1608,134 @@ def database_stats() -> dict[str, int]:
         "analyses": analysis_count["count"] if analysis_count else 0,
         "actions": action_count["count"] if action_count else 0,
         "reputations": reputation_count["count"] if reputation_count else 0,
+        "threat_intel": threat_intel_count["count"] if threat_intel_count else 0,
+    }
+
+
+def _count_rows_by(
+    sql: str,
+    parameters: tuple[Any, ...] = (),
+) -> dict[str, int]:
+    """
+    Return grouped count rows as a plain dictionary.
+    """
+
+    return {
+        str(row["name"]): int(row["count"])
+        for row in query_all(sql, parameters)
+        if row["name"] is not None
+    }
+
+
+def decision_metrics() -> dict[str, Any]:
+    """
+    Return aggregate decision metrics for dashboard and API consumers.
+    """
+
+    analysis = query_one(
+        """
+        SELECT
+
+            COUNT(*) AS total,
+            SUM(CASE WHEN risk < 40 THEN 1 ELSE 0 END) AS low_risk,
+            SUM(CASE WHEN risk >= 40 AND risk < 70 THEN 1 ELSE 0 END) AS medium_risk,
+            SUM(CASE WHEN risk >= 70 THEN 1 ELSE 0 END) AS high_risk,
+            SUM(CASE WHEN confidence = 0 THEN 1 ELSE 0 END) AS zero_confidence
+
+        FROM analysis
+        """
+    )
+
+    action = query_one(
+        """
+        SELECT COUNT(*) AS total
+
+        FROM action_audit
+        """
+    )
+
+    return {
+        "analysis": {
+            "total": int(analysis["total"] or 0) if analysis else 0,
+            "low_risk": int(analysis["low_risk"] or 0) if analysis else 0,
+            "medium_risk": int(analysis["medium_risk"] or 0) if analysis else 0,
+            "high_risk": int(analysis["high_risk"] or 0) if analysis else 0,
+            "zero_confidence": int(analysis["zero_confidence"] or 0) if analysis else 0,
+        },
+        "categories": _count_rows_by(
+            """
+            SELECT category AS name, COUNT(*) AS count
+
+            FROM analysis
+
+            GROUP BY category
+
+            ORDER BY count DESC, category ASC
+            """
+        ),
+        "models": _count_rows_by(
+            """
+            SELECT model AS name, COUNT(*) AS count
+
+            FROM analysis
+
+            GROUP BY model
+
+            ORDER BY count DESC, model ASC
+            """
+        ),
+        "actions": {
+            "total": int(action["total"] or 0) if action else 0,
+            "by_action": _count_rows_by(
+                """
+                SELECT action AS name, COUNT(*) AS count
+
+                FROM action_audit
+
+                GROUP BY action
+
+                ORDER BY count DESC, action ASC
+                """
+            ),
+            "by_status": _count_rows_by(
+                """
+                SELECT status AS name, COUNT(*) AS count
+
+                FROM action_audit
+
+                GROUP BY status
+
+                ORDER BY count DESC, status ASC
+                """
+            ),
+            "feedback": _count_rows_by(
+                """
+                SELECT status AS name, COUNT(*) AS count
+
+                FROM action_audit
+
+                WHERE action = ?
+
+                GROUP BY status
+
+                ORDER BY count DESC, status ASC
+                """,
+                ("feedback",),
+            ),
+        },
+        "rules": _count_rows_by(
+            """
+            SELECT decision AS name, COUNT(*) AS count
+
+            FROM domain_rules
+
+            WHERE enabled = 1
+
+            GROUP BY decision
+
+            ORDER BY count DESC, decision ASC
+            """
+        ),
     }
 
 

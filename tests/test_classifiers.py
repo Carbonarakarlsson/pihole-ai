@@ -16,6 +16,7 @@ from engine.classifiers.heuristics import HeuristicsEngine
 from engine.classifiers.pipeline import ClassifierPipeline
 from engine.classifiers.reputation import ReputationClassifier
 from engine.classifiers.rule_engine import RuleEngine
+from engine.classifiers.threat_intel import ThreatIntelClassifier
 from engine.models import (
     AnalysisRequest,
     AnalysisResult,
@@ -234,6 +235,62 @@ class ReputationClassifierTests(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class ThreatIntelClassifierTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.classifier = ThreatIntelClassifier()
+
+    def test_returns_none_when_domain_is_not_in_feed(self) -> None:
+        with patch(
+            "engine.classifiers.threat_intel.get_threat_intel",
+            return_value=None,
+        ):
+            result = self.classifier.classify(
+                AnalysisRequest(domain="example.com"),
+            )
+
+        self.assertIsNone(result)
+
+    def test_classifies_known_bad_domain_from_feed(self) -> None:
+        with patch(
+            "engine.classifiers.threat_intel.get_threat_intel",
+            return_value={
+                "domain": "bad.example",
+                "source": "test-feed",
+                "category": DomainCategory.MALWARE.value,
+                "confidence": 95,
+            },
+        ):
+            result = self.classifier.classify(
+                AnalysisRequest(domain="Bad.Example"),
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.domain, "bad.example")
+        self.assertEqual(result.risk, 95)
+        self.assertEqual(result.confidence, 95)
+        self.assertEqual(result.category, DomainCategory.MALWARE.value)
+        self.assertIn("test-feed", result.reason)
+        self.assertEqual(result.model, "threat-intel")
+
+    def test_unknown_feed_category_falls_back_to_suspicious(self) -> None:
+        with patch(
+            "engine.classifiers.threat_intel.get_threat_intel",
+            return_value={
+                "domain": "bad.example",
+                "source": "test-feed",
+                "category": "unknown-feed-category",
+                "confidence": 60,
+            },
+        ):
+            result = self.classifier.classify(
+                AnalysisRequest(domain="bad.example"),
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.risk, 70)
+        self.assertEqual(result.category, DomainCategory.SUSPICIOUS.value)
+
+
 class DomainMetadataTests(unittest.TestCase):
     def test_builds_from_mapping_with_defaults(self) -> None:
         metadata = DomainMetadata.from_mapping(
@@ -303,8 +360,40 @@ class ClassifierPipelineTests(unittest.TestCase):
 
         self.assertIsInstance(pipeline.classifiers[0], RuleEngine)
         self.assertIsInstance(pipeline.classifiers[1], ReputationClassifier)
-        self.assertIsInstance(pipeline.classifiers[2], HeuristicsEngine)
-        self.assertIsInstance(pipeline.classifiers[3], AIClassifier)
+        self.assertIsInstance(pipeline.classifiers[2], ThreatIntelClassifier)
+        self.assertIsInstance(pipeline.classifiers[3], HeuristicsEngine)
+        self.assertIsInstance(pipeline.classifiers[4], AIClassifier)
+
+    def test_threat_intel_beats_low_learned_reputation(self) -> None:
+        with patch(
+            "engine.classifiers.ai_classifier.OllamaClient",
+        ), patch(
+            "engine.classifiers.reputation.get_domain_rule",
+            return_value=None,
+        ), patch(
+            "engine.classifiers.reputation.get_domain_reputation",
+            return_value={
+                "score": 0,
+                "confidence": 95,
+                "signals": '["manual allow rule"]',
+            },
+        ), patch(
+            "engine.classifiers.threat_intel.get_threat_intel",
+            return_value={
+                "domain": "bad.example",
+                "source": "test-feed",
+                "category": DomainCategory.MALWARE.value,
+                "confidence": 95,
+            },
+        ):
+            pipeline = ClassifierPipeline()
+            result = pipeline.classify(
+                AnalysisRequest(domain="bad.example"),
+            )
+
+        self.assertEqual(result.model, "threat-intel")
+        self.assertEqual(result.category, DomainCategory.MALWARE.value)
+        self.assertEqual(result.risk, 95)
 
     def test_stops_at_first_classifier_with_result(self) -> None:
         first = FakeClassifier(None)

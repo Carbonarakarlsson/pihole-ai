@@ -22,8 +22,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subcommands.add_parser(
+        "collect",
+        help="Run the continuous Pi-hole query collector.",
+    )
+    subcommands.add_parser(
         "collector",
         help="Run the continuous Pi-hole query collector.",
+    )
+    subcommands.add_parser(
+        "run-engine",
+        help="Run the continuous analysis engine.",
     )
     subcommands.add_parser(
         "engine",
@@ -33,9 +41,20 @@ def build_parser() -> argparse.ArgumentParser:
         "engine-once",
         help="Run one analysis engine cycle.",
     )
-    subcommands.add_parser(
+    dashboard = subcommands.add_parser(
         "dashboard",
         help="Run the dashboard web server.",
+    )
+    dashboard.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Dashboard host address.",
+    )
+    dashboard.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Dashboard port.",
     )
     status = subcommands.add_parser(
         "status",
@@ -45,6 +64,137 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-ollama",
         action="store_true",
         help="Skip Ollama health check.",
+    )
+    status.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print service status commands without running them.",
+    )
+
+    explain = subcommands.add_parser(
+        "explain",
+        help="Explain local evidence for a domain.",
+    )
+    explain.add_argument(
+        "domain",
+        help="Domain to explain.",
+    )
+    explain.add_argument(
+        "--json",
+        action="store_true",
+        help="Print explanation as JSON.",
+    )
+
+    feedback = subcommands.add_parser(
+        "feedback",
+        help="Record human feedback for a domain.",
+    )
+    feedback.add_argument(
+        "domain",
+        help="Domain to annotate.",
+    )
+    feedback.add_argument(
+        "verdict",
+        choices=[
+            "safe",
+            "bad",
+            "false-positive",
+            "false-negative",
+            "noisy",
+        ],
+        help="Feedback verdict.",
+    )
+    feedback.add_argument(
+        "--reason",
+        default="",
+        help="Reason for the feedback.",
+    )
+    feedback.add_argument(
+        "--promote",
+        action="store_true",
+        help="Promote feedback into an allow/block rule when applicable.",
+    )
+    feedback.add_argument(
+        "--apply",
+        action="store_true",
+        help="When promoting a block rule, also write to blocklist helper.",
+    )
+
+    evaluate = subcommands.add_parser(
+        "evaluate",
+        help="Benchmark classifiers against a labeled fixture.",
+    )
+    evaluate.add_argument(
+        "path",
+        help="Path to a JSON or CSV benchmark fixture.",
+    )
+    evaluate.add_argument(
+        "--risk-tolerance",
+        type=int,
+        default=15,
+        help="Allowed risk-score error for a risk match.",
+    )
+    evaluate.add_argument(
+        "--include-ai",
+        action="store_true",
+        help="Include the Ollama AI fallback in the benchmark.",
+    )
+    evaluate.add_argument(
+        "--json",
+        action="store_true",
+        help="Print benchmark results as JSON.",
+    )
+
+    service = subcommands.add_parser(
+        "service",
+        help="Install or uninstall Linux systemd services.",
+    )
+    service_commands = service.add_subparsers(
+        dest="service_command",
+        required=True,
+    )
+
+    for name in ("install", "uninstall"):
+        service_command = service_commands.add_parser(
+            name,
+            help=f"{name.title()} PiHole-AI systemd services.",
+        )
+        service_command.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Print planned files and commands without changing systemd.",
+        )
+
+    for name in ("install", "uninstall", "enable", "disable", "start", "stop", "restart"):
+        command = subcommands.add_parser(
+            name,
+            help=f"{name.title()} PiHole-AI systemd services.",
+        )
+        command.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Print planned systemd actions without changing services.",
+        )
+
+    logs = subcommands.add_parser(
+        "logs",
+        help="Show PiHole-AI systemd service logs.",
+    )
+    logs.add_argument(
+        "--lines",
+        type=int,
+        default=100,
+        help="Number of journal lines to show.",
+    )
+    logs.add_argument(
+        "--follow",
+        action="store_true",
+        help="Follow logs.",
+    )
+    logs.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the journalctl command without running it.",
     )
 
     export = subcommands.add_parser(
@@ -136,6 +286,66 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not create learned alert/suggest-block audit records.",
     )
 
+    intel = subcommands.add_parser(
+        "intel",
+        help="Manage local threat-intelligence feeds.",
+    )
+    intel_commands = intel.add_subparsers(
+        dest="intel_command",
+        required=True,
+    )
+
+    intel_import = intel_commands.add_parser(
+        "import-hosts",
+        help="Import a local hosts-style threat-intel file.",
+    )
+    intel_import.add_argument(
+        "path",
+        help="Path to a hosts-style or plain-domain feed file.",
+    )
+    intel_import.add_argument(
+        "--source",
+        required=True,
+        help="Source name for imported indicators.",
+    )
+    intel_import.add_argument(
+        "--category",
+        default="malware",
+        help="Category assigned to imported indicators.",
+    )
+    intel_import.add_argument(
+        "--confidence",
+        type=int,
+        default=90,
+        help="Confidence assigned to imported indicators.",
+    )
+
+    intel_list = intel_commands.add_parser(
+        "list",
+        help="List imported threat-intel rows.",
+    )
+    intel_list.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Maximum rows to show.",
+    )
+    intel_list.add_argument(
+        "--q",
+        default="",
+        help="Search domains.",
+    )
+    intel_list.add_argument(
+        "--source",
+        default="",
+        help="Filter by source.",
+    )
+    intel_list.add_argument(
+        "--category",
+        default="",
+        help="Filter by category.",
+    )
+
     rules = subcommands.add_parser(
         "rules",
         help="Manage manual allow/block domain rules.",
@@ -213,13 +423,13 @@ def main(
 
     args = build_parser().parse_args(argv)
 
-    if args.command == "collector":
+    if args.command in {"collect", "collector"}:
         from collector.scan import main as collector_main
 
         collector_main()
         return 0
 
-    if args.command == "engine":
+    if args.command in {"run-engine", "engine"}:
         from engine.engine import AnalysisEngine
 
         AnalysisEngine().run_loop()
@@ -234,14 +444,112 @@ def main(
     if args.command == "dashboard":
         from ui.dashboard import main as dashboard_main
 
-        dashboard_main()
+        dashboard_main(
+            host=args.host,
+            port=args.port,
+        )
         return 0
 
     if args.command == "status":
-        from pihole_ai.status import print_status
+        from pihole_ai.service import service_status
 
-        print_status(
+        service_status(
             include_ollama=not args.no_ollama,
+            dry_run=args.dry_run,
+        )
+        return 0
+
+    if args.command == "explain":
+        from pihole_ai.explain import print_explanation
+
+        print_explanation(
+            domain=args.domain,
+            as_json=args.json,
+        )
+        return 0
+
+    if args.command == "feedback":
+        from pihole_ai.feedback import print_feedback
+
+        print_feedback(
+            domain=args.domain,
+            verdict=args.verdict,
+            reason=args.reason,
+            promote=args.promote,
+            apply_block=args.apply,
+        )
+        return 0
+
+    if args.command == "evaluate":
+        from pihole_ai.evaluate import print_benchmark
+
+        print_benchmark(
+            path=args.path,
+            risk_tolerance=args.risk_tolerance,
+            include_ai=args.include_ai,
+            as_json=args.json,
+        )
+        return 0
+
+    if args.command == "service":
+        from pihole_ai.service import service_install, service_uninstall
+
+        if args.service_command == "install":
+            service_install(
+                dry_run=args.dry_run,
+            )
+            return 0
+
+        if args.service_command == "uninstall":
+            service_uninstall(
+                dry_run=args.dry_run,
+            )
+            return 0
+
+    if args.command in {"install", "uninstall"}:
+        from pihole_ai.service import service_install, service_uninstall
+
+        if args.command == "install":
+            service_install(
+                dry_run=args.dry_run,
+            )
+            return 0
+
+        service_uninstall(
+            dry_run=args.dry_run,
+        )
+        return 0
+
+    if args.command in {"enable", "disable"}:
+        from pihole_ai.service import service_disable, service_enable
+
+        if args.command == "enable":
+            service_enable(
+                dry_run=args.dry_run,
+            )
+            return 0
+
+        service_disable(
+            dry_run=args.dry_run,
+        )
+        return 0
+
+    if args.command in {"start", "stop", "restart"}:
+        from pihole_ai.service import service_action
+
+        service_action(
+            action=args.command,
+            dry_run=args.dry_run,
+        )
+        return 0
+
+    if args.command == "logs":
+        from pihole_ai.service import service_logs
+
+        service_logs(
+            lines=args.lines,
+            follow=args.follow,
+            dry_run=args.dry_run,
         )
         return 0
 
@@ -290,6 +598,30 @@ def main(
             audit=not args.no_audit,
         )
         return 0
+
+    if args.command == "intel":
+        from pihole_ai.intel import import_hosts_file, print_intel
+
+        if args.intel_command == "import-hosts":
+            count = import_hosts_file(
+                path=args.path,
+                source=args.source,
+                category=args.category,
+                confidence=args.confidence,
+            )
+            print(
+                f"Imported {count} threat-intel domain(s) from {args.path}."
+            )
+            return 0
+
+        if args.intel_command == "list":
+            print_intel(
+                limit=args.limit,
+                search=args.q,
+                source=args.source,
+                category=args.category,
+            )
+            return 0
 
     if args.command == "rules":
         from pihole_ai.rules import add_rule, print_rules, remove_rule

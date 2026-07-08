@@ -7,10 +7,13 @@ from flask import Flask, jsonify, render_template_string, request
 from core.config import settings
 from core.db import (
     database_stats,
+    decision_metrics as db_decision_metrics,
     get_recent_actions as db_get_recent_actions,
     query_all,
 )
 from core.logger import get_logger
+from pihole_ai.explain import explain_domain
+from pihole_ai.feedback import FEEDBACK_VERDICTS, record_feedback
 from pihole_ai.learn import get_reputations as load_reputations
 from pihole_ai.rules import (
     add_rule,
@@ -81,6 +84,12 @@ main {
     grid-template-columns: repeat(6, minmax(120px, 1fr));
 }
 
+.metrics {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .stat,
 .panel {
     background: var(--panel);
@@ -90,6 +99,28 @@ main {
 
 .stat {
     padding: 12px;
+}
+
+.metric {
+    padding: 12px;
+}
+
+.metric h3 {
+    font-size: 13px;
+    margin: 0 0 10px;
+}
+
+.metric-row {
+    align-items: center;
+    border-top: 1px solid var(--line);
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 0;
+}
+
+.metric-row:first-of-type {
+    border-top: 0;
 }
 
 .label {
@@ -141,7 +172,8 @@ input {
     gap: 6px;
 }
 
-.inline-actions button {
+.inline-actions button,
+.explain-feedback button {
     background: transparent;
     border: 1px solid var(--line);
     border-radius: 6px;
@@ -150,8 +182,62 @@ input {
     padding: 5px 8px;
 }
 
-.inline-actions button:hover {
+.inline-actions button:hover,
+.explain-feedback button:hover {
     border-color: var(--accent);
+}
+
+.domain-link {
+    background: transparent;
+    border: 0;
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+    padding: 0;
+    text-align: left;
+}
+
+.domain-link:hover {
+    color: var(--accent);
+}
+
+.explain-grid {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding: 12px;
+}
+
+.explain-feedback {
+    align-items: center;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px;
+}
+
+.explain-feedback strong {
+    margin-right: 4px;
+}
+
+.explain-item {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px;
+}
+
+.explain-item strong {
+    display: block;
+    margin-bottom: 6px;
+}
+
+.explain-item pre {
+    color: var(--muted);
+    font-family: inherit;
+    margin: 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
 }
 
 .grid {
@@ -199,7 +285,9 @@ th {
 
 @media (max-width: 900px) {
     .stats,
-    .grid {
+    .metrics,
+    .grid,
+    .explain-grid {
         grid-template-columns: minmax(0, 1fr);
     }
 }
@@ -226,6 +314,12 @@ th {
         <button id="refresh" type="button">Refresh</button>
     </section>
     <section class="stats" id="stats"></section>
+    <section class="metrics" id="decision-metrics"></section>
+    <section class="panel">
+        <h2>Explain</h2>
+        <div class="explain-feedback" id="explain-feedback"></div>
+        <div class="explain-grid" id="explain"></div>
+    </section>
     <section class="grid">
         <div class="panel">
             <h2>Recent Events</h2>
@@ -333,6 +427,21 @@ function cell(value, className = "") {
     return td;
 }
 
+function domainButton(domain) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "domain-link";
+    item.textContent = text(domain);
+    item.addEventListener("click", () => explainDomain(domain));
+    return item;
+}
+
+function domainCell(domain) {
+    const td = document.createElement("td");
+    td.appendChild(domainButton(domain));
+    return td;
+}
+
 function row(values) {
     const tr = document.createElement("tr");
     values.forEach((value) => {
@@ -396,15 +505,76 @@ function renderStats(stats) {
     });
 }
 
+function metricPanel(title, rows) {
+    const item = document.createElement("div");
+    item.className = "panel metric";
+
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    item.appendChild(heading);
+
+    rows.forEach(([label, value]) => {
+        const row = document.createElement("div");
+        row.className = "metric-row";
+
+        const labelNode = document.createElement("span");
+        labelNode.className = "muted";
+        labelNode.textContent = label;
+
+        const valueNode = document.createElement("strong");
+        valueNode.textContent = text(value);
+
+        row.append(labelNode, valueNode);
+        item.appendChild(row);
+    });
+
+    return item;
+}
+
+function objectRows(values) {
+    const entries = Object.entries(values ?? {});
+
+    if (!entries.length) {
+        return [["None", 0]];
+    }
+
+    return entries;
+}
+
+function renderDecisionMetrics(metrics) {
+    const target = document.getElementById("decision-metrics");
+    clear(target);
+
+    target.appendChild(metricPanel("Risk Bands", [
+        ["Low", metrics.analysis.low_risk],
+        ["Medium", metrics.analysis.medium_risk],
+        ["High", metrics.analysis.high_risk],
+        ["Retry", metrics.analysis.zero_confidence],
+    ]));
+    target.appendChild(metricPanel(
+        "Categories",
+        objectRows(metrics.categories)
+    ));
+    target.appendChild(metricPanel(
+        "Actions",
+        objectRows(metrics.actions.by_action)
+    ));
+    target.appendChild(metricPanel(
+        "Feedback",
+        objectRows(metrics.actions.feedback)
+    ));
+}
+
 function renderEvents(events) {
     const target = document.getElementById("events");
     clear(target);
     events.forEach((event) => {
-        target.appendChild(row([
+        const tr = row([
             event.device,
-            event.domain,
             event.processed ? "yes" : "no",
-        ]));
+        ]);
+        tr.insertBefore(domainCell(event.domain), tr.children[1]);
+        target.appendChild(tr);
     });
 }
 
@@ -412,12 +582,13 @@ function renderAnalysis(items) {
     const target = document.getElementById("analysis");
     clear(target);
     items.forEach((item) => {
-        target.appendChild(row([
-            item.domain,
+        const tr = row([
             [item.risk, riskClass(item.risk)],
             item.confidence,
             item.category,
-        ]));
+        ]);
+        tr.insertBefore(domainCell(item.domain), tr.firstChild);
+        target.appendChild(tr);
     });
 }
 
@@ -439,12 +610,12 @@ function renderActions(actions) {
     clear(target);
     actions.forEach((action) => {
         const tr = row([
-            action.domain,
             action.action,
             action.status,
             action.risk ?? "-",
             action.reason,
         ]);
+        tr.insertBefore(domainCell(action.domain), tr.firstChild);
         tr.appendChild(actionCell([
             button("Allow", () => saveRule(action.domain, "allow")),
             button("Block", () => saveRule(action.domain, "block")),
@@ -458,11 +629,11 @@ function renderRules(rules) {
     clear(target);
     rules.forEach((rule) => {
         const tr = row([
-            rule.domain,
             rule.decision,
             rule.source,
             rule.reason,
         ]);
+        tr.insertBefore(domainCell(rule.domain), tr.firstChild);
         tr.appendChild(actionCell([
             button("Remove", () => removeRule(rule.domain)),
         ]));
@@ -474,13 +645,82 @@ function renderReputations(reputations) {
     const target = document.getElementById("reputations");
     clear(target);
     reputations.forEach((reputation) => {
-        target.appendChild(row([
-            reputation.domain,
+        const tr = row([
             [reputation.score, riskClass(reputation.score)],
             reputation.confidence,
             reputation.signals,
-        ]));
+        ]);
+        tr.insertBefore(domainCell(reputation.domain), tr.firstChild);
+        target.appendChild(tr);
     });
+}
+
+function renderExplanation(explanation) {
+    const target = document.getElementById("explain");
+    const feedbackTarget = document.getElementById("explain-feedback");
+    clear(target);
+    clear(feedbackTarget);
+
+    const feedbackLabel = document.createElement("strong");
+    feedbackLabel.textContent = "Feedback";
+    feedbackTarget.appendChild(feedbackLabel);
+    feedbackTarget.appendChild(button("Safe", () => saveFeedback(
+        explanation.domain,
+        "safe",
+        true
+    )));
+    feedbackTarget.appendChild(button("Bad", () => saveFeedback(
+        explanation.domain,
+        "bad",
+        true
+    )));
+    feedbackTarget.appendChild(button("False positive", () => saveFeedback(
+        explanation.domain,
+        "false-positive",
+        true
+    )));
+    feedbackTarget.appendChild(button("False negative", () => saveFeedback(
+        explanation.domain,
+        "false-negative",
+        true
+    )));
+    feedbackTarget.appendChild(button("Noisy", () => saveFeedback(
+        explanation.domain,
+        "noisy",
+        false
+    )));
+
+    [
+        ["Domain", explanation.domain],
+        ["Summary", explanation.summary],
+        ["Rule", explanation.rule],
+        ["Threat Intel", explanation.threat_intel],
+        ["Reputation", explanation.reputation],
+        ["Analysis", explanation.analysis],
+        ["Metadata", explanation.metadata],
+        ["Actions", explanation.actions],
+    ].forEach(([label, value]) => {
+        const item = document.createElement("div");
+        item.className = "explain-item";
+
+        const heading = document.createElement("strong");
+        heading.textContent = label;
+
+        const body = document.createElement("pre");
+        body.textContent = typeof value === "string"
+            ? value
+            : JSON.stringify(value ?? "none", null, 2);
+
+        item.append(heading, body);
+        target.appendChild(item);
+    });
+}
+
+async function explainDomain(domain) {
+    const explanation = await fetch(
+        `/api/explain/${encodeURIComponent(domain)}`
+    ).then((res) => res.json());
+    renderExplanation(explanation);
 }
 
 async function saveRule(domain, decision) {
@@ -503,6 +743,24 @@ async function removeRule(domain) {
     await load();
 }
 
+async function saveFeedback(domain, verdict, promote) {
+    await fetch("/api/feedback", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            domain,
+            verdict,
+            promote,
+            apply: verdict === "bad" || verdict === "false-negative",
+            reason: `Dashboard ${verdict}`,
+        }),
+    });
+    await Promise.all([
+        load(),
+        explainDomain(domain),
+    ]);
+}
+
 async function load() {
     const params = new URLSearchParams();
     const search = document.getElementById("search").value.trim();
@@ -514,8 +772,9 @@ async function load() {
     params.set("limit", limit);
 
     const suffix = `?${params.toString()}`;
-    const [stats, events, analysis, devices, actions, rules, reputations] = await Promise.all([
+    const [stats, metrics, events, analysis, devices, actions, rules, reputations] = await Promise.all([
         fetch("/api/stats").then((res) => res.json()),
+        fetch("/api/metrics/decisions").then((res) => res.json()),
         fetch(`/api/events${suffix}`).then((res) => res.json()),
         fetch(`/api/analysis${suffix}`).then((res) => res.json()),
         fetch(`/api/devices${suffix}`).then((res) => res.json()),
@@ -525,6 +784,7 @@ async function load() {
     ]);
 
     renderStats(stats);
+    renderDecisionMetrics(metrics);
     renderEvents(events);
     renderAnalysis(analysis);
     renderDevices(devices);
@@ -806,6 +1066,14 @@ def get_reputations(
     )
 
 
+def get_decision_metrics() -> dict[str, Any]:
+    """
+    Return aggregate decision metrics for the dashboard/API.
+    """
+
+    return db_decision_metrics()
+
+
 def create_app() -> Flask:
     """
     Create the Flask dashboard application.
@@ -820,6 +1088,10 @@ def create_app() -> Flask:
     @app.get("/api/stats")
     def stats():
         return jsonify(database_stats())
+
+    @app.get("/api/metrics/decisions")
+    def decision_metric_summary():
+        return jsonify(get_decision_metrics())
 
     @app.get("/api/events")
     def events():
@@ -886,6 +1158,46 @@ def create_app() -> Flask:
                 search=request.args.get("q", "").strip(),
                 min_score=parse_int(request.args.get("min_score")),
             )
+        )
+
+    @app.get("/api/explain/<path:domain>")
+    def explain(domain: str):
+        return jsonify(
+            explain_domain(
+                domain,
+            )
+        )
+
+    @app.post("/api/feedback")
+    def create_feedback():
+        payload = request.get_json(silent=True) or {}
+        domain = str(payload.get("domain", "")).strip()
+        verdict = str(payload.get("verdict", "")).strip()
+        reason = str(payload.get("reason", "")).strip()
+        promote = bool(payload.get("promote", False))
+        apply_block = bool(payload.get("apply", False))
+
+        if not domain:
+            return jsonify({"error": "domain is required"}), 400
+
+        if verdict not in FEEDBACK_VERDICTS:
+            return jsonify({"error": "invalid feedback verdict"}), 400
+
+        result = record_feedback(
+            domain=domain,
+            verdict=verdict,
+            reason=reason,
+            promote=promote,
+            apply_block=apply_block,
+        )
+
+        return jsonify(
+            {
+                "domain": result.domain,
+                "verdict": result.verdict,
+                "promoted": result.promoted,
+                "status": "saved",
+            }
         )
 
     @app.post("/api/rules")
@@ -959,19 +1271,24 @@ def create_app() -> Flask:
 app = create_app()
 
 
-def main() -> None:
+def main(
+    host: str = "0.0.0.0",
+    port: int | None = None,
+) -> None:
     """
     Run the dashboard development server.
     """
 
+    selected_port = port if port is not None else settings.dashboard_port
+
     logger.info(
         "Starting dashboard on port %d.",
-        settings.dashboard_port,
+        selected_port,
     )
 
     app.run(
-        host="0.0.0.0",
-        port=settings.dashboard_port,
+        host=host,
+        port=selected_port,
     )
 
 

@@ -15,6 +15,7 @@ from engine.models import (
 
 from engine.classifiers.rule_engine import RuleEngine
 from engine.classifiers.reputation import ReputationClassifier
+from engine.classifiers.threat_intel import ThreatIntelClassifier
 from engine.classifiers.heuristics import HeuristicsEngine
 from engine.classifiers.ai_classifier import AIClassifier
 from engine.classifiers.base import BaseClassifier
@@ -34,6 +35,8 @@ class ClassifierPipeline:
             RuleEngine(),
 
             ReputationClassifier(),
+
+            ThreatIntelClassifier(),
 
             HeuristicsEngine(),
 

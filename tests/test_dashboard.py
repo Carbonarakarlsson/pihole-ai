@@ -25,6 +25,45 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), stats)
 
+    def test_decision_metrics_endpoint_returns_summary(self) -> None:
+        metrics = {
+            "analysis": {
+                "total": 3,
+                "low_risk": 1,
+                "medium_risk": 1,
+                "high_risk": 1,
+                "zero_confidence": 0,
+            },
+            "categories": {
+                "malware": 1,
+            },
+            "models": {
+                "heuristics": 1,
+            },
+            "actions": {
+                "total": 2,
+                "by_action": {
+                    "feedback": 1,
+                },
+                "by_status": {
+                    "false-negative": 1,
+                },
+                "feedback": {
+                    "false-negative": 1,
+                },
+            },
+            "rules": {
+                "block": 1,
+            },
+        }
+
+        with patch("ui.dashboard.get_decision_metrics", return_value=metrics) as get_metrics:
+            response = self.client.get("/api/metrics/decisions")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), metrics)
+        get_metrics.assert_called_once_with()
+
     def test_events_endpoint_returns_recent_events(self) -> None:
         rows = [
             {
@@ -172,6 +211,84 @@ class DashboardTests(unittest.TestCase):
             min_score=70,
         )
 
+    def test_explain_endpoint_returns_domain_explanation(self) -> None:
+        explanation = {
+            "domain": "example.com",
+            "summary": "cached analysis risk 10 category benign",
+            "rule": None,
+            "threat_intel": None,
+            "reputation": None,
+            "analysis": {
+                "risk": 10,
+                "category": "benign",
+            },
+            "metadata": {
+                "query_count": 2,
+            },
+            "actions": [],
+        }
+
+        with patch("ui.dashboard.explain_domain", return_value=explanation) as explain_domain:
+            response = self.client.get("/api/explain/example.com")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), explanation)
+        explain_domain.assert_called_once_with("example.com")
+
+    def test_feedback_endpoint_records_domain_feedback(self) -> None:
+        with patch("ui.dashboard.record_feedback") as record_feedback:
+            record_feedback.return_value.domain = "bad.example"
+            record_feedback.return_value.verdict = "false-negative"
+            record_feedback.return_value.promoted = "block"
+
+            response = self.client.post(
+                "/api/feedback",
+                json={
+                    "domain": "Bad.Example",
+                    "verdict": "false-negative",
+                    "reason": "Dashboard false-negative",
+                    "promote": True,
+                    "apply": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "domain": "bad.example",
+                "verdict": "false-negative",
+                "promoted": "block",
+                "status": "saved",
+            },
+        )
+        record_feedback.assert_called_once_with(
+            domain="Bad.Example",
+            verdict="false-negative",
+            reason="Dashboard false-negative",
+            promote=True,
+            apply_block=True,
+        )
+
+    def test_feedback_endpoint_rejects_invalid_verdict(self) -> None:
+        with patch("ui.dashboard.record_feedback") as record_feedback:
+            response = self.client.post(
+                "/api/feedback",
+                json={
+                    "domain": "example.com",
+                    "verdict": "maybe",
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "error": "invalid feedback verdict",
+            },
+        )
+        record_feedback.assert_not_called()
+
     def test_create_rule_endpoint_saves_domain_rule(self) -> None:
         with patch("ui.dashboard.add_rule") as add_rule:
             response = self.client.post(
@@ -277,6 +394,8 @@ class DashboardTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"PiHole-AI", response.data)
+        self.assertIn(b"/api/metrics/decisions", response.data)
+        self.assertIn(b"/api/feedback", response.data)
 
     def test_parse_limit_clamps_values(self) -> None:
         self.assertEqual(parse_limit("10"), 10)

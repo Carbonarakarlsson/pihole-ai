@@ -49,6 +49,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn("action_audit", tables)
         self.assertIn("domain_rules", tables)
         self.assertIn("domain_reputation", tables)
+        self.assertIn("threat_intel", tables)
         self.assertIn("confidence", columns)
 
     def test_insert_event_updates_domain_memory(self) -> None:
@@ -179,6 +180,7 @@ class DatabaseTests(unittest.TestCase):
                 "analyses": 1,
                 "actions": 0,
                 "reputations": 0,
+                "threat_intel": 0,
             },
         )
         self.assertEqual(processed_by_domain["example.com"], 1)
@@ -215,6 +217,80 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "written")
         self.assertEqual(rows[0]["risk"], 90)
         self.assertEqual(db.database_stats()["actions"], 2)
+
+    def test_decision_metrics_aggregate_analysis_actions_feedback_and_rules(self) -> None:
+        db.save_analysis(
+            domain="safe.example",
+            risk=10,
+            confidence=90,
+            category="benign",
+            reason="Safe.",
+            model="rule-engine",
+            analyzed_at=10.0,
+        )
+        db.save_analysis(
+            domain="watch.example",
+            risk=55,
+            confidence=80,
+            category="suspicious",
+            reason="Watch.",
+            model="heuristics",
+            analyzed_at=20.0,
+        )
+        db.save_analysis(
+            domain="bad.example",
+            risk=85,
+            confidence=0,
+            category="malware",
+            reason="Bad.",
+            model="ollama",
+            analyzed_at=30.0,
+        )
+        db.record_action(
+            domain="bad.example",
+            action="suggest_block",
+            source="test",
+            status="dry_run",
+            reason="High risk.",
+            risk=85,
+            created_at=40.0,
+        )
+        db.record_action(
+            domain="bad.example",
+            action="feedback",
+            source="test",
+            status="false-negative",
+            reason="Human feedback.",
+            created_at=50.0,
+        )
+        db.save_domain_rule(
+            domain="bad.example",
+            decision="block",
+            source="test",
+            reason="Confirmed.",
+            created_at=60.0,
+            updated_at=60.0,
+        )
+
+        metrics = db.decision_metrics()
+
+        self.assertEqual(
+            metrics["analysis"],
+            {
+                "total": 3,
+                "low_risk": 1,
+                "medium_risk": 1,
+                "high_risk": 1,
+                "zero_confidence": 1,
+            },
+        )
+        self.assertEqual(metrics["categories"]["malware"], 1)
+        self.assertEqual(metrics["models"]["ollama"], 1)
+        self.assertEqual(metrics["actions"]["total"], 2)
+        self.assertEqual(metrics["actions"]["by_action"]["feedback"], 1)
+        self.assertEqual(metrics["actions"]["by_status"]["dry_run"], 1)
+        self.assertEqual(metrics["actions"]["feedback"]["false-negative"], 1)
+        self.assertEqual(metrics["rules"]["block"], 1)
 
     def test_domain_rules_are_upserted_listed_and_deleted(self) -> None:
         db.save_domain_rule(
@@ -320,6 +396,37 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(rows[0]["device_count"], 2)
         self.assertEqual(rows[0]["analysis_risk"], 75)
         self.assertEqual(rows[0]["suggest_block_count"], 1)
+
+    def test_threat_intel_is_saved_and_listed(self) -> None:
+        db.save_threat_intel(
+            domain="bad.example",
+            source="test-feed",
+            category="malware",
+            confidence=95,
+            first_seen=100.0,
+            last_seen=100.0,
+        )
+        db.save_threat_intel(
+            domain="phish.example",
+            source="test-feed",
+            category="phishing",
+            confidence=90,
+            first_seen=90.0,
+            last_seen=90.0,
+        )
+
+        hit = db.get_threat_intel("bad.example")
+        rows = db.list_threat_intel(
+            source="test-feed",
+            category="malware",
+        )
+
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["domain"], "bad.example")
+        self.assertEqual(hit["confidence"], 95)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["domain"], "bad.example")
+        self.assertEqual(db.database_stats()["threat_intel"], 2)
 
 
 class DatabaseMigrationTests(unittest.TestCase):

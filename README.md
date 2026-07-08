@@ -50,6 +50,7 @@ ClassifierPipeline
         |
         +--> RuleEngine
         +--> ReputationClassifier
+        +--> ThreatIntelClassifier
         +--> HeuristicsEngine
         +--> AIClassifier (Ollama)
         |
@@ -77,10 +78,13 @@ Current order:
 2. `ReputationClassifier`
    Uses manual allow/block rules and learned `domain_reputation` scores before probabilistic heuristics or Ollama.
 
-3. `HeuristicsEngine`
+3. `ThreatIntelClassifier`
+   Uses imported known-bad feed indicators from `threat_intel`.
+
+4. `HeuristicsEngine`
    Scores suspicious patterns such as punycode, long domains, high entropy, suspicious TLDs, phishing keywords, repeated hyphens, deep subdomains, random-looking hostnames, and high query frequency.
 
-4. `AIClassifier`
+5. `AIClassifier`
    Uses Ollama for domains that remain unknown after deterministic checks.
 
 ## Database
@@ -100,6 +104,7 @@ Tables:
 - `action_audit`
 - `domain_rules`
 - `domain_reputation`
+- `threat_intel`
 
 The collector stores the last processed Pi-hole query ID in `app_state` as:
 
@@ -246,6 +251,9 @@ Endpoints:
 - `GET /api/actions`
 - `GET /api/rules`
 - `GET /api/reputations`
+- `GET /api/explain/<domain>`
+- `GET /api/metrics/decisions`
+- `POST /api/feedback`
 - `POST /api/rules`
 - `DELETE /api/rules/<domain>`
 - `GET /api/health`
@@ -344,6 +352,31 @@ Skip the Ollama health check:
 pihole-ai status --no-ollama
 ```
 
+Explain local evidence for a domain:
+
+```bash
+pihole-ai explain example.com
+pihole-ai explain example.com --json
+```
+
+Record human feedback:
+
+```bash
+pihole-ai feedback example.com safe --reason "Known business app" --promote
+pihole-ai feedback bad.example false-negative --reason "Confirmed bad" --promote --apply
+pihole-ai feedback noisy.example noisy --reason "Too chatty"
+```
+
+Benchmark classifiers against labeled fixtures:
+
+```bash
+pihole-ai evaluate benchmarks/sample_domains.json
+pihole-ai evaluate benchmarks/sample_domains.json --risk-tolerance 20 --json
+pihole-ai evaluate benchmarks/sample_domains.json --include-ai
+```
+
+Benchmark fixtures can be JSON or CSV and should include `domain`, expected `category`, and expected `risk`. Optional metadata fields include `query_count`, `device_count`, and `recent_queries`.
+
 Run database maintenance:
 
 ```bash
@@ -356,6 +389,13 @@ Update local reputation learning:
 
 ```bash
 pihole-ai learn
+```
+
+Import local threat-intelligence feeds:
+
+```bash
+pihole-ai intel import-hosts feeds/hosts.txt --source urlhaus
+pihole-ai intel list --source urlhaus
 ```
 
 Manage manual allow/block rules:
@@ -381,25 +421,65 @@ Exports support `--limit`, `--q`, `--min-risk`, and `--category`.
 
 ## Systemd Deployment
 
-Example systemd unit files live in:
+PiHole-AI can generate and manage Linux systemd services from the current project directory and current Python interpreter.
 
-```text
-deploy/systemd/
+Preview generated unit files and systemctl commands:
+
+```bash
+pihole-ai install --dry-run
+pihole-ai enable --dry-run
+pihole-ai start --dry-run
+pihole-ai status --dry-run
+pihole-ai logs --dry-run
 ```
 
-They assume the project is installed at:
+Install service files:
 
-```text
-/opt/pihole-ai
+```bash
+sudo pihole-ai install
 ```
 
-and that the virtual environment is:
+Enable automatic startup at boot:
 
-```text
-/opt/pihole-ai/.venv
+```bash
+sudo pihole-ai enable
 ```
 
-Example install flow:
+Manage services:
+
+```bash
+sudo pihole-ai start
+sudo pihole-ai status
+pihole-ai logs
+pihole-ai logs --follow
+sudo pihole-ai stop
+sudo pihole-ai restart
+sudo pihole-ai disable
+```
+
+Uninstall services:
+
+```bash
+sudo pihole-ai uninstall
+```
+
+Generated services:
+
+```text
+pihole-ai-collector.service
+pihole-ai-engine.service
+pihole-ai-dashboard.service
+```
+
+Generated unit commands:
+
+```text
+python -m pihole_ai.cli collect
+python -m pihole_ai.cli run-engine
+python -m pihole_ai.cli dashboard --host 0.0.0.0 --port 8080
+```
+
+Example install flow on a Pi-hole host:
 
 ```bash
 sudo mkdir -p /opt/pihole-ai
@@ -408,26 +488,6 @@ cd /opt/pihole-ai
 python -m venv .venv
 .venv/bin/python -m pip install -e .
 cp .env.example .env
-```
-
-Install services:
-
-```bash
-sudo cp deploy/systemd/pihole-ai-*.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now pihole-ai-collector
-sudo systemctl enable --now pihole-ai-engine
-sudo systemctl enable --now pihole-ai-dashboard
-sudo systemctl enable --now pihole-ai-maintenance.timer
-```
-
-Check status:
-
-```bash
-systemctl status pihole-ai-collector
-systemctl status pihole-ai-engine
-systemctl status pihole-ai-dashboard
-systemctl status pihole-ai-maintenance.timer
 ```
 
 ## Tests
@@ -468,6 +528,9 @@ actions/
 collector/
     scan.py
 
+benchmarks/
+    sample_domains.json
+
 core/
     config.py
     db.py
@@ -488,14 +551,20 @@ engine/
         pipeline.py
         rule_engine.py
         reputation.py
+        threat_intel.py
         heuristics.py
         ai_classifier.py
 
 pihole_ai/
     cli.py
+    evaluate.py
+    explain.py
     export.py
+    feedback.py
+    intel.py
     learn.py
     rules.py
+    service.py
     status.py
 
 ui/

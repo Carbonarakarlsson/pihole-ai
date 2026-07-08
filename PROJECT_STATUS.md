@@ -15,6 +15,8 @@ Rule Engine
       ↓
 Reputation Classifier
       ↓
+Threat Intel Classifier
+      ↓
 Heuristics Engine
       ↓
 AI Classifier (Ollama)
@@ -350,12 +352,15 @@ Implemented first slice:
 * `domain_reputation` table built from observed DNS history
 * `pihole-ai learn` command for periodic reputation updates
 * `ReputationClassifier` that uses local behavior before Ollama
+* `threat_intel` table for known-bad feed indicators
+* `pihole-ai intel import-hosts` for local hosts-style feeds
+* `ThreatIntelClassifier` that uses imported feed indicators before Ollama
 * learned alert/suggest-block audit records
 * manual allow/block rules influence learned scores
 
 Planned features:
 
-* known-bad feed ingestion for URLhaus, curated hosts files, or similar sources
+* remote feed downloading for URLhaus, curated hosts files, or similar sources
 * manual allow rules override learned and feed-based suspicion
 * learned results start as alert/suggest-block decisions, not automatic blocks
 

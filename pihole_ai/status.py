@@ -83,6 +83,7 @@ def print_status(
     print(f"  domains: {database['domains']}")
     print(f"  analyses: {database['analyses']}")
     print(f"  reputations: {database.get('reputations', 0)}")
+    print(f"  threat_intel: {database.get('threat_intel', 0)}")
     print(f"  collector.last_query_id: {collector['last_query_id']}")
 
     if include_ollama:

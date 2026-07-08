@@ -3,6 +3,7 @@ __all__ = [
     "ClassifierPipeline",
     "RuleEngine",
     "ReputationClassifier",
+    "ThreatIntelClassifier",
     "HeuristicsEngine",
     "AIClassifier",
 ]
@@ -32,6 +33,11 @@ def __getattr__(name: str):
         from .reputation import ReputationClassifier
 
         return ReputationClassifier
+
+    if name == "ThreatIntelClassifier":
+        from .threat_intel import ThreatIntelClassifier
+
+        return ThreatIntelClassifier
 
     if name == "HeuristicsEngine":
         from .heuristics import HeuristicsEngine
