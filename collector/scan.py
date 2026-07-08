@@ -1,72 +1,159 @@
 import sqlite3
 import time
+from contextlib import closing
 
-from core.db import init_db, insert_event
-
-
-PIHOLE_DB = "/etc/pihole/pihole-FTL.db"
-
-
-last_id = 0
-
-
-def fetch():
-
-    global last_id
-
-    conn = sqlite3.connect(PIHOLE_DB)
-    cur = conn.cursor()
-
-    cur.execute("""
-    SELECT id, domain, client
-    FROM queries
-    WHERE id > ?
-    ORDER BY id ASC
-    LIMIT 200
-    """,
-    (last_id,))
+from core.config import settings
+from core.db import (
+    get_state,
+    init_db,
+    insert_event,
+    set_state,
+)
+from core.logger import get_logger
 
 
-    rows = cur.fetchall()
-
-    conn.close()
-
-
-    return rows
+LOGGER = get_logger(__name__)
+LAST_QUERY_ID_KEY = "collector.last_query_id"
 
 
+def load_last_query_id() -> int:
+    """
+    Return the last processed Pi-hole query ID.
+    """
 
-def main():
+    value = get_state(
+        LAST_QUERY_ID_KEY,
+        "0",
+    )
 
-    global last_id
+    try:
+        return int(value or "0")
+
+    except ValueError:
+        LOGGER.warning(
+            "Invalid collector state for %s: %r. Starting from 0.",
+            LAST_QUERY_ID_KEY,
+            value,
+        )
+        return 0
+
+
+def save_last_query_id(
+    query_id: int,
+) -> None:
+    """
+    Persist the last processed Pi-hole query ID.
+    """
+
+    set_state(
+        LAST_QUERY_ID_KEY,
+        str(query_id),
+    )
+
+
+def fetch(
+    last_query_id: int,
+) -> list[tuple[int, str, str]]:
+    """
+    Fetch new Pi-hole queries after the given query ID.
+    """
+
+    with closing(sqlite3.connect(settings.pihole_db)) as conn:
+        with conn:
+            cur = conn.execute(
+                """
+                SELECT id, domain, client
+
+                FROM queries
+
+                WHERE id > ?
+
+                ORDER BY id ASC
+
+                LIMIT ?
+                """,
+                (
+                    last_query_id,
+                    settings.collect_batch_size,
+                ),
+            )
+
+            return cur.fetchall()
+
+
+def process_batch(
+    last_query_id: int,
+) -> int:
+    """
+    Ingest one batch of Pi-hole queries.
+
+    Returns the latest processed Pi-hole query ID.
+    """
+
+    rows = fetch(
+        last_query_id,
+    )
+
+    if not rows:
+        return last_query_id
+
+    current_id = last_query_id
+
+    for query_id, domain, device in rows:
+
+        current_id = max(
+            current_id,
+            query_id,
+        )
+
+        insert_event(
+            device=device or "unknown",
+            domain=domain,
+            timestamp=time.time(),
+        )
+
+        LOGGER.info(
+            "Ingested DNS query: %s -> %s",
+            device or "unknown",
+            domain,
+        )
+
+    save_last_query_id(
+        current_id,
+    )
+
+    LOGGER.info(
+        "Collector ingested %d query(s).",
+        len(rows),
+    )
+
+    return current_id
+
+
+def main() -> None:
+    """
+    Continuously ingest new Pi-hole queries.
+    """
 
     init_db()
 
-    print("Collector running...")
+    last_query_id = load_last_query_id()
 
+    LOGGER.info(
+        "Collector running (pihole_db=%s, last_query_id=%d).",
+        settings.pihole_db,
+        last_query_id,
+    )
 
     while True:
 
-        data = fetch()
+        last_query_id = process_batch(
+            last_query_id,
+        )
 
-
-        for query_id, domain, device in data:
-
-            last_id = max(last_id, query_id)
-
-            insert_event(
-                device,
-                domain,
-                time.time()
-            )
-
-            print(
-                f"INGESTED: {device} -> {domain}"
-            )
-
-
-        time.sleep(2)
-
+        time.sleep(
+            settings.collect_interval,
+        )
 
 
 if __name__ == "__main__":

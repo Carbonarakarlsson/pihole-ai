@@ -16,7 +16,9 @@ import time
 from engine.models import (
     AnalysisRequest,
     AnalysisResult,
+    DomainCategory,
 )
+from engine.classifiers.base import BaseClassifier
 
 
 SUSPICIOUS_TLDS = {
@@ -49,7 +51,7 @@ PHISHING_WORDS = {
 }
 
 
-class HeuristicsEngine:
+class HeuristicsEngine(BaseClassifier):
 
     def classify(
         self,
@@ -76,6 +78,14 @@ class HeuristicsEngine:
         if len(domain) > 40:
             score += 15
             reasons.append("Very long domain")
+
+        #
+        # Deep subdomain structure
+        #
+
+        if domain.count(".") > 3:
+            score += 15
+            reasons.append("Deep subdomain structure")
 
         #
         # Many digits
@@ -139,6 +149,17 @@ class HeuristicsEngine:
             score += 20
             reasons.append("Random-looking hostname")
 
+        #
+        # High query frequency
+        #
+
+        if (
+            request.metadata is not None
+            and request.metadata.query_count > 500
+        ):
+            score += 15
+            reasons.append("High query frequency")
+
         if score < 40:
             return None
 
@@ -146,7 +167,7 @@ class HeuristicsEngine:
             domain=domain,
             risk=min(score, 100),
             confidence=75,
-            category="Suspicious",
+            category=DomainCategory.SUSPICIOUS.value,
             reason=", ".join(reasons),
             model="heuristics",
             analyzed_at=time.time(),

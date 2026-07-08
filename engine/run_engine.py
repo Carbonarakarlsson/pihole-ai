@@ -1,24 +1,35 @@
-from core.db import get_events
-from engine.scoring import score_domain
-from engine.anomaly import update, detect_beaconing
-from actions.alerts import alert
+"""
+Compatibility entrypoint for running the current analysis engine.
 
-def run():
-    rows = get_events()
+Older versions of PiHole-AI had a separate scoring/anomaly loop here.
+The active architecture now runs through AnalysisEngine and the
+ClassifierPipeline.
+"""
 
-    for device, domain, _ in rows:
+from __future__ import annotations
 
-        score, reasons = score_domain(domain)
-        update(device, domain)
+from engine.engine import AnalysisEngine
 
-        if detect_beaconing(device):
-            alert(f"Beaconing detected: {device}")
 
-        if score > 70:
-            alert(f"High risk domain: {domain}")
+def run() -> int:
+    """
+    Process one batch of pending domains.
 
-        print(device, domain, score)
+    Returns the number of domains processed.
+    """
+
+    engine = AnalysisEngine()
+
+    return engine.process_once()
+
+
+def main() -> None:
+    """
+    Run one analysis cycle.
+    """
+
+    run()
 
 
 if __name__ == "__main__":
-    run()
+    main()

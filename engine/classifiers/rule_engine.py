@@ -17,10 +17,12 @@ import time
 from engine.models import (
     AnalysisRequest,
     AnalysisResult,
+    DomainCategory,
 )
+from engine.classifiers.base import BaseClassifier
 
 
-class RuleEngine:
+class RuleEngine(BaseClassifier):
     """
     Fast deterministic domain classifier.
     """
@@ -102,7 +104,7 @@ class RuleEngine:
             domain=domain,
             risk=0,
             confidence=100,
-            category="Infrastructure",
+            category=DomainCategory.INFRASTRUCTURE.value,
             reason=reason,
             model="rule-engine",
             analyzed_at=time.time(),

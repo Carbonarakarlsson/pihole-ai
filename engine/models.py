@@ -15,8 +15,36 @@ Using dataclasses instead of dictionaries provides:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from time import time
 from typing import Any
+
+
+# ============================================================================
+# Domain Categories
+# ============================================================================
+
+class DomainCategory(str, Enum):
+    """
+    Canonical domain analysis categories.
+    """
+
+    BENIGN = "benign"
+    INFRASTRUCTURE = "infrastructure"
+    ADVERTISING = "advertising"
+    ANALYTICS = "analytics"
+    TRACKING = "tracking"
+    SUSPICIOUS = "suspicious"
+    MALWARE = "malware"
+    PHISHING = "phishing"
+    COMMAND_AND_CONTROL = "command-and-control"
+    UNKNOWN = "unknown"
+
+
+ALLOWED_CATEGORIES = {
+    category.value
+    for category in DomainCategory
+}
 
 
 # ============================================================================
@@ -143,6 +171,9 @@ def validate_ai_response(response: dict[str, Any]) -> bool:
         return False
 
     if not (0 <= response["confidence"] <= 100):
+        return False
+
+    if response["category"] not in ALLOWED_CATEGORIES:
         return False
 
     return True

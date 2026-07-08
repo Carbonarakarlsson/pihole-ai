@@ -14,9 +14,11 @@ from core.logger import get_logger
 from engine.models import (
     AnalysisRequest,
     AnalysisResult,
+    DomainCategory,
     analysis_from_json,
     validate_ai_response,
 )
+from engine.classifiers.base import BaseClassifier
 from engine.ollama_client import OllamaClient
 from engine.prompts import (
     SYSTEM_PROMPT,
@@ -24,7 +26,7 @@ from engine.prompts import (
 )
 
 
-class AIClassifier:
+class AIClassifier(BaseClassifier):
     """
     AI-powered classifier backed by a local Ollama model.
     """
@@ -40,7 +42,7 @@ class AIClassifier:
     def classify(
         self,
         request: AnalysisRequest,
-    ) -> AnalysisResult:
+    ) -> AnalysisResult | None:
         """
         Classify a domain using the configured Ollama model.
         """
@@ -129,7 +131,7 @@ class AIClassifier:
             domain=request.domain,
             risk=50,
             confidence=0,
-            category="Unknown",
+            category=DomainCategory.UNKNOWN.value,
             reason=reason,
             model=self.client.current_model(),
         )

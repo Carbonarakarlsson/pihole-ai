@@ -15,11 +15,19 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
+from engine.models import ALLOWED_CATEGORIES
+
+
+CATEGORY_LIST = "\n".join(
+    f"- {category}"
+    for category in sorted(ALLOWED_CATEGORIES)
+)
+
 # ============================================================================
 # System Prompt
 # ============================================================================
 
-SYSTEM_PROMPT = """
+SYSTEM_PROMPT = f"""
 You are an expert cybersecurity analyst specializing in DNS traffic analysis.
 
 Your job is to determine whether a domain appears benign, suspicious,
@@ -33,12 +41,12 @@ Never explain outside the JSON.
 
 Use this schema exactly:
 
-{
+{{
     "risk": 0,
     "confidence": 0,
     "category": "",
     "reason": ""
-}
+}}
 
 Field definitions:
 
@@ -51,15 +59,7 @@ Integer from 0-100
 category:
 One of:
 
-- benign
-- advertising
-- analytics
-- tracking
-- suspicious
-- malware
-- phishing
-- command-and-control
-- unknown
+{CATEGORY_LIST}
 
 reason:
 Short explanation (1-3 sentences).

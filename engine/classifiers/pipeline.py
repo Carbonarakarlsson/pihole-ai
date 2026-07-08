@@ -16,6 +16,7 @@ from engine.models import (
 from engine.classifiers.rule_engine import RuleEngine
 from engine.classifiers.heuristics import HeuristicsEngine
 from engine.classifiers.ai_classifier import AIClassifier
+from engine.classifiers.base import BaseClassifier
 
 
 class ClassifierPipeline:
@@ -27,7 +28,7 @@ class ClassifierPipeline:
 
         self.logger = get_logger(__name__)
 
-        self.classifiers = [
+        self.classifiers: list[BaseClassifier] = [
 
             RuleEngine(),
 

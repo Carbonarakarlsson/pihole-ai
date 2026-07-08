@@ -170,6 +170,22 @@ def init_db() -> None:
             """
         )
 
+        # --------------------------------------------------------------
+        # Application State
+        # --------------------------------------------------------------
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_state (
+
+                key TEXT PRIMARY KEY,
+
+                value TEXT NOT NULL
+
+            )
+            """
+        )
+
         _create_indexes(cur)
 
 
@@ -538,6 +554,66 @@ def get_domain_memory(
         WHERE domain = ?
         """,
         (domain,),
+    )
+
+
+# ============================================================================
+# Application State
+# ============================================================================
+
+
+def get_state(
+    key: str,
+    default: str | None = None,
+) -> str | None:
+    """
+    Return a persisted application state value.
+    """
+
+    row = query_one(
+        """
+        SELECT value
+
+        FROM app_state
+
+        WHERE key = ?
+        """,
+        (key,),
+    )
+
+    if row is None:
+        return default
+
+    return row["value"]
+
+
+def set_state(
+    key: str,
+    value: str,
+) -> None:
+    """
+    Persist an application state value.
+    """
+
+    execute(
+        """
+        INSERT INTO app_state
+        (
+            key,
+            value
+        )
+        VALUES (?, ?)
+
+        ON CONFLICT(key)
+
+        DO UPDATE SET
+
+            value = excluded.value
+        """,
+        (
+            key,
+            value,
+        ),
     )
 
 
