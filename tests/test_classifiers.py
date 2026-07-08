@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+from unittest.mock import patch
 
 sys.modules.setdefault(
     "ollama",
@@ -13,6 +14,7 @@ from engine.classifiers.ai_classifier import AIClassifier
 from engine.classifiers.base import BaseClassifier
 from engine.classifiers.heuristics import HeuristicsEngine
 from engine.classifiers.pipeline import ClassifierPipeline
+from engine.classifiers.reputation import ReputationClassifier
 from engine.classifiers.rule_engine import RuleEngine
 from engine.models import (
     AnalysisRequest,
@@ -148,6 +150,90 @@ class HeuristicsEngineTests(unittest.TestCase):
         )
 
 
+class ReputationClassifierTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.classifier = ReputationClassifier()
+
+    def test_manual_allow_rule_returns_benign_result(self) -> None:
+        with patch(
+            "engine.classifiers.reputation.get_domain_rule",
+            return_value={
+                "decision": "allow",
+                "reason": "Known safe.",
+            },
+        ), patch(
+            "engine.classifiers.reputation.get_domain_reputation",
+        ) as get_domain_reputation:
+            result = self.classifier.classify(
+                AnalysisRequest(domain="Example.COM"),
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.domain, "example.com")
+        self.assertEqual(result.risk, 0)
+        self.assertEqual(result.category, DomainCategory.BENIGN.value)
+        self.assertEqual(result.model, "manual-rule")
+        get_domain_reputation.assert_not_called()
+
+    def test_manual_block_rule_returns_high_risk_result(self) -> None:
+        with patch(
+            "engine.classifiers.reputation.get_domain_rule",
+            return_value={
+                "decision": "block",
+                "reason": "Confirmed unwanted.",
+            },
+        ):
+            result = self.classifier.classify(
+                AnalysisRequest(domain="bad.example"),
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.risk, 100)
+        self.assertEqual(result.category, DomainCategory.SUSPICIOUS.value)
+        self.assertEqual(result.model, "manual-rule")
+
+    def test_high_reputation_score_returns_suspicious_result(self) -> None:
+        with patch(
+            "engine.classifiers.reputation.get_domain_rule",
+            return_value=None,
+        ), patch(
+            "engine.classifiers.reputation.get_domain_reputation",
+            return_value={
+                "score": 85,
+                "confidence": 80,
+                "signals": '["recent query spike", "previous alert audit"]',
+            },
+        ):
+            result = self.classifier.classify(
+                AnalysisRequest(domain="bad.example"),
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.risk, 85)
+        self.assertEqual(result.confidence, 80)
+        self.assertEqual(result.category, DomainCategory.SUSPICIOUS.value)
+        self.assertIn("recent query spike", result.reason)
+        self.assertEqual(result.model, "local-reputation")
+
+    def test_low_reputation_score_returns_none(self) -> None:
+        with patch(
+            "engine.classifiers.reputation.get_domain_rule",
+            return_value=None,
+        ), patch(
+            "engine.classifiers.reputation.get_domain_reputation",
+            return_value={
+                "score": 40,
+                "confidence": 60,
+                "signals": "[]",
+            },
+        ):
+            result = self.classifier.classify(
+                AnalysisRequest(domain="quiet.example"),
+            )
+
+        self.assertIsNone(result)
+
+
 class DomainMetadataTests(unittest.TestCase):
     def test_builds_from_mapping_with_defaults(self) -> None:
         metadata = DomainMetadata.from_mapping(
@@ -209,6 +295,17 @@ class AIResponseValidationTests(unittest.TestCase):
 
 
 class ClassifierPipelineTests(unittest.TestCase):
+    def test_default_pipeline_includes_reputation_before_heuristics(self) -> None:
+        with patch(
+            "engine.classifiers.ai_classifier.OllamaClient",
+        ):
+            pipeline = ClassifierPipeline()
+
+        self.assertIsInstance(pipeline.classifiers[0], RuleEngine)
+        self.assertIsInstance(pipeline.classifiers[1], ReputationClassifier)
+        self.assertIsInstance(pipeline.classifiers[2], HeuristicsEngine)
+        self.assertIsInstance(pipeline.classifiers[3], AIClassifier)
+
     def test_stops_at_first_classifier_with_result(self) -> None:
         first = FakeClassifier(None)
         expected = AnalysisResult(

@@ -15,6 +15,7 @@ Working today:
 - persisted collector progress
 - classifier pipeline with a shared `BaseClassifier`
 - deterministic rule engine
+- local reputation classifier
 - heuristic classifier
 - Ollama-backed AI fallback
 - AI response validation and safe fallback handling
@@ -48,6 +49,7 @@ engine.analyzer.Analyzer
 ClassifierPipeline
         |
         +--> RuleEngine
+        +--> ReputationClassifier
         +--> HeuristicsEngine
         +--> AIClassifier (Ollama)
         |
@@ -72,10 +74,13 @@ Current order:
 1. `RuleEngine`
    Handles known safe infrastructure such as localhost, `.local`, `.home.arpa`, and reverse DNS lookup domains.
 
-2. `HeuristicsEngine`
+2. `ReputationClassifier`
+   Uses manual allow/block rules and learned `domain_reputation` scores before probabilistic heuristics or Ollama.
+
+3. `HeuristicsEngine`
    Scores suspicious patterns such as punycode, long domains, high entropy, suspicious TLDs, phishing keywords, repeated hyphens, deep subdomains, random-looking hostnames, and high query frequency.
 
-3. `AIClassifier`
+4. `AIClassifier`
    Uses Ollama for domains that remain unknown after deterministic checks.
 
 ## Database
@@ -173,6 +178,8 @@ Current learning signals include:
 - previous action audit suggestions
 - entropy and suspicious TLDs
 - manual allow/block rules
+
+High learned scores are used by `ReputationClassifier` before Ollama is called. Lower scores remain visible as reputation data and audit signals.
 
 ## Categories
 
@@ -477,6 +484,7 @@ engine/
         base.py
         pipeline.py
         rule_engine.py
+        reputation.py
         heuristics.py
         ai_classifier.py
 

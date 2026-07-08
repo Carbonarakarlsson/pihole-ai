@@ -13,6 +13,8 @@ Current classifier order:
 ```
 Rule Engine
       ↓
+Reputation Classifier
+      ↓
 Heuristics Engine
       ↓
 AI Classifier (Ollama)
@@ -347,12 +349,12 @@ Implemented first slice:
 
 * `domain_reputation` table built from observed DNS history
 * `pihole-ai learn` command for periodic reputation updates
+* `ReputationClassifier` that uses local behavior before Ollama
 * learned alert/suggest-block audit records
 * manual allow/block rules influence learned scores
 
 Planned features:
 
-* `ReputationClassifier` that uses local behavior before Ollama
 * known-bad feed ingestion for URLhaus, curated hosts files, or similar sources
 * manual allow rules override learned and feed-based suspicion
 * learned results start as alert/suggest-block decisions, not automatic blocks
