@@ -1,0 +1,2905 @@
+[1mdiff --git a/.gitignore b/.gitignore[m
+[1mindex 25d46c9..642689e 100644[m
+[1m--- a/.gitignore[m
+[1m+++ b/.gitignore[m
+[36m@@ -19,6 +19,7 @@[m [m__pycache__/[m
+ .venv/[m
+ venv/[m
+ .env[m
+[32m+[m[32m.env.local[m
+ [m
+ # ----------------------------------------------------------------------------[m
+ # SQLite Databases[m
+[36m@@ -27,6 +28,8 @@[m [mvenv/[m
+ *.db[m
+ *.db-shm[m
+ *.db-wal[m
+[32m+[m[32mdata/[m
+[32m+[m[32mbackup/[m
+ [m
+ # ----------------------------------------------------------------------------[m
+ # Logs[m
+[1mdiff --git a/PROJECT_STATUS.md b/PROJECT_STATUS.md[m
+[1mindex acd912f..251c536 100644[m
+[1m--- a/PROJECT_STATUS.md[m
+[1m+++ b/PROJECT_STATUS.md[m
+[36m@@ -339,9 +339,39 @@[m [mPotential features:[m
+ [m
+ ---[m
+ [m
+[32m+[m[32m## v0.6[m
+[32m+[m
+[32m+[m[32mLocal learning and threat intelligence[m
+[32m+[m
+[32m+[m[32mImplemented first slice:[m
+[32m+[m
+[32m+[m[32m* `domain_reputation` table built from observed DNS history[m
+[32m+[m[32m* `pihole-ai learn` command for periodic reputation updates[m
+[32m+[m[32m* learned alert/suggest-block audit records[m
+[32m+[m[32m* manual allow/block rules influence learned scores[m
+[32m+[m
+[32m+[m[32mPlanned features:[m
+[32m+[m
+[32m+[m[32m* `ReputationClassifier` that uses local behavior before Ollama[m
+[32m+[m[32m* known-bad feed ingestion for URLhaus, curated hosts files, or similar sources[m
+[32m+[m[32m* manual allow rules override learned and feed-based suspicion[m
+[32m+[m[32m* learned results start as alert/suggest-block decisions, not automatic blocks[m
+[32m+[m
+[32m+[m[32mInitial learning signals:[m
+[32m+[m
+[32m+[m[32m* sudden query spikes[m
+[32m+[m[32m* repeated beacon-like timing[m
+[32m+[m[32m* suspicious domains seen across multiple devices[m
+[32m+[m[32m* previous heuristic or AI warnings[m
+[32m+[m[32m* repeated action audit suggestions[m
+[32m+[m[32m* manual allow/block feedback[m
+[32m+[m
+[32m+[m[32m---[m
+[32m+[m
+ ## Long-Term Goals[m
+ [m
+ * Threat intelligence integration[m
+[32m+[m[32m* Local reputation learning[m
+ * Reputation providers[m
+ * Scheduled re-analysis[m
+ * Domain clustering[m
+[1mdiff --git a/README.md b/README.md[m
+[1mindex 3378f2b..e6da849 100644[m
+[1m--- a/README.md[m
+[1m+++ b/README.md[m
+[36m@@ -1,21 +1,531 @@[m
+ # PiHole-AI[m
+ [m
+[31m-AI-assisted network monitoring powered by Pi-hole and Ollama.[m
+[32m+[m[32mLocal AI-assisted DNS analysis for Pi-hole, powered by deterministic classifiers first and Ollama as the local LLM fallback.[m
+ [m
+[31m-Features[m
+[32m+[m[32mPiHole-AI reads Pi-hole query events, stores them in a local SQLite database, classifies domains, caches analysis results, and exposes a small dashboard/API for inspecting activity.[m
+ [m
+[31m-Architecture[m
+[32m+[m[32m## Current Status[m
+ [m
+[31m-Installation[m
+[32m+[m[32mThe project is in an active v0.3 hardening phase.[m
+ [m
+[31m-Quick Start[m
+[32m+[m[32mWorking today:[m
+ [m
+[31m-Configuration[m
+[32m+[m[32m- Pi-hole FTL query ingestion[m
+[32m+[m[32m- local SQLite event and analysis storage[m
+[32m+[m[32m- persisted collector progress[m
+[32m+[m[32m- classifier pipeline with a shared `BaseClassifier`[m
+[32m+[m[32m- deterministic rule engine[m
+[32m+[m[32m- heuristic classifier[m
+[32m+[m[32m- Ollama-backed AI fallback[m
+[32m+[m[32m- AI response validation and safe fallback handling[m
+[32m+[m[32m- cache confidence and TTL policy[m
+[32m+[m[32m- metadata-aware analysis requests[m
+[32m+[m[32m- durable action audit log[m
+[32m+[m[32m- manual allow/block domain rules[m
+[32m+[m[32m- Flask dashboard and JSON API[m
+[32m+[m[32m- unit tests for classifier, collector, engine, dashboard, and compatibility entrypoints[m
+ [m
+[31m-Project Structure[m
+[32m+[m[32mThe project is intentionally local-first. ChatGPT/OpenAI API integration is not part of the current path; Ollama remains the AI backend.[m
+ [m
+[31m-Roadmap[m
+[32m+[m[32m## Architecture[m
+ [m
+[31m-Contributing[m
+[32m+[m[32m```text[m
+[32m+[m[32mPi-hole FTL database[m
+[32m+[m[32m        |[m
+[32m+[m[32m        v[m
+[32m+[m[32mcollector/scan.py[m
+[32m+[m[32m        |[m
+[32m+[m[32m        v[m
+[32m+[m[32mcore.db SQLite database[m
+[32m+[m[32m        |[m
+[32m+[m[32m        v[m
+[32m+[m[32mengine.engine.AnalysisEngine[m
+[32m+[m[32m        |[m
+[32m+[m[32m        v[m
+[32m+[m[32mengine.analyzer.Analyzer[m
+[32m+[m[32m        |[m
+[32m+[m[32m        v[m
+[32m+[m[32mClassifierPipeline[m
+[32m+[m[32m        |[m
+[32m+[m[32m        +--> RuleEngine[m
+[32m+[m[32m        +--> HeuristicsEngine[m
+[32m+[m[32m        +--> AIClassifier (Ollama)[m
+[32m+[m[32m        |[m
+[32m+[m[32m        v[m
+[32m+[m[32manalysis cache[m
+[32m+[m[32m        |[m
+[32m+[m[32m        v[m
+[32m+[m[32maction audit[m
+[32m+[m[32m        |[m
+[32m+[m[32m        v[m
+[32m+[m[32mui/dashboard.py[m
+[32m+[m[32m```[m
+ [m
+[31m-License[m
+[32m+[m[32mOnly domains that are not handled by deterministic classifiers reach Ollama.[m
+[32m+[m
+[32m+[m[32m## Classifier Pipeline[m
+[32m+[m
+[32m+[m[32mClassifiers implement `engine.classifiers.base.BaseClassifier`.[m
+[32m+[m
+[32m+[m[32mCurrent order:[m
+[32m+[m
+[32m+[m[32m1. `RuleEngine`[m
+[32m+[m[32m   Handles known safe infrastructure such as localhost, `.local`, `.home.arpa`, and reverse DNS lookup domains.[m
+[32m+[m
+[32m+[m[32m2. `HeuristicsEngine`[m
+[32m+[m[32m   Scores suspicious patterns such as punycode, long domains, high entropy, suspicious TLDs, phishing keywords, repeated hyphens, deep subdomains, random-looking hostnames, and high query frequency.[m
+[32m+[m
+[32m+[m[32m3. `AIClassifier`[m
+[32m+[m[32m   Uses Ollama for domains that remain unknown after deterministic checks.[m
+[32m+[m
+[32m+[m[32m## Database[m
+[32m+[m
+[32m+[m[32mThe main database is configured by `PIHOLE_AI_EVENTS_DB` and defaults to:[m
+[32m+[m
+[32m+[m[32m```text[m
+[32m+[m[32mdata/events.db[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mTables:[m
+[32m+[m
+[32m+[m[32m- `events`[m
+[32m+[m[32m- `domain_memory`[m
+[32m+[m[32m- `analysis`[m
+[32m+[m[32m- `app_state`[m
+[32m+[m[32m- `action_audit`[m
+[32m+[m[32m- `domain_rules`[m
+[32m+[m[32m- `domain_reputation`[m
+[32m+[m
+[32m+[m[32mThe collector stores the last processed Pi-hole query ID in `app_state` as:[m
+[32m+[m
+[32m+[m[32m```text[m
+[32m+[m[32mcollector.last_query_id[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32m## Analysis Cache[m
+[32m+[m
+[32m+[m[32mAnalysis results include:[m
+[32m+[m
+[32m+[m[32m- `risk`[m
+[32m+[m[32m- `confidence`[m
+[32m+[m[32m- `category`[m
+[32m+[m[32m- `reason`[m
+[32m+[m[32m- `model`[m
+[32m+[m[32m- `analyzed_at`[m
+[32m+[m
+[32m+[m[32mCache policy:[m
+[32m+[m
+[32m+[m[32m- `confidence > 0` and not expired means the cache entry is reused.[m
+[32m+[m[32m- `confidence == 0` is treated as retryable.[m
+[32m+[m[32m- `PIHOLE_AI_CACHE_TTL` controls expiration in seconds.[m
+[32m+[m[32m- `PIHOLE_AI_CACHE_TTL=0` disables expiration for positive-confidence entries.[m
+[32m+[m
+[32m+[m[32mThis prevents temporary Ollama failures from permanently caching `unknown` results.[m
+[32m+[m
+[32m+[m[32m## Action Policy[m
+[32m+[m
+[32m+[m[32mAfter a fresh analysis is saved, the engine applies a small action policy and records the decision in `action_audit`.[m
+[32m+[m
+[32m+[m[32mDefault behavior is dry-run:[m
+[32m+[m
+[32m+[m[32m```text[m
+[32m+[m[32mPIHOLE_AI_ACTION_MODE=dry-run[m
+[32m+[m[32mPIHOLE_AI_ALERT_THRESHOLD=50[m
+[32m+[m[32mPIHOLE_AI_HIGH_RISK_THRESHOLD=70[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mModes:[m
+[32m+[m
+[32m+[m[32m- `off`: do not create action decisions[m
+[32m+[m[32m- `dry-run`: audit alerts and suggested blocks without changing DNS behavior[m
+[32m+[m[32m- `block`: write high-risk domains to the local blocklist helper[m
+[32m+[m
+[32m+[m[32mDry-run decisions use:[m
+[32m+[m
+[32m+[m[32m- `alert` for risk at or above `PIHOLE_AI_ALERT_THRESHOLD`[m
+[32m+[m[32m- `suggest_block` for risk at or above `PIHOLE_AI_HIGH_RISK_THRESHOLD`[m
+[32m+[m[32m- `review` for zero-confidence analysis results[m
+[32m+[m
+[32m+[m[32mManual rules are checked before risk thresholds:[m
+[32m+[m
+[32m+[m[32m- `allow` rules suppress alert/block suggestions for that domain[m
+[32m+[m[32m- `block` rules are recorded as explicit rule matches[m
+[32m+[m[32m- `pihole-ai rules block --apply` also writes the domain to the local blocklist helper[m
+[32m+[m
+[32m+[m[32m## Local Learning[m
+[32m+[m
+[32m+[m[32mPiHole-AI can build a local reputation list from observed DNS history:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpihole-ai learn[m
+[32m+[m[32mpihole-ai learn --limit 1000 --min-score 60[m
+[32m+[m[32mpihole-ai learn --no-audit[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mLearning updates `domain_reputation` and can create learned `alert` or `suggest_block` audit records. It does not block domains automatically.[m
+[32m+[m
+[32m+[m[32mCurrent learning signals include:[m
+[32m+[m
+[32m+[m[32m- query volume[m
+[32m+[m[32m- recent query spikes[m
+[32m+[m[32m- multi-device visibility[m
+[32m+[m[32m- previous analysis risk[m
+[32m+[m[32m- previous action audit suggestions[m
+[32m+[m[32m- entropy and suspicious TLDs[m
+[32m+[m[32m- manual allow/block rules[m
+[32m+[m
+[32m+[m[32m## Categories[m
+[32m+[m
+[32m+[m[32mCanonical categories are defined in `engine.models.DomainCategory`:[m
+[32m+[m
+[32m+[m[32m- `benign`[m
+[32m+[m[32m- `infrastructure`[m
+[32m+[m[32m- `advertising`[m
+[32m+[m[32m- `analytics`[m
+[32m+[m[32m- `tracking`[m
+[32m+[m[32m- `suspicious`[m
+[32m+[m[32m- `malware`[m
+[32m+[m[32m- `phishing`[m
+[32m+[m[32m- `command-and-control`[m
+[32m+[m[32m- `unknown`[m
+[32m+[m
+[32m+[m[32mAI responses are rejected if they use categories outside this set.[m
+[32m+[m
+[32m+[m[32m## Ollama[m
+[32m+[m
+[32m+[m[32mThe AI fallback uses the local Ollama Python client.[m
+[32m+[m
+[32m+[m[32mDefault settings:[m
+[32m+[m
+[32m+[m[32m```text[m
+[32m+[m[32mPIHOLE_AI_OLLAMA_URL=http://127.0.0.1:11434[m
+[32m+[m[32mPIHOLE_AI_OLLAMA_MODEL=llama3.2:1b[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mIf Ollama is unavailable, the AI classifier returns a safe fallback result:[m
+[32m+[m
+[32m+[m[32m```text[m
+[32m+[m[32mrisk=50[m
+[32m+[m[32mconfidence=0[m
+[32m+[m[32mcategory=unknown[m
+[32m+[m[32mreason="AI backend unavailable."[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mThe engine saves the fallback and marks the domain processed, but because confidence is `0`, the cache entry is retried later.[m
+[32m+[m
+[32m+[m[32m## Dashboard And API[m
+[32m+[m
+[32m+[m[32mThe dashboard is served by Flask from `ui/dashboard.py`.[m
+[32m+[m
+[32m+[m[32mDefault port:[m
+[32m+[m
+[32m+[m[32m```text[m
+[32m+[m[32mPIHOLE_AI_DASHBOARD_PORT=8080[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mRun:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpython -m ui.dashboard[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mEndpoints:[m
+[32m+[m
+[32m+[m[32m- `GET /`[m
+[32m+[m[32m- `GET /api/stats`[m
+[32m+[m[32m- `GET /api/events`[m
+[32m+[m[32m- `GET /api/analysis`[m
+[32m+[m[32m- `GET /api/devices`[m
+[32m+[m[32m- `GET /api/actions`[m
+[32m+[m[32m- `GET /api/rules`[m
+[32m+[m[32m- `POST /api/rules`[m
+[32m+[m[32m- `DELETE /api/rules/<domain>`[m
+[32m+[m[32m- `GET /api/health`[m
+[32m+[m[32m- `GET /data`[m
+[32m+[m
+[32m+[m[32m`/data` is kept as a compatibility route.[m
+[32m+[m
+[32m+[m[32mUseful query parameters:[m
+[32m+[m
+[32m+[m[32m- `limit`: maximum rows to return, clamped between 1 and 500[m
+[32m+[m[32m- `q`: search domains and/or devices[m
+[32m+[m[32m- `processed`: `0` or `1`, supported by `/api/events`[m
+[32m+[m[32m- `min_risk`: minimum risk score, supported by `/api/analysis`[m
+[32m+[m[32m- `category`: exact category, supported by `/api/analysis`[m
+[32m+[m[32m- `action`: exact action, supported by `/api/actions`[m
+[32m+[m[32m- `status`: exact status, supported by `/api/actions`[m
+[32m+[m[32m- `decision`: exact rule decision, supported by `/api/rules`[m
+[32m+[m[32m- `ollama`: `1`, supported by `/api/health` to include Ollama status[m
+[32m+[m
+[32m+[m[32mThe dashboard can promote action audit entries into manual `allow` or `block` rules and remove active rules.[m
+[32m+[m
+[32m+[m[32m## Configuration[m
+[32m+[m
+[32m+[m[32mConfiguration lives in `core/config.py` and is controlled with environment variables.[m
+[32m+[m
+[32m+[m[32mCommon variables:[m
+[32m+[m
+[32m+[m[32m```text[m
+[32m+[m[32mPIHOLE_AI_EVENTS_DB=data/events.db[m
+[32m+[m[32mPIHOLE_AI_PIHOLE_DB=/etc/pihole/pihole-FTL.db[m
+[32m+[m[32mPIHOLE_AI_COLLECT_BATCH_SIZE=200[m
+[32m+[m[32mPIHOLE_AI_COLLECT_INTERVAL=2[m
+[32m+[m[32mPIHOLE_AI_ENGINE_BATCH_SIZE=500[m
+[32m+[m[32mPIHOLE_AI_ENGINE_INTERVAL=5[m
+[32m+[m[32mPIHOLE_AI_CACHE_TTL=86400[m
+[32m+[m[32mPIHOLE_AI_KEEP_LATEST_EVENTS=100000[m
+[32m+[m[32mPIHOLE_AI_ALERT_THRESHOLD=50[m
+[32m+[m[32mPIHOLE_AI_HIGH_RISK_THRESHOLD=70[m
+[32m+[m[32mPIHOLE_AI_ACTION_MODE=dry-run[m
+[32m+[m[32mPIHOLE_AI_OLLAMA_URL=http://127.0.0.1:11434[m
+[32m+[m[32mPIHOLE_AI_OLLAMA_MODEL=llama3.2:1b[m
+[32m+[m[32mPIHOLE_AI_DASHBOARD_PORT=8080[m
+[32m+[m[32mPIHOLE_AI_LOG_LEVEL=INFO[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32m## Running[m
+[32m+[m
+[32m+[m[32mInstall dependencies:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpython -m pip install -e .[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mCreate a local environment file:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mcp .env.example .env[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mEdit `.env` for your install path, Pi-hole database path, Ollama model, and dashboard port.[m
+[32m+[m
+[32m+[m[32mRun the collector:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpihole-ai collector[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mRun the continuous analysis worker:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpihole-ai engine[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mRun one analysis cycle:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpihole-ai engine-once[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mRun the dashboard:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpihole-ai dashboard[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mPrint runtime status:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpihole-ai status[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mSkip the Ollama health check:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpihole-ai status --no-ollama[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mRun database maintenance:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpihole-ai maintenance --vacuum[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mBy default, maintenance keeps the newest `PIHOLE_AI_KEEP_LATEST_EVENTS` events.[m
+[32m+[m
+[32m+[m[32mUpdate local reputation learning:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpihole-ai learn[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mManage manual allow/block rules:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpihole-ai rules list[m
+[32m+[m[32mpihole-ai rules allow example.com --reason "Known safe"[m
+[32m+[m[32mpihole-ai rules block bad.example --reason "Confirmed unwanted"[m
+[32m+[m[32mpihole-ai rules block bad.example --apply[m
+[32m+[m[32mpihole-ai rules remove example.com[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mExport analysis or events:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpihole-ai export analysis --format json --output exports/analysis.json[m
+[32m+[m[32mpihole-ai export events --format csv --output exports/events.csv[m
+[32m+[m[32mpihole-ai export actions --format csv --output exports/actions.csv[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mExports support `--limit`, `--q`, `--min-risk`, and `--category`.[m
+[32m+[m
+[32m+[m[32m## Systemd Deployment[m
+[32m+[m
+[32m+[m[32mExample systemd unit files live in:[m
+[32m+[m
+[32m+[m[32m```text[m
+[32m+[m[32mdeploy/systemd/[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mThey assume the project is installed at:[m
+[32m+[m
+[32m+[m[32m```text[m
+[32m+[m[32m/opt/pihole-ai[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mand that the virtual environment is:[m
+[32m+[m
+[32m+[m[32m```text[m
+[32m+[m[32m/opt/pihole-ai/.venv[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mExample install flow:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32msudo mkdir -p /opt/pihole-ai[m
+[32m+[m[32msudo cp -R . /opt/pihole-ai[m
+[32m+[m[32mcd /opt/pihole-ai[m
+[32m+[m[32mpython -m venv .venv[m
+[32m+[m[32m.venv/bin/python -m pip install -e .[m
+[32m+[m[32mcp .env.example .env[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mInstall services:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32msudo cp deploy/systemd/pihole-ai-*.service /etc/systemd/system/[m
+[32m+[m[32msudo systemctl daemon-reload[m
+[32m+[m[32msudo systemctl enable --now pihole-ai-collector[m
+[32m+[m[32msudo systemctl enable --now pihole-ai-engine[m
+[32m+[m[32msudo systemctl enable --now pihole-ai-dashboard[m
+[32m+[m[32msudo systemctl enable --now pihole-ai-maintenance.timer[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mCheck status:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32msystemctl status pihole-ai-collector[m
+[32m+[m[32msystemctl status pihole-ai-engine[m
+[32m+[m[32msystemctl status pihole-ai-dashboard[m
+[32m+[m[32msystemctl status pihole-ai-maintenance.timer[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32m## Tests[m
+[32m+[m
+[32m+[m[32mThe test suite uses the Python standard library `unittest`.[m
+[32m+[m
+[32m+[m[32mRun:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpython -W error::ResourceWarning -m unittest discover -s tests[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mCompile check:[m
+[32m+[m
+[32m+[m[32m```bash[m
+[32m+[m[32mpython -m compileall core engine collector actions ui tests[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32mCurrent coverage includes:[m
+[32m+[m
+[32m+[m[32m- classifier rules and heuristics[m
+[32m+[m[32m- AI response parsing and fallback paths[m
+[32m+[m[32m- collector state, fetch, and batch processing[m
+[32m+[m[32m- metadata-aware engine requests[m
+[32m+[m[32m- cache confidence and TTL behavior[m
+[32m+[m[32m- local reputation learning[m
+[32m+[m[32m- dashboard API endpoints[m
+[32m+[m[32m- `engine.run_engine` compatibility wrapper[m
+[32m+[m
+[32m+[m[32m## Project Structure[m
+[32m+[m
+[32m+[m[32m```text[m
+[32m+[m[32mactions/[m
+[32m+[m[32m    alerts.py[m
+[32m+[m[32m    blocklist.py[m
+[32m+[m[32m    policy.py[m
+[32m+[m
+[32m+[m[32mcollector/[m
+[32m+[m[32m    scan.py[m
+[32m+[m
+[32m+[m[32mcore/[m
+[32m+[m[32m    config.py[m
+[32m+[m[32m    db.py[m
+[32m+[m[32m    logger.py[m
+[32m+[m[32m    maintenance.py[m
+[32m+[m[32m    models.py[m
+[32m+[m
+[32m+[m[32mengine/[m
+[32m+[m[32m    analyzer.py[m
+[32m+[m[32m    engine.py[m
+[32m+[m[32m    models.py[m
+[32m+[m[32m    ollama_client.py[m
+[32m+[m[32m    prompts.py[m
+[32m+[m[32m    run_engine.py[m
+[32m+[m
+[32m+[m[32m    classifiers/[m
+[32m+[m[32m        base.py[m
+[32m+[m[32m        pipeline.py[m
+[32m+[m[32m        rule_engine.py[m
+[32m+[m[32m        heuristics.py[m
+[32m+[m[32m        ai_classifier.py[m
+[32m+[m
+[32m+[m[32mpihole_ai/[m
+[32m+[m[32m    cli.py[m
+[32m+[m[32m    export.py[m
+[32m+[m[32m    learn.py[m
+[32m+[m[32m    rules.py[m
+[32m+[m[32m    status.py[m
+[32m+[m
+[32m+[m[32mui/[m
+[32m+[m[32m    dashboard.py[m
+[32m+[m
+[32m+[m[32mtests/[m
+[32m+[m[32m    test_classifiers.py[m
+[32m+[m[32m    test_collector.py[m
+[32m+[m[32m    test_dashboard.py[m
+[32m+[m[32m    test_engine.py[m
+[32m+[m[32m    test_run_engine.py[m
+[32m+[m[32m```[m
+[32m+[m
+[32m+[m[32m## Legacy Modules[m
+[32m+[m
+[32m+[m[32mThese modules are currently retained only as historical reference:[m
+[32m+[m
+[32m+[m[32m- `engine/scoring.py`[m
+[32m+[m[32m- `engine/anomaly.py`[m
+[32m+[m
+[32m+[m[32mUseful scoring ideas have been folded into `HeuristicsEngine`. Beacon detection should be reintroduced later as a database-backed classifier or processor.[m
+[32m+[m
+[32m+[m[32m## Roadmap[m
+[32m+[m
+[32m+[m[32mNear-term:[m
+[32m+[m
+[32m+[m[32m- add more database-level tests[m
+[32m+[m[32m- improve dashboard filtering/search[m
+[32m+[m[32m- formalize cache cleanup and retention[m
+[32m+[m[32m- add Docker or Raspberry Pi deployment notes[m
+[32m+[m
+[32m+[m[32mLonger-term:[m
+[32m+[m
+[32m+[m[32m- threat intelligence enrichment[m
+[32m+[m[32m- local reputation learning from observed DNS behavior[m
+[32m+[m[32m- scheduled re-analysis[m
+[32m+[m[32m- device behavior clustering[m
+[32m+[m[32m- whitelist/blacklist management[m
+[32m+[m[32m- plugin architecture[m
+[32m+[m[32m- richer reporting[m
+[32m+[m
+[32m+[m[32m## License[m
+[32m+[m
+[32m+[m[32mMIT[m
+[1mdiff --git a/actions/alerts.py b/actions/alerts.py[m
+[1mindex 57feec3..7fdd5de 100644[m
+[1m--- a/actions/alerts.py[m
+[1m+++ b/actions/alerts.py[m
+[36m@@ -1,5 +1,18 @@[m
+[32m+[m[32mfrom __future__ import annotations[m
+[32m+[m
+[32m+[m[32mfrom core.db import record_action[m
+[32m+[m
+[32m+[m
+ def alert(msg):[m
+     print(f"\n🚨 ALERT: {msg}")[m
+ [m
+     with open("alerts.log", "a") as f:[m
+         f.write(msg + "\n")[m
+[32m+[m
+[32m+[m[32m    record_action([m
+[32m+[m[32m        domain="system",[m
+[32m+[m[32m        action="alert",[m
+[32m+[m[32m        source="actions.alerts",[m
+[32m+[m[32m        status="logged",[m
+[32m+[m[32m        reason=msg,[m
+[32m+[m[32m    )[m
+[1mdiff --git a/actions/blocklist.py b/actions/blocklist.py[m
+[1mindex d19ea0d..5729d5f 100644[m
+[1m--- a/actions/blocklist.py[m
+[1m+++ b/actions/blocklist.py[m
+[36m@@ -1,3 +1,16 @@[m
+[32m+[m[32mfrom __future__ import annotations[m
+[32m+[m
+[32m+[m[32mfrom core.db import record_action[m
+[32m+[m
+[32m+[m
+ def block(domain):[m
+     with open("blocklist.txt", "a") as f:[m
+         f.write(domain + "\n")[m
+[32m+[m
+[32m+[m[32m    record_action([m
+[32m+[m[32m        domain=domain,[m
+[32m+[m[32m        action="block",[m
+[32m+[m[32m        source="actions.blocklist",[m
+[32m+[m[32m        status="written",[m
+[32m+[m[32m        reason="Added domain to blocklist.txt.",[m
+[32m+[m[32m    )[m
+[1mdiff --git a/core/config.py b/core/config.py[m
+[1mindex 257aa39..0ac270d 100644[m
+[1m--- a/core/config.py[m
+[1m+++ b/core/config.py[m
+[36m@@ -93,10 +93,23 @@[m [mclass Settings:[m
+         os.getenv("PIHOLE_AI_ENGINE_BATCH_SIZE", "500")[m
+     )[m
+ [m
+[32m+[m[32m    engine_interval: int = int([m
+[32m+[m[32m        os.getenv("PIHOLE_AI_ENGINE_INTERVAL", "5")[m
+[32m+[m[32m    )[m
+[32m+[m
+     high_risk_threshold: int = int([m
+         os.getenv("PIHOLE_AI_HIGH_RISK_THRESHOLD", "70")[m
+     )[m
+ [m
+[32m+[m[32m    alert_threshold: int = int([m
+[32m+[m[32m        os.getenv("PIHOLE_AI_ALERT_THRESHOLD", "50")[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    action_mode: str = os.getenv([m
+[32m+[m[32m        "PIHOLE_AI_ACTION_MODE",[m
+[32m+[m[32m        "dry-run",[m
+[32m+[m[32m    ).lower()[m
+[32m+[m
+     # ------------------------------------------------------------------[m
+     # Beacon Detection[m
+     # ------------------------------------------------------------------[m
+[36m@@ -158,6 +171,10 @@[m [mclass Settings:[m
+         os.getenv("PIHOLE_AI_CACHE_TTL", "86400")[m
+     )[m
+ [m
+[32m+[m[32m    keep_latest_events: int = int([m
+[32m+[m[32m        os.getenv("PIHOLE_AI_KEEP_LATEST_EVENTS", "100000")[m
+[32m+[m[32m    )[m
+[32m+[m
+     def validate(self) -> None:[m
+         """[m
+         Validate configuration values.[m
+[36m@@ -169,6 +186,16 @@[m [mclass Settings:[m
+                 "HIGH_RISK_THRESHOLD must be between 0 and 100."[m
+             )[m
+ [m
+[32m+[m[32m        if not (0 <= self.alert_threshold <= 100):[m
+[32m+[m[32m            raise ValueError([m
+[32m+[m[32m                "ALERT_THRESHOLD must be between 0 and 100."[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        if self.action_mode not in {"off", "dry-run", "block"}:[m
+[32m+[m[32m            raise ValueError([m
+[32m+[m[32m                "ACTION_MODE must be one of: off, dry-run, block."[m
+[32m+[m[32m            )[m
+[32m+[m
+         if not (0 <= self.ai_minimum_score <= 100):[m
+             raise ValueError([m
+                 "AI_MINIMUM_SCORE must be between 0 and 100."[m
+[36m@@ -179,11 +206,21 @@[m [mclass Settings:[m
+                 "COLLECT_INTERVAL must be greater than zero."[m
+             )[m
+ [m
+[32m+[m[32m        if self.engine_interval <= 0:[m
+[32m+[m[32m            raise ValueError([m
+[32m+[m[32m                "ENGINE_INTERVAL must be greater than zero."[m
+[32m+[m[32m            )[m
+[32m+[m
+         if self.http_timeout <= 0:[m
+             raise ValueError([m
+                 "HTTP_TIMEOUT must be greater than zero."[m
+             )[m
+ [m
+[32m+[m[32m        if self.keep_latest_events <= 0:[m
+[32m+[m[32m            raise ValueError([m
+[32m+[m[32m                "KEEP_LATEST_EVENTS must be greater than zero."[m
+[32m+[m[32m            )[m
+[32m+[m
+ [m
+ # ============================================================================[m
+ # Singleton[m
+[36m@@ -205,7 +242,10 @@[m [mCOLLECT_BATCH_SIZE = settings.collect_batch_size[m
+ COLLECT_INTERVAL = settings.collect_interval[m
+ [m
+ ENGINE_BATCH_SIZE = settings.engine_batch_size[m
+[32m+[m[32mENGINE_INTERVAL = settings.engine_interval[m
+ HIGH_RISK_THRESHOLD = settings.high_risk_threshold[m
+[32m+[m[32mALERT_THRESHOLD = settings.alert_threshold[m
+[32m+[m[32mACTION_MODE = settings.action_mode[m
+ [m
+ BEACON_HISTORY = settings.beacon_history[m
+ BEACON_MIN_EVENTS = settings.beacon_min_events[m
+[36m@@ -216,3 +256,4 @@[m [mOLLAMA_MODEL = settings.ollama_model[m
+ [m
+ AI_ENABLED = settings.ai_enabled[m
+ AI_MINIMUM_SCORE = settings.ai_minimum_score[m
+[32m+[m[32mKEEP_LATEST_EVENTS = settings.keep_latest_events[m
+[1mdiff --git a/core/db.py b/core/db.py[m
+[1mindex c6daad0..2025dff 100644[m
+[1m--- a/core/db.py[m
+[1m+++ b/core/db.py[m
+[36m@@ -21,8 +21,9 @@[m [msqlite3 directly.[m
+ [m
+ from __future__ import annotations[m
+ [m
+[32m+[m[32mimport json[m
+ import sqlite3[m
+[31m-from contextlib import contextmanager[m
+[32m+[m[32mfrom contextlib import closing, contextmanager[m
+ from pathlib import Path[m
+ from typing import Any, Iterator[m
+ [m
+[36m@@ -158,6 +159,8 @@[m [mdef init_db() -> None:[m
+ [m
+                 risk INTEGER,[m
+ [m
+[32m+[m[32m                confidence INTEGER DEFAULT 0,[m
+[32m+[m
+                 category TEXT,[m
+ [m
+                 reason TEXT,[m
+[36m@@ -186,7 +189,86 @@[m [mdef init_db() -> None:[m
+             """[m
+         )[m
+ [m
+[32m+[m[32m        # --------------------------------------------------------------[m
+[32m+[m[32m        # Action Audit[m
+[32m+[m[32m        # --------------------------------------------------------------[m
+[32m+[m
+[32m+[m[32m        cur.execute([m
+[32m+[m[32m            """[m
+[32m+[m[32m            CREATE TABLE IF NOT EXISTS action_audit ([m
+[32m+[m
+[32m+[m[32m                id INTEGER PRIMARY KEY AUTOINCREMENT,[m
+[32m+[m
+[32m+[m[32m                domain TEXT NOT NULL,[m
+[32m+[m
+[32m+[m[32m                action TEXT NOT NULL,[m
+[32m+[m
+[32m+[m[32m                source TEXT NOT NULL,[m
+[32m+[m
+[32m+[m[32m                status TEXT NOT NULL,[m
+[32m+[m
+[32m+[m[32m                reason TEXT,[m
+[32m+[m
+[32m+[m[32m                risk INTEGER,[m
+[32m+[m
+[32m+[m[32m                created_at REAL NOT NULL[m
+[32m+[m
+[32m+[m[32m            )[m
+[32m+[m[32m            """[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m        # --------------------------------------------------------------[m
+[32m+[m[32m        # Domain Rules[m
+[32m+[m[32m        # --------------------------------------------------------------[m
+[32m+[m
+[32m+[m[32m        cur.execute([m
+[32m+[m[32m            """[m
+[32m+[m[32m            CREATE TABLE IF NOT EXISTS domain_rules ([m
+[32m+[m
+[32m+[m[32m                domain TEXT PRIMARY KEY,[m
+[32m+[m
+[32m+[m[32m                decision TEXT NOT NULL,[m
+[32m+[m
+[32m+[m[32m                source TEXT NOT NULL,[m
+[32m+[m
+[32m+[m[32m                reason TEXT,[m
+[32m+[m
+[32m+[m[32m                enabled INTEGER NOT NULL DEFAULT 1,[m
+[32m+[m
+[32m+[m[32m                created_at REAL NOT NULL,[m
+[32m+[m
+[32m+[m[32m                updated_at REAL NOT NULL[m
+[32m+[m
+[32m+[m[32m            )[m
+[32m+[m[32m            """[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m        # --------------------------------------------------------------[m
+[32m+[m[32m        # Domain Reputation[m
+[32m+[m[32m        # --------------------------------------------------------------[m
+[32m+[m
+[32m+[m[32m        cur.execute([m
+[32m+[m[32m            """[m
+[32m+[m[32m            CREATE TABLE IF NOT EXISTS domain_reputation ([m
+[32m+[m
+[32m+[m[32m                domain TEXT PRIMARY KEY,[m
+[32m+[m
+[32m+[m[32m                score INTEGER NOT NULL,[m
+[32m+[m
+[32m+[m[32m                confidence INTEGER NOT NULL,[m
+[32m+[m
+[32m+[m[32m                signals TEXT NOT NULL,[m
+[32m+[m
+[32m+[m[32m                source TEXT NOT NULL,[m
+[32m+[m
+[32m+[m[32m                updated_at REAL NOT NULL[m
+[32m+[m
+[32m+[m[32m            )[m
+[32m+[m[32m            """[m
+[32m+[m[32m        )[m
+[32m+[m
+         _create_indexes(cur)[m
+[32m+[m[32m        _migrate_schema(cur)[m
+ [m
+ [m
+ def _create_indexes(cursor: sqlite3.Cursor) -> None:[m
+[36m@@ -221,7 +303,65 @@[m [mdef _create_indexes(cursor: sqlite3.Cursor) -> None:[m
+         ON analysis(risk)[m
+         """[m
+     )[m
+[32m+[m
+[32m+[m[32m    cursor.execute([m
+[32m+[m[32m        """[m
+[32m+[m[32m        CREATE INDEX IF NOT EXISTS idx_action_audit_created_at[m
+[32m+[m[32m        ON action_audit(created_at)[m
+[32m+[m[32m        """[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    cursor.execute([m
+[32m+[m[32m        """[m
+[32m+[m[32m        CREATE INDEX IF NOT EXISTS idx_action_audit_domain[m
+[32m+[m[32m        ON action_audit(domain)[m
+[32m+[m[32m        """[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    cursor.execute([m
+[32m+[m[32m        """[m
+[32m+[m[32m        CREATE INDEX IF NOT EXISTS idx_domain_rules_decision[m
+[32m+[m[32m        ON domain_rules(decision)[m
+[32m+[m[32m        """[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    cursor.execute([m
+[32m+[m[32m        """[m
+[32m+[m[32m        CREATE INDEX IF NOT EXISTS idx_domain_rules_enabled[m
+[32m+[m[32m        ON domain_rules(enabled)[m
+[32m+[m[32m        """[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    cursor.execute([m
+[32m+[m[32m        """[m
+[32m+[m[32m        CREATE INDEX IF NOT EXISTS idx_domain_reputation_score[m
+[32m+[m[32m        ON domain_reputation(score)[m
+[32m+[m[32m        """[m
+[32m+[m[32m    )[m
+     # ============================================================================[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _migrate_schema(cursor: sqlite3.Cursor) -> None:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Apply lightweight schema migrations for existing databases.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    analysis_columns = {[m
+[32m+[m[32m        row["name"][m
+[32m+[m[32m        for row in cursor.execute("PRAGMA table_info(analysis)")[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    if "confidence" not in analysis_columns:[m
+[32m+[m[32m        cursor.execute([m
+[32m+[m[32m            """[m
+[32m+[m[32m            ALTER TABLE analysis[m
+[32m+[m
+[32m+[m[32m            ADD COLUMN confidence INTEGER DEFAULT 0[m
+[32m+[m[32m            """[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m
+[32m+[m[32m# ============================================================================[m
+ # Generic Database Helpers[m
+ # ============================================================================[m
+ [m
+[36m@@ -254,7 +394,7 @@[m [mdef query_all([m
+     Execute a SELECT query returning all rows.[m
+     """[m
+ [m
+[31m-    with get_connection() as conn:[m
+[32m+[m[32m    with closing(get_connection()) as conn:[m
+ [m
+         cursor = conn.execute(sql, parameters)[m
+ [m
+[36m@@ -269,7 +409,7 @@[m [mdef query_one([m
+     Execute a SELECT query returning one row.[m
+     """[m
+ [m
+[31m-    with get_connection() as conn:[m
+[32m+[m[32m    with closing(get_connection()) as conn:[m
+ [m
+         cursor = conn.execute(sql, parameters)[m
+ [m
+[36m@@ -446,6 +586,7 @@[m [mdef mark_processed_batch([m
+ def save_analysis([m
+     domain: str,[m
+     risk: int,[m
+[32m+[m[32m    confidence: int,[m
+     category: str,[m
+     reason: str,[m
+     model: str,[m
+[36m@@ -461,18 +602,20 @@[m [mdef save_analysis([m
+         ([m
+             domain,[m
+             risk,[m
+[32m+[m[32m            confidence,[m
+             category,[m
+             reason,[m
+             model,[m
+             analyzed_at[m
+         )[m
+[31m-        VALUES (?, ?, ?, ?, ?, ?)[m
+[32m+[m[32m        VALUES (?, ?, ?, ?, ?, ?, ?)[m
+ [m
+         ON CONFLICT(domain)[m
+ [m
+         DO UPDATE SET[m
+ [m
+             risk = excluded.risk,[m
+[32m+[m[32m            confidence = excluded.confidence,[m
+             category = excluded.category,[m
+             reason = excluded.reason,[m
+             model = excluded.model,[m
+[36m@@ -481,6 +624,7 @@[m [mdef save_analysis([m
+         ([m
+             domain,[m
+             risk,[m
+[32m+[m[32m            confidence,[m
+             category,[m
+             reason,[m
+             model,[m
+[36m@@ -533,6 +677,490 @@[m [mdef mark_processed_by_domain([m
+         (domain,),[m
+     )[m
+ [m
+[32m+[m
+[32m+[m[32m# ============================================================================[m
+[32m+[m[32m# Action Audit[m
+[32m+[m[32m# ============================================================================[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef record_action([m
+[32m+[m[32m    domain: str,[m
+[32m+[m[32m    action: str,[m
+[32m+[m[32m    source: str,[m
+[32m+[m[32m    status: str,[m
+[32m+[m[32m    reason: str = "",[m
+[32m+[m[32m    risk: int | None = None,[m
+[32m+[m[32m    created_at: float | None = None,[m
+[32m+[m[32m) -> int:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Record an action taken by PiHole-AI.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    if created_at is None:[m
+[32m+[m[32m        import time[m
+[32m+[m
+[32m+[m[32m        created_at = time.time()[m
+[32m+[m
+[32m+[m[32m    return execute([m
+[32m+[m[32m        """[m
+[32m+[m[32m        INSERT INTO action_audit[m
+[32m+[m[32m        ([m
+[32m+[m[32m            domain,[m
+[32m+[m[32m            action,[m
+[32m+[m[32m            source,[m
+[32m+[m[32m            status,[m
+[32m+[m[32m            reason,[m
+[32m+[m[32m            risk,[m
+[32m+[m[32m            created_at[m
+[32m+[m[32m        )[m
+[32m+[m[32m        VALUES (?, ?, ?, ?, ?, ?, ?)[m
+[32m+[m[32m        """,[m
+[32m+[m[32m        ([m
+[32m+[m[32m            domain,[m
+[32m+[m[32m            action,[m
+[32m+[m[32m            source,[m
+[32m+[m[32m            status,[m
+[32m+[m[32m            reason,[m
+[32m+[m[32m            risk,[m
+[32m+[m[32m            created_at,[m
+[32m+[m[32m        ),[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef get_recent_actions([m
+[32m+[m[32m    limit: int = 100,[m
+[32m+[m[32m    search: str = "",[m
+[32m+[m[32m    action: str = "",[m
+[32m+[m[32m    status: str = "",[m
+[32m+[m[32m) -> list[sqlite3.Row]:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Return recent audited actions.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    where = [][m
+[32m+[m[32m    params: list[Any] = [][m
+[32m+[m
+[32m+[m[32m    if search:[m
+[32m+[m[32m        where.append("(domain LIKE ? OR source LIKE ? OR reason LIKE ?)")[m
+[32m+[m[32m        pattern = f"%{search}%"[m
+[32m+[m[32m        params.extend([pattern, pattern, pattern])[m
+[32m+[m
+[32m+[m[32m    if action:[m
+[32m+[m[32m        where.append("action = ?")[m
+[32m+[m[32m        params.append(action)[m
+[32m+[m
+[32m+[m[32m    if status:[m
+[32m+[m[32m        where.append("status = ?")[m
+[32m+[m[32m        params.append(status)[m
+[32m+[m
+[32m+[m[32m    where_sql = ""[m
+[32m+[m
+[32m+[m[32m    if where:[m
+[32m+[m[32m        where_sql = "WHERE " + " AND ".join(where)[m
+[32m+[m
+[32m+[m[32m    return query_all([m
+[32m+[m[32m        f"""[m
+[32m+[m[32m        SELECT[m
+[32m+[m
+[32m+[m[32m            id,[m
+[32m+[m[32m            domain,[m
+[32m+[m[32m            action,[m
+[32m+[m[32m            source,[m
+[32m+[m[32m            status,[m
+[32m+[m[32m            reason,[m
+[32m+[m[32m            risk,[m
+[32m+[m[32m            created_at[m
+[32m+[m
+[32m+[m[32m        FROM action_audit[m
+[32m+[m
+[32m+[m[32m        {where_sql}[m
+[32m+[m
+[32m+[m[32m        ORDER BY id DESC[m
+[32m+[m
+[32m+[m[32m        LIMIT ?[m
+[32m+[m[32m        """,[m
+[32m+[m[32m        tuple(params + [limit]),[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32m# ============================================================================[m
+[32m+[m[32m# Domain Rules[m
+[32m+[m[32m# ============================================================================[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef save_domain_rule([m
+[32m+[m[32m    domain: str,[m
+[32m+[m[32m    decision: str,[m
+[32m+[m[32m    source: str = "manual",[m
+[32m+[m[32m    reason: str = "",[m
+[32m+[m[32m    enabled: bool = True,[m
+[32m+[m[32m    created_at: float | None = None,[m
+[32m+[m[32m    updated_at: float | None = None,[m
+[32m+[m[32m) -> None:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Create or update an allow/block rule for a domain.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    if decision not in {"allow", "block"}:[m
+[32m+[m[32m        raise ValueError([m
+[32m+[m[32m            "Domain rule decision must be 'allow' or 'block'."[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    if created_at is None or updated_at is None:[m
+[32m+[m[32m        import time[m
+[32m+[m
+[32m+[m[32m        now = time.time()[m
+[32m+[m
+[32m+[m[32m        if created_at is None:[m
+[32m+[m[32m            created_at = now[m
+[32m+[m
+[32m+[m[32m        if updated_at is None:[m
+[32m+[m[32m            updated_at = now[m
+[32m+[m
+[32m+[m[32m    execute([m
+[32m+[m[32m        """[m
+[32m+[m[32m        INSERT INTO domain_rules[m
+[32m+[m[32m        ([m
+[32m+[m[32m            domain,[m
+[32m+[m[32m            decision,[m
+[32m+[m[32m            source,[m
+[32m+[m[32m            reason,[m
+[32m+[m[32m            enabled,[m
+[32m+[m[32m            created_at,[m
+[32m+[m[32m            updated_at[m
+[32m+[m[32m        )[m
+[32m+[m[32m        VALUES (?, ?, ?, ?, ?, ?, ?)[m
+[32m+[m
+[32m+[m[32m        ON CONFLICT(domain)[m
+[32m+[m
+[32m+[m[32m        DO UPDATE SET[m
+[32m+[m
+[32m+[m[32m            decision = excluded.decision,[m
+[32m+[m[32m            source = excluded.source,[m
+[32m+[m[32m            reason = excluded.reason,[m
+[32m+[m[32m            enabled = excluded.enabled,[m
+[32m+[m[32m            updated_at = excluded.updated_at[m
+[32m+[m[32m        """,[m
+[32m+[m[32m        ([m
+[32m+[m[32m            domain,[m
+[32m+[m[32m            decision,[m
+[32m+[m[32m            source,[m
+[32m+[m[32m            reason,[m
+[32m+[m[32m            1 if enabled else 0,[m
+[32m+[m[32m            created_at,[m
+[32m+[m[32m            updated_at,[m
+[32m+[m[32m        ),[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef get_domain_rule([m
+[32m+[m[32m    domain: str,[m
+[32m+[m[32m) -> sqlite3.Row | None:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Return the active rule for a domain, if one exists.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    return query_one([m
+[32m+[m[32m        """[m
+[32m+[m[32m        SELECT[m
+[32m+[m
+[32m+[m[32m            domain,[m
+[32m+[m[32m            decision,[m
+[32m+[m[32m            source,[m
+[32m+[m[32m            reason,[m
+[32m+[m[32m            enabled,[m
+[32m+[m[32m            created_at,[m
+[32m+[m[32m            updated_at[m
+[32m+[m
+[32m+[m[32m        FROM domain_rules[m
+[32m+[m
+[32m+[m[32m        WHERE domain = ?[m
+[32m+[m[32m          AND enabled = 1[m
+[32m+[m[32m        """,[m
+[32m+[m[32m        (domain,),[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef list_domain_rules([m
+[32m+[m[32m    limit: int = 100,[m
+[32m+[m[32m    search: str = "",[m
+[32m+[m[32m    decision: str = "",[m
+[32m+[m[32m    enabled: bool | None = True,[m
+[32m+[m[32m) -> list[sqlite3.Row]:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Return domain rules with optional filters.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    where = [][m
+[32m+[m[32m    params: list[Any] = [][m
+[32m+[m
+[32m+[m[32m    if search:[m
+[32m+[m[32m        where.append("(domain LIKE ? OR reason LIKE ? OR source LIKE ?)")[m
+[32m+[m[32m        pattern = f"%{search}%"[m
+[32m+[m[32m        params.extend([pattern, pattern, pattern])[m
+[32m+[m
+[32m+[m[32m    if decision:[m
+[32m+[m[32m        where.append("decision = ?")[m
+[32m+[m[32m        params.append(decision)[m
+[32m+[m
+[32m+[m[32m    if enabled is not None:[m
+[32m+[m[32m        where.append("enabled = ?")[m
+[32m+[m[32m        params.append(1 if enabled else 0)[m
+[32m+[m
+[32m+[m[32m    where_sql = ""[m
+[32m+[m
+[32m+[m[32m    if where:[m
+[32m+[m[32m        where_sql = "WHERE " + " AND ".join(where)[m
+[32m+[m
+[32m+[m[32m    return query_all([m
+[32m+[m[32m        f"""[m
+[32m+[m[32m        SELECT[m
+[32m+[m
+[32m+[m[32m            domain,[m
+[32m+[m[32m            decision,[m
+[32m+[m[32m            source,[m
+[32m+[m[32m            reason,[m
+[32m+[m[32m            enabled,[m
+[32m+[m[32m            created_at,[m
+[32m+[m[32m            updated_at[m
+[32m+[m
+[32m+[m[32m        FROM domain_rules[m
+[32m+[m
+[32m+[m[32m        {where_sql}[m
+[32m+[m
+[32m+[m[32m        ORDER BY updated_at DESC, domain ASC[m
+[32m+[m
+[32m+[m[32m        LIMIT ?[m
+[32m+[m[32m        """,[m
+[32m+[m[32m        tuple(params + [limit]),[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef delete_domain_rule([m
+[32m+[m[32m    domain: str,[m
+[32m+[m[32m) -> bool:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Delete a domain rule.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    with transaction() as conn:[m
+[32m+[m[32m        cursor = conn.execute([m
+[32m+[m[32m            """[m
+[32m+[m[32m            DELETE FROM domain_rules[m
+[32m+[m
+[32m+[m[32m            WHERE domain = ?[m
+[32m+[m[32m            """,[m
+[32m+[m[32m            (domain,),[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m        return cursor.rowcount > 0[m
+[32m+[m
+[32m+[m
+[32m+[m[32m# ============================================================================[m
+[32m+[m[32m# Domain Reputation[m
+[32m+[m[32m# ============================================================================[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef save_domain_reputation([m
+[32m+[m[32m    domain: str,[m
+[32m+[m[32m    score: int,[m
+[32m+[m[32m    confidence: int,[m
+[32m+[m[32m    signals: list[str],[m
+[32m+[m[32m    source: str = "local-learning",[m
+[32m+[m[32m    updated_at: float | None = None,[m
+[32m+[m[32m) -> None:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Save a learned reputation score for a domain.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    if updated_at is None:[m
+[32m+[m[32m        import time[m
+[32m+[m
+[32m+[m[32m        updated_at = time.time()[m
+[32m+[m
+[32m+[m[32m    execute([m
+[32m+[m[32m        """[m
+[32m+[m[32m        INSERT INTO domain_reputation[m
+[32m+[m[32m        ([m
+[32m+[m[32m            domain,[m
+[32m+[m[32m            score,[m
+[32m+[m[32m            confidence,[m
+[32m+[m[32m            signals,[m
+[32m+[m[32m            source,[m
+[32m+[m[32m            updated_at[m
+[32m+[m[32m        )[m
+[32m+[m[32m        VALUES (?, ?, ?, ?, ?, ?)[m
+[32m+[m
+[32m+[m[32m        ON CONFLICT(domain)[m
+[32m+[m
+[32m+[m[32m        DO UPDATE SET[m
+[32m+[m
+[32m+[m[32m            score = excluded.score,[m
+[32m+[m[32m            confidence = excluded.confidence,[m
+[32m+[m[32m            signals = excluded.signals,[m
+[32m+[m[32m            source = excluded.source,[m
+[32m+[m[32m            updated_at = excluded.updated_at[m
+[32m+[m[32m        """,[m
+[32m+[m[32m        ([m
+[32m+[m[32m            domain,[m
+[32m+[m[32m            max(0, min(score, 100)),[m
+[32m+[m[32m            max(0, min(confidence, 100)),[m
+[32m+[m[32m            json.dumps(signals),[m
+[32m+[m[32m            source,[m
+[32m+[m[32m            updated_at,[m
+[32m+[m[32m        ),[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef get_domain_reputation([m
+[32m+[m[32m    domain: str,[m
+[32m+[m[32m) -> sqlite3.Row | None:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Return a learned reputation row.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    return query_one([m
+[32m+[m[32m        """[m
+[32m+[m[32m        SELECT[m
+[32m+[m
+[32m+[m[32m            domain,[m
+[32m+[m[32m            score,[m
+[32m+[m[32m            confidence,[m
+[32m+[m[32m            signals,[m
+[32m+[m[32m            source,[m
+[32m+[m[32m            updated_at[m
+[32m+[m
+[32m+[m[32m        FROM domain_reputation[m
+[32m+[m
+[32m+[m[32m        WHERE domain = ?[m
+[32m+[m[32m        """,[m
+[32m+[m[32m        (domain,),[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef list_domain_reputations([m
+[32m+[m[32m    limit: int = 100,[m
+[32m+[m[32m    search: str = "",[m
+[32m+[m[32m    min_score: int = 0,[m
+[32m+[m[32m) -> list[sqlite3.Row]:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Return learned reputation rows.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    where = [][m
+[32m+[m[32m    params: list[Any] = [][m
+[32m+[m
+[32m+[m[32m    if search:[m
+[32m+[m[32m        where.append("domain LIKE ?")[m
+[32m+[m[32m        params.append(f"%{search}%")[m
+[32m+[m
+[32m+[m[32m    if min_score > 0:[m
+[32m+[m[32m        where.append("score >= ?")[m
+[32m+[m[32m        params.append(min_score)[m
+[32m+[m
+[32m+[m[32m    where_sql = ""[m
+[32m+[m
+[32m+[m[32m    if where:[m
+[32m+[m[32m        where_sql = "WHERE " + " AND ".join(where)[m
+[32m+[m
+[32m+[m[32m    return query_all([m
+[32m+[m[32m        f"""[m
+[32m+[m[32m        SELECT[m
+[32m+[m
+[32m+[m[32m            domain,[m
+[32m+[m[32m            score,[m
+[32m+[m[32m            confidence,[m
+[32m+[m[32m            signals,[m
+[32m+[m[32m            source,[m
+[32m+[m[32m            updated_at[m
+[32m+[m
+[32m+[m[32m        FROM domain_reputation[m
+[32m+[m
+[32m+[m[32m        {where_sql}[m
+[32m+[m
+[32m+[m[32m        ORDER BY score DESC, updated_at DESC[m
+[32m+[m
+[32m+[m[32m        LIMIT ?[m
+[32m+[m[32m        """,[m
+[32m+[m[32m        tuple(params + [limit]),[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef get_reputation_candidates([m
+[32m+[m[32m    limit: int = 500,[m
+[32m+[m[32m) -> list[sqlite3.Row]:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Return domain history rows used by the local learner.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    return query_all([m
+[32m+[m[32m        """[m
+[32m+[m[32m        SELECT[m
+[32m+[m
+[32m+[m[32m            dm.domain,[m
+[32m+[m[32m            dm.query_count,[m
+[32m+[m[32m            dm.first_seen,[m
+[32m+[m[32m            dm.last_seen,[m
+[32m+[m[32m            COUNT(DISTINCT e.device) AS device_count,[m
+[32m+[m[32m            SUM([m
+[32m+[m[32m                CASE[m
+[32m+[m[32m                    WHEN e.timestamp >= dm.last_seen - 3600 THEN 1[m
+[32m+[m[32m                    ELSE 0[m
+[32m+[m[32m                END[m
+[32m+[m[32m            ) AS recent_queries,[m
+[32m+[m[32m            a.risk AS analysis_risk,[m
+[32m+[m[32m            a.confidence AS analysis_confidence,[m
+[32m+[m[32m            a.category AS analysis_category,[m
+[32m+[m[32m            dr.decision AS rule_decision,[m
+[32m+[m[32m            ([m
+[32m+[m[32m                SELECT COUNT(*)[m
+[32m+[m[32m                FROM action_audit aa[m
+[32m+[m[32m                WHERE aa.domain = dm.domain[m
+[32m+[m[32m                  AND aa.action = 'suggest_block'[m
+[32m+[m[32m            ) AS suggest_block_count,[m
+[32m+[m[32m            ([m
+[32m+[m[32m                SELECT COUNT(*)[m
+[32m+[m[32m                FROM action_audit aa[m
+[32m+[m[32m                WHERE aa.domain = dm.domain[m
+[32m+[m[32m                  AND aa.action = 'alert'[m
+[32m+[m[32m            ) AS alert_count,[m
+[32m+[m[32m            ([m
+[32m+[m[32m                SELECT COUNT(*)[m
+[32m+[m[32m                FROM action_audit aa[m
+[32m+[m[32m                WHERE aa.domain = dm.domain[m
+[32m+[m[32m                  AND aa.action = 'review'[m
+[32m+[m[32m            ) AS review_count[m
+[32m+[m
+[32m+[m[32m        FROM domain_memory dm[m
+[32m+[m
+[32m+[m[32m        LEFT JOIN events e[m
+[32m+[m[32m            ON e.domain = dm.domain[m
+[32m+[m
+[32m+[m[32m        LEFT JOIN analysis a[m
+[32m+[m[32m            ON a.domain = dm.domain[m
+[32m+[m
+[32m+[m[32m        LEFT JOIN domain_rules dr[m
+[32m+[m[32m            ON dr.domain = dm.domain[m
+[32m+[m[32m           AND dr.enabled = 1[m
+[32m+[m
+[32m+[m[32m        GROUP BY[m
+[32m+[m[32m            dm.domain,[m
+[32m+[m[32m            dm.query_count,[m
+[32m+[m[32m            dm.first_seen,[m
+[32m+[m[32m            dm.last_seen,[m
+[32m+[m[32m            a.risk,[m
+[32m+[m[32m            a.confidence,[m
+[32m+[m[32m            a.category,[m
+[32m+[m[32m            dr.decision[m
+[32m+[m
+[32m+[m[32m        ORDER BY dm.last_seen DESC[m
+[32m+[m
+[32m+[m[32m        LIMIT ?[m
+[32m+[m[32m        """,[m
+[32m+[m[32m        (limit,),[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+ # ============================================================================[m
+ # Domain Memory[m
+ # ============================================================================[m
+[36m@@ -557,6 +1185,67 @@[m [mdef get_domain_memory([m
+     )[m
+ [m
+ [m
+[32m+[m[32mdef get_domain_metadata([m
+[32m+[m[32m    domain: str,[m
+[32m+[m[32m) -> dict[str, object]:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Return analysis metadata for a domain.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    row = query_one([m
+[32m+[m[32m        """[m
+[32m+[m[32m        SELECT[m
+[32m+[m
+[32m+[m[32m            dm.domain,[m
+[32m+[m[32m            dm.query_count,[m
+[32m+[m[32m            dm.first_seen,[m
+[32m+[m[32m            dm.last_seen,[m
+[32m+[m[32m            COUNT(DISTINCT e.device) AS device_count,[m
+[32m+[m[32m            SUM([m
+[32m+[m[32m                CASE[m
+[32m+[m[32m                    WHEN e.timestamp >= dm.last_seen - 3600 THEN 1[m
+[32m+[m[32m                    ELSE 0[m
+[32m+[m[32m                END[m
+[32m+[m[32m            ) AS recent_queries[m
+[32m+[m
+[32m+[m[32m        FROM domain_memory dm[m
+[32m+[m
+[32m+[m[32m        LEFT JOIN events e[m
+[32m+[m[32m            ON e.domain = dm.domain[m
+[32m+[m
+[32m+[m[32m        WHERE dm.domain = ?[m
+[32m+[m
+[32m+[m[32m        GROUP BY[m
+[32m+[m[32m            dm.domain,[m
+[32m+[m[32m            dm.query_count,[m
+[32m+[m[32m            dm.first_seen,[m
+[32m+[m[32m            dm.last_seen[m
+[32m+[m[32m        """,[m
+[32m+[m[32m        (domain,),[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    if row is None:[m
+[32m+[m[32m        return {[m
+[32m+[m[32m            "domain": domain,[m
+[32m+[m[32m            "query_count": 0,[m
+[32m+[m[32m            "first_seen": 0.0,[m
+[32m+[m[32m            "last_seen": 0.0,[m
+[32m+[m[32m            "device_count": 0,[m
+[32m+[m[32m            "recent_queries": 0,[m
+[32m+[m[32m            "tags": [],[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m    return {[m
+[32m+[m[32m        "domain": row["domain"],[m
+[32m+[m[32m        "query_count": row["query_count"] or 0,[m
+[32m+[m[32m        "first_seen": row["first_seen"] or 0.0,[m
+[32m+[m[32m        "last_seen": row["last_seen"] or 0.0,[m
+[32m+[m[32m        "device_count": row["device_count"] or 0,[m
+[32m+[m[32m        "recent_queries": row["recent_queries"] or 0,[m
+[32m+[m[32m        "tags": [],[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m
+ # ============================================================================[m
+ # Application State[m
+ # ============================================================================[m
+[36m@@ -705,11 +1394,29 @@[m [mdef database_stats() -> dict[str, int]:[m
+         """[m
+     )[m
+ [m
+[32m+[m[32m    action_count = query_one([m
+[32m+[m[32m        """[m
+[32m+[m[32m        SELECT COUNT(*) AS count[m
+[32m+[m
+[32m+[m[32m        FROM action_audit[m
+[32m+[m[32m        """[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    reputation_count = query_one([m
+[32m+[m[32m        """[m
+[32m+[m[32m        SELECT COUNT(*) AS count[m
+[32m+[m
+[32m+[m[32m        FROM domain_reputation[m
+[32m+[m[32m        """[m
+[32m+[m[32m    )[m
+[32m+[m
+     return {[m
+         "events": event_count["count"] if event_count else 0,[m
+         "processed": processed_count["count"] if processed_count else 0,[m
+         "domains": domain_count["count"] if domain_count else 0,[m
+         "analyses": analysis_count["count"] if analysis_count else 0,[m
+[32m+[m[32m        "actions": action_count["count"] if action_count else 0,[m
+[32m+[m[32m        "reputations": reputation_count["count"] if reputation_count else 0,[m
+     }[m
+ [m
+ [m
+[36m@@ -718,7 +1425,7 @@[m [mdef vacuum() -> None:[m
+     Optimize the SQLite database.[m
+     """[m
+ [m
+[31m-    with get_connection() as conn:[m
+[32m+[m[32m    with closing(get_connection()) as conn:[m
+         conn.execute("VACUUM")[m
+ [m
+ [m
+[1mdiff --git a/engine/anomaly.py b/engine/anomaly.py[m
+[1mindex 2a9358a..e40a725 100644[m
+[1m--- a/engine/anomaly.py[m
+[1m+++ b/engine/anomaly.py[m
+[36m@@ -1,3 +1,10 @@[m
+[32m+[m[32m"""[m
+[32m+[m[32mLegacy in-memory anomaly helpers.[m
+[32m+[m
+[32m+[m[32mThe active analysis path uses AnalysisEngine and ClassifierPipeline. Beacon[m
+[32m+[m[32mdetection should be reintroduced as a database-backed classifier or processor.[m
+[32m+[m[32m"""[m
+[32m+[m
+ from collections import defaultdict[m
+ [m
+ history = defaultdict(list)[m
+[1mdiff --git a/engine/classifiers/ai_classifier.py b/engine/classifiers/ai_classifier.py[m
+[1mindex 43fec94..a6d048e 100644[m
+[1m--- a/engine/classifiers/ai_classifier.py[m
+[1m+++ b/engine/classifiers/ai_classifier.py[m
+[36m@@ -57,10 +57,23 @@[m [mclass AIClassifier(BaseClassifier):[m
+             metadata=request.metadata,[m
+         )[m
+ [m
+[31m-        response = self.client.generate([m
+[31m-            system=SYSTEM_PROMPT,[m
+[31m-            prompt=prompt,[m
+[31m-        )[m
+[32m+[m[32m        try:[m
+[32m+[m[32m            response = self.client.generate([m
+[32m+[m[32m                system=SYSTEM_PROMPT,[m
+[32m+[m[32m                prompt=prompt,[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        except Exception as exc:[m
+[32m+[m[32m            self.logger.warning([m
+[32m+[m[32m                "AI backend failed for '%s': %s",[m
+[32m+[m[32m                request.domain,[m
+[32m+[m[32m                exc,[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m            return self._fallback([m
+[32m+[m[32m                request,[m
+[32m+[m[32m                "AI backend unavailable.",[m
+[32m+[m[32m            )[m
+ [m
+         return self._parse_response([m
+             request,[m
+[1mdiff --git a/engine/engine.py b/engine/engine.py[m
+[1mindex 5e53d22..97dfec3 100644[m
+[1m--- a/engine/engine.py[m
+[1m+++ b/engine/engine.py[m
+[36m@@ -33,21 +33,55 @@[m [mmark_processed_by_domain()[m
+ [m
+ from __future__ import annotations[m
+ [m
+[32m+[m[32mimport time[m
+[32m+[m[32mfrom typing import Any[m
+[32m+[m
+ from core.config import settings[m
+ from core.db import ([m
+     get_analysis,[m
+[32m+[m[32m    get_domain_metadata,[m
+     get_unprocessed_domains,[m
+     mark_processed_by_domain,[m
+     save_analysis,[m
+ )[m
+ from core.logger import get_logger[m
+ [m
+[32m+[m[32mfrom actions.policy import apply_action_policy[m
+ from engine.analyzer import Analyzer[m
+[31m-from engine.models import AnalysisRequest[m
+[32m+[m[32mfrom engine.models import AnalysisRequest, DomainMetadata[m
+ [m
+ logger = get_logger(__name__)[m
+ [m
+ [m
+[32m+[m[32mdef is_cache_usable([m
+[32m+[m[32m    analysis: Any,[m
+[32m+[m[32m    now: float | None = None,[m
+[32m+[m[32m    cache_ttl: int | None = None,[m
+[32m+[m[32m) -> bool:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Return True if a cached analysis can be reused.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    if analysis is None:[m
+[32m+[m[32m        return False[m
+[32m+[m
+[32m+[m[32m    if analysis["confidence"] <= 0:[m
+[32m+[m[32m        return False[m
+[32m+[m
+[32m+[m[32m    if cache_ttl is None:[m
+[32m+[m[32m        cache_ttl = settings.cache_ttl[m
+[32m+[m
+[32m+[m[32m    if cache_ttl <= 0:[m
+[32m+[m[32m        return True[m
+[32m+[m
+[32m+[m[32m    analyzed_at = analysis["analyzed_at"] or 0[m
+[32m+[m
+[32m+[m[32m    if now is None:[m
+[32m+[m[32m        now = time.time()[m
+[32m+[m
+[32m+[m[32m    return now - analyzed_at <= cache_ttl[m
+[32m+[m
+[32m+[m
+ class AnalysisEngine:[m
+     """[m
+     Main AI processing engine.[m
+[36m@@ -101,7 +135,7 @@[m [mclass AnalysisEngine:[m
+                     domain,[m
+                 )[m
+ [m
+[31m-                if analysis is not None:[m
+[32m+[m[32m                if is_cache_usable(analysis):[m
+ [m
+                     logger.info([m
+                         "Cache hit: %s",[m
+[36m@@ -115,12 +149,22 @@[m [mclass AnalysisEngine:[m
+                     processed += 1[m
+                     continue[m
+ [m
+[32m+[m[32m                if analysis is not None:[m
+[32m+[m
+[32m+[m[32m                    logger.info([m
+[32m+[m[32m                        "Retrying stale cached analysis: %s",[m
+[32m+[m[32m                        domain,[m
+[32m+[m[32m                    )[m
+[32m+[m
+                 #[m
+                 # AI Analysis[m
+                 #[m
+ [m
+                 request = AnalysisRequest([m
+                     domain=domain,[m
+[32m+[m[32m                    metadata=DomainMetadata.from_mapping([m
+[32m+[m[32m                        get_domain_metadata(domain),[m
+[32m+[m[32m                    ),[m
+                 )[m
+ [m
+                 result = self.analyzer.analyze([m
+[36m@@ -130,12 +174,17 @@[m [mclass AnalysisEngine:[m
+                 save_analysis([m
+                     domain=result.domain,[m
+                     risk=result.risk,[m
+[32m+[m[32m                    confidence=result.confidence,[m
+                     category=result.category,[m
+                     reason=result.reason,[m
+                     model=result.model,[m
+                     analyzed_at=result.analyzed_at,[m
+                 )[m
+ [m
+[32m+[m[32m                apply_action_policy([m
+[32m+[m[32m                    result,[m
+[32m+[m[32m                )[m
+[32m+[m
+                 mark_processed_by_domain([m
+                     domain,[m
+                 )[m
+[36m@@ -162,16 +211,46 @@[m [mclass AnalysisEngine:[m
+ [m
+         return processed[m
+ [m
+[32m+[m[32m    def run_loop([m
+[32m+[m[32m        self,[m
+[32m+[m[32m        interval: int | None = None,[m
+[32m+[m[32m        max_cycles: int | None = None,[m
+[32m+[m[32m    ) -> None:[m
+[32m+[m[32m        """[m
+[32m+[m[32m        Continuously process pending domains.[m
+[32m+[m[32m        """[m
+[32m+[m
+[32m+[m[32m        if interval is None:[m
+[32m+[m[32m            interval = settings.engine_interval[m
+[32m+[m
+[32m+[m[32m        cycles = 0[m
+[32m+[m
+[32m+[m[32m        logger.info([m
+[32m+[m[32m            "Analysis engine running (interval=%d).",[m
+[32m+[m[32m            interval,[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m        while True:[m
+[32m+[m
+[32m+[m[32m            self.process_once()[m
+[32m+[m
+[32m+[m[32m            cycles += 1[m
+[32m+[m
+[32m+[m[32m            if max_cycles is not None and cycles >= max_cycles:[m
+[32m+[m[32m                return[m
+[32m+[m
+[32m+[m[32m            time.sleep(interval)[m
+[32m+[m
+ [m
+ def main() -> None:[m
+     """[m
+[31m-    Run one processing cycle.[m
+[32m+[m[32m    Run the continuous analysis worker.[m
+     """[m
+ [m
+     engine = AnalysisEngine()[m
+ [m
+[31m-    engine.process_once()[m
+[32m+[m[32m    engine.run_loop()[m
+ [m
+ [m
+ if __name__ == "__main__":[m
+[31m-    main()[m
+\ No newline at end of file[m
+[32m+[m[32m    main()[m
+[1mdiff --git a/engine/models.py b/engine/models.py[m
+[1mindex 4ac2677..892967f 100644[m
+[1m--- a/engine/models.py[m
+[1m+++ b/engine/models.py[m
+[36m@@ -98,6 +98,25 @@[m [mclass DomainMetadata:[m
+ [m
+     tags: list[str] = field(default_factory=list)[m
+ [m
+[32m+[m[32m    @classmethod[m
+[32m+[m[32m    def from_mapping([m
+[32m+[m[32m        cls,[m
+[32m+[m[32m        values: dict[str, Any],[m
+[32m+[m[32m    ) -> "DomainMetadata":[m
+[32m+[m[32m        """[m
+[32m+[m[32m        Build metadata from a database mapping.[m
+[32m+[m[32m        """[m
+[32m+[m
+[32m+[m[32m        return cls([m
+[32m+[m[32m            domain=str(values.get("domain", "")),[m
+[32m+[m[32m            query_count=int(values.get("query_count", 0) or 0),[m
+[32m+[m[32m            first_seen=float(values.get("first_seen", 0.0) or 0.0),[m
+[32m+[m[32m            last_seen=float(values.get("last_seen", 0.0) or 0.0),[m
+[32m+[m[32m            device_count=int(values.get("device_count", 0) or 0),[m
+[32m+[m[32m            recent_queries=int(values.get("recent_queries", 0) or 0),[m
+[32m+[m[32m            tags=list(values.get("tags", []) or []),[m
+[32m+[m[32m        )[m
+[32m+[m
+ [m
+ # ============================================================================[m
+ # AI Request[m
+[1mdiff --git a/engine/scoring.py b/engine/scoring.py[m
+[1mindex e1970d2..77f755e 100644[m
+[1m--- a/engine/scoring.py[m
+[1m+++ b/engine/scoring.py[m
+[36m@@ -1,3 +1,10 @@[m
+[32m+[m[32m"""[m
+[32m+[m[32mLegacy scoring helpers.[m
+[32m+[m
+[32m+[m[32mThe active analysis path uses engine.classifiers.heuristics.HeuristicsEngine.[m
+[32m+[m[32mKeep this module only as historical reference until it is removed.[m
+[32m+[m[32m"""[m
+[32m+[m
+ import math[m
+ [m
+ [m
+[1mdiff --git a/pyproject.toml b/pyproject.toml[m
+[1mindex c27d4a2..6526875 100644[m
+[1m--- a/pyproject.toml[m
+[1m+++ b/pyproject.toml[m
+[36m@@ -19,6 +19,9 @@[m [mdependencies = [[m
+     "ollama>=0.6.2",[m
+ ][m
+ [m
+[32m+[m[32m[project.scripts][m
+[32m+[m[32mpihole-ai = "pihole_ai.cli:main"[m
+[32m+[m
+ [tool.setuptools][m
+ include-package-data = true[m
+ [m
+[36m@@ -28,5 +31,6 @@[m [minclude = [[m
+     "collector*",[m
+     "core*",[m
+     "engine*",[m
+[32m+[m[32m    "pihole_ai*",[m
+     "ui*",[m
+ ][m
+[1mdiff --git a/tests/test_classifiers.py b/tests/test_classifiers.py[m
+[1mindex 506a133..ecdb53a 100644[m
+[1m--- a/tests/test_classifiers.py[m
+[1m+++ b/tests/test_classifiers.py[m
+[36m@@ -17,12 +17,16 @@[m [mfrom engine.classifiers.rule_engine import RuleEngine[m
+ from engine.models import ([m
+     AnalysisRequest,[m
+     AnalysisResult,[m
+[32m+[m[32m    DomainMetadata,[m
+     DomainCategory,[m
+     validate_ai_response,[m
+ )[m
+ [m
+ [m
+ class DummyLogger:[m
+[32m+[m[32m    def info(self, *args, **kwargs):[m
+[32m+[m[32m        pass[m
+[32m+[m
+     def debug(self, *args, **kwargs):[m
+         pass[m
+ [m
+[36m@@ -35,6 +39,14 @@[m [mclass FakeClient:[m
+         return "fake-model"[m
+ [m
+ [m
+[32m+[m[32mclass FailingClient:[m
+[32m+[m[32m    def generate(self, *args, **kwargs):[m
+[32m+[m[32m        raise RuntimeError("ollama unavailable")[m
+[32m+[m
+[32m+[m[32m    def current_model(self) -> str:[m
+[32m+[m[32m        return "fake-model"[m
+[32m+[m
+[32m+[m
+ class FakeClassifier(BaseClassifier):[m
+     def __init__(self, result: AnalysisResult | None) -> None:[m
+         self.result = result[m
+[36m@@ -105,6 +117,58 @@[m [mclass HeuristicsEngineTests(unittest.TestCase):[m
+         )[m
+         self.assertGreaterEqual(result.risk, 40)[m
+ [m
+[32m+[m[32m    def test_deep_subdomain_contributes_to_suspicious_score(self) -> None:[m
+[32m+[m[32m        result = self.engine.classify([m
+[32m+[m[32m            AnalysisRequest([m
+[32m+[m[32m                domain="login.verify.secure.account.example.com",[m
+[32m+[m[32m            ),[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m        self.assertIsNotNone(result)[m
+[32m+[m[32m        self.assertIn([m
+[32m+[m[32m            "Deep subdomain structure",[m
+[32m+[m[32m            result.reason,[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    def test_high_query_frequency_uses_metadata(self) -> None:[m
+[32m+[m[32m        result = self.engine.classify([m
+[32m+[m[32m            AnalysisRequest([m
+[32m+[m[32m                domain="login-secure.example.com",[m
+[32m+[m[32m                metadata=DomainMetadata([m
+[32m+[m[32m                    domain="login-secure.example.com",[m
+[32m+[m[32m                    query_count=501,[m
+[32m+[m[32m                ),[m
+[32m+[m[32m            ),[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m        self.assertIsNotNone(result)[m
+[32m+[m[32m        self.assertIn([m
+[32m+[m[32m            "High query frequency",[m
+[32m+[m[32m            result.reason,[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mclass DomainMetadataTests(unittest.TestCase):[m
+[32m+[m[32m    def test_builds_from_mapping_with_defaults(self) -> None:[m
+[32m+[m[32m        metadata = DomainMetadata.from_mapping([m
+[32m+[m[32m            {[m
+[32m+[m[32m                "domain": "example.com",[m
+[32m+[m[32m                "query_count": None,[m
+[32m+[m[32m                "first_seen": None,[m
+[32m+[m[32m                "last_seen": 20,[m
+[32m+[m[32m                "device_count": 2,[m
+[32m+[m[32m                "recent_queries": 7,[m
+[32m+[m[32m            }[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m        self.assertEqual(metadata.domain, "example.com")[m
+[32m+[m[32m        self.assertEqual(metadata.query_count, 0)[m
+[32m+[m[32m        self.assertEqual(metadata.first_seen, 0.0)[m
+[32m+[m[32m        self.assertEqual(metadata.last_seen, 20.0)[m
+[32m+[m[32m        self.assertEqual(metadata.device_count, 2)[m
+[32m+[m[32m        self.assertEqual(metadata.recent_queries, 7)[m
+[32m+[m[32m        self.assertEqual(metadata.tags, [])[m
+[32m+[m
+ [m
+ class AIResponseValidationTests(unittest.TestCase):[m
+     def test_accepts_valid_category(self) -> None:[m
+[36m@@ -223,6 +287,21 @@[m [mclass AIClassifierParsingTests(unittest.TestCase):[m
+         self.assertEqual(result.risk, 50)[m
+         self.assertEqual(result.confidence, 0)[m
+ [m
+[32m+[m[32m    def test_generate_exception_falls_back_to_unknown(self) -> None:[m
+[32m+[m[32m        classifier = AIClassifier.__new__(AIClassifier)[m
+[32m+[m[32m        classifier.logger = DummyLogger()[m
+[32m+[m[32m        classifier.client = FailingClient()[m
+[32m+[m
+[32m+[m[32m        result = classifier.classify([m
+[32m+[m[32m            AnalysisRequest(domain="example.com"),[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m        self.assertEqual(result.category, DomainCategory.UNKNOWN.value)[m
+[32m+[m[32m        self.assertEqual(result.risk, 50)[m
+[32m+[m[32m        self.assertEqual(result.confidence, 0)[m
+[32m+[m[32m        self.assertEqual(result.reason, "AI backend unavailable.")[m
+[32m+[m[32m        self.assertEqual(result.model, "fake-model")[m
+[32m+[m
+ [m
+ if __name__ == "__main__":[m
+     unittest.main()[m
+[1mdiff --git a/tests/test_dashboard.py b/tests/test_dashboard.py[m
+[1mindex d326ecc..3f37b48 100644[m
+[1m--- a/tests/test_dashboard.py[m
+[1m+++ b/tests/test_dashboard.py[m
+[36m@@ -1,7 +1,7 @@[m
+ import unittest[m
+ from unittest.mock import patch[m
+ [m
+[31m-from ui.dashboard import create_app[m
+[32m+[m[32mfrom ui.dashboard import create_app, parse_limit[m
+ [m
+ [m
+ class DashboardTests(unittest.TestCase):[m
+[36m@@ -16,6 +16,7 @@[m [mclass DashboardTests(unittest.TestCase):[m
+             "processed": 2,[m
+             "domains": 2,[m
+             "analyses": 1,[m
+[32m+[m[32m            "actions": 0,[m
+         }[m
+ [m
+         with patch("ui.dashboard.database_stats", return_value=stats):[m
+[36m@@ -35,11 +36,18 @@[m [mclass DashboardTests(unittest.TestCase):[m
+             }[m
+         ][m
+ [m
+[31m-        with patch("ui.dashboard.get_events", return_value=rows):[m
+[31m-            response = self.client.get("/api/events")[m
+[32m+[m[32m        with patch("ui.dashboard.get_recent_events", return_value=rows) as get_recent_events:[m
+[32m+[m[32m            response = self.client.get([m
+[32m+[m[32m                "/api/events?q=example&limit=25&processed=1"[m
+[32m+[m[32m            )[m
+ [m
+         self.assertEqual(response.status_code, 200)[m
+         self.assertEqual(response.get_json(), rows)[m
+[32m+[m[32m        get_recent_events.assert_called_once_with([m
+[32m+[m[32m            limit=25,[m
+[32m+[m[32m            search="example",[m
+[32m+[m[32m            processed=1,[m
+[32m+[m[32m        )[m
+ [m
+     def test_analysis_endpoint_returns_recent_analyses(self) -> None:[m
+         analyses = [[m
+[36m@@ -53,11 +61,19 @@[m [mclass DashboardTests(unittest.TestCase):[m
+             }[m
+         ][m
+ [m
+[31m-        with patch("ui.dashboard.get_recent_analyses", return_value=analyses):[m
+[31m-            response = self.client.get("/api/analysis")[m
+[32m+[m[32m        with patch("ui.dashboard.get_recent_analyses", return_value=analyses) as get_recent_analyses:[m
+[32m+[m[32m            response = self.client.get([m
+[32m+[m[32m                "/api/analysis?q=example&limit=50&min_risk=40&category=benign"[m
+[32m+[m[32m            )[m
+ [m
+         self.assertEqual(response.status_code, 200)[m
+         self.assertEqual(response.get_json(), analyses)[m
+[32m+[m[32m        get_recent_analyses.assert_called_once_with([m
+[32m+[m[32m            limit=50,[m
+[32m+[m[32m            search="example",[m
+[32m+[m[32m            min_risk=40,[m
+[32m+[m[32m            category="benign",[m
+[32m+[m[32m        )[m
+ [m
+     def test_devices_endpoint_returns_device_summary(self) -> None:[m
+         devices = [[m
+[36m@@ -69,31 +85,167 @@[m [mclass DashboardTests(unittest.TestCase):[m
+             }[m
+         ][m
+ [m
+[31m-        with patch("ui.dashboard.get_device_summary", return_value=devices):[m
+[31m-            response = self.client.get("/api/devices")[m
+[32m+[m[32m        with patch("ui.dashboard.get_device_summary", return_value=devices) as get_device_summary:[m
+[32m+[m[32m            response = self.client.get("/api/devices?q=device-a&limit=10")[m
+ [m
+         self.assertEqual(response.status_code, 200)[m
+         self.assertEqual(response.get_json(), devices)[m
+[32m+[m[32m        get_device_summary.assert_called_once_with([m
+[32m+[m[32m            limit=10,[m
+[32m+[m[32m            search="device-a",[m
+[32m+[m[32m        )[m
+ [m
+[31m-    def test_health_endpoint_returns_ok_status(self) -> None:[m
+[31m-        stats = {[m
+[31m-            "events": 0,[m
+[31m-            "processed": 0,[m
+[31m-            "domains": 0,[m
+[31m-            "analyses": 0,[m
+[31m-        }[m
+[32m+[m[32m    def test_actions_endpoint_returns_recent_actions(self) -> None:[m
+[32m+[m[32m        actions = [[m
+[32m+[m[32m            {[m
+[32m+[m[32m                "id": 1,[m
+[32m+[m[32m                "domain": "example.com",[m
+[32m+[m[32m                "action": "block",[m
+[32m+[m[32m                "source": "test",[m
+[32m+[m[32m                "status": "written",[m
+[32m+[m[32m                "reason": "Test.",[m
+[32m+[m[32m                "risk": 90,[m
+[32m+[m[32m                "created_at": 123.0,[m
+[32m+[m[32m            }[m
+[32m+[m[32m        ][m
+ [m
+[31m-        with patch("ui.dashboard.database_stats", return_value=stats):[m
+[31m-            response = self.client.get("/api/health")[m
+[32m+[m[32m        with patch("ui.dashboard.get_recent_actions", return_value=actions) as get_recent_actions:[m
+[32m+[m[32m            response = self.client.get([m
+[32m+[m[32m                "/api/actions?q=example&limit=25&action=block&status=written"[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        self.assertEqual(response.status_code, 200)[m
+[32m+[m[32m        self.assertEqual(response.get_json(), actions)[m
+[32m+[m[32m        get_recent_actions.assert_called_once_with([m
+[32m+[m[32m            limit=25,[m
+[32m+[m[32m            search="example",[m
+[32m+[m[32m            action="block",[m
+[32m+[m[32m            status="written",[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    def test_rules_endpoint_returns_domain_rules(self) -> None:[m
+[32m+[m[32m        rules = [[m
+[32m+[m[32m            {[m
+[32m+[m[32m                "domain": "example.com",[m
+[32m+[m[32m                "decision": "allow",[m
+[32m+[m[32m                "source": "cli",[m
+[32m+[m[32m                "reason": "Known safe.",[m
+[32m+[m[32m                "enabled": 1,[m
+[32m+[m[32m            }[m
+[32m+[m[32m        ][m
+[32m+[m
+[32m+[m[32m        with patch("ui.dashboard.get_domain_rules", return_value=rules) as get_domain_rules:[m
+[32m+[m[32m            response = self.client.get([m
+[32m+[m[32m                "/api/rules?q=example&limit=25&decision=allow"[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        self.assertEqual(response.status_code, 200)[m
+[32m+[m[32m        self.assertEqual(response.get_json(), rules)[m
+[32m+[m[32m        get_domain_rules.assert_called_once_with([m
+[32m+[m[32m            limit=25,[m
+[32m+[m[32m            search="example",[m
+[32m+[m[32m            decision="allow",[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    def test_create_rule_endpoint_saves_domain_rule(self) -> None:[m
+[32m+[m[32m        with patch("ui.dashboard.add_rule") as add_rule:[m
+[32m+[m[32m            response = self.client.post([m
+[32m+[m[32m                "/api/rules",[m
+[32m+[m[32m                json={[m
+[32m+[m[32m                    "domain": "example.com",[m
+[32m+[m[32m                    "decision": "allow",[m
+[32m+[m[32m                    "reason": "Known safe.",[m
+[32m+[m[32m                },[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        self.assertEqual(response.status_code, 200)[m
+[32m+[m[32m        self.assertEqual([m
+[32m+[m[32m            response.get_json(),[m
+[32m+[m[32m            {[m
+[32m+[m[32m                "domain": "example.com",[m
+[32m+[m[32m                "decision": "allow",[m
+[32m+[m[32m                "status": "saved",[m
+[32m+[m[32m            },[m
+[32m+[m[32m        )[m
+[32m+[m[32m        add_rule.assert_called_once_with([m
+[32m+[m[32m            domain="example.com",[m
+[32m+[m[32m            decision="allow",[m
+[32m+[m[32m            reason="Known safe.",[m
+[32m+[m[32m            apply_block=False,[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    def test_create_rule_endpoint_rejects_invalid_decision(self) -> None:[m
+[32m+[m[32m        with patch("ui.dashboard.add_rule") as add_rule:[m
+[32m+[m[32m            response = self.client.post([m
+[32m+[m[32m                "/api/rules",[m
+[32m+[m[32m                json={[m
+[32m+[m[32m                    "domain": "example.com",[m
+[32m+[m[32m                    "decision": "maybe",[m
+[32m+[m[32m                },[m
+[32m+[m[32m            )[m
+[32m+[m
+[32m+[m[32m        self.assertEqual(response.status_code, 400)[m
+[32m+[m[32m        self.assertEqual([m
+[32m+[m[32m            response.get_json(),[m
+[32m+[m[32m            {[m
+[32m+[m[32m                "error": "decision must be allow or block",[m
+[32m+[m[32m            },[m
+[32m+[m[32m        )[m
+[32m+[m[32m        add_rule.assert_not_called()[m
+[32m+[m
+[32m+[m[32m    def test_delete_rule_endpoint_removes_domain_rule(self) -> None:[m
+[32m+[m[32m        with patch("ui.dashboard.remove_rule", return_value=True) as remove_rule:[m
+[32m+[m[32m            response = self.client.delete("/api/rules/example.com")[m
+ [m
+         self.assertEqual(response.status_code, 200)[m
+         self.assertEqual([m
+             response.get_json(),[m
+             {[m
+[31m-                "status": "ok",[m
+[31m-                "database": stats,[m
+[32m+[m[32m                "domain": "example.com",[m
+[32m+[m[32m                "removed": True,[m
+             },[m
+         )[m
+[32m+[m[32m        remove_rule.assert_called_once_with("example.com")[m
+[32m+[m
+[32m+[m[32m    def test_health_endpoint_returns_ok_status(self) -> None:[m
+[32m+[m[32m        status = {[m
+[32m+[m[32m            "database": {[m
+[32m+[m[32m                "events": 0,[m
+[32m+[m[32m                "processed": 0,[m
+[32m+[m[32m                "domains": 0,[m
+[32m+[m[32m                "analyses": 0,[m
+[32m+[m[32m            },[m
+[32m+[m[32m            "collector": {[m
+[32m+[m[32m                "last_query_id": "0",[m
+[32m+[m[32m            },[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        with patch("ui.dashboard.collect_status", return_value=status) as collect_status:[m
+[32m+[m[32m            response = self.client.get("/api/health")[m
+[32m+[m
+[32m+[m[32m        self.assertEqual(response.status_code, 200)[m
+[32m+[m[32m        self.assertEqual(response.get_json(), status)[m
+[32m+[m[32m        collect_status.assert_called_once_with([m
+[32m+[m[32m            include_ollama=False,[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    def test_health_endpoint_can_include_ollama_status(self) -> None:[m
+[32m+[m[32m        status = {[m
+[32m+[m[32m            "database": {},[m
+[32m+[m[32m            "collector": {},[m
+[32m+[m[32m            "ollama": {[m
+[32m+[m[32m                "available": True,[m
+[32m+[m[32m            },[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        with patch("ui.dashboard.collect_status", return_value=status) as collect_status:[m
+[32m+[m[32m            response = self.client.get("/api/health?ollama=1")[m
+[32m+[m
+[32m+[m[32m        self.assertEqual(response.status_code, 200)[m
+[32m+[m[32m        self.assertEqual(response.get_json(), status)[m
+[32m+[m[32m        collect_status.assert_called_once_with([m
+[32m+[m[32m            include_ollama=True,[m
+[32m+[m[32m        )[m
+ [m
+     def test_home_endpoint_serves_dashboard(self) -> None:[m
+         response = self.client.get("/")[m
+[36m@@ -101,6 +253,12 @@[m [mclass DashboardTests(unittest.TestCase):[m
+         self.assertEqual(response.status_code, 200)[m
+         self.assertIn(b"PiHole-AI", response.data)[m
+ [m
+[32m+[m[32m    def test_parse_limit_clamps_values(self) -> None:[m
+[32m+[m[32m        self.assertEqual(parse_limit("10"), 10)[m
+[32m+[m[32m        self.assertEqual(parse_limit("0"), 1)[m
+[32m+[m[32m        self.assertEqual(parse_limit("999"), 500)[m
+[32m+[m[32m        self.assertEqual(parse_limit("not-a-number"), 100)[m
+[32m+[m
+ [m
+ if __name__ == "__main__":[m
+     unittest.main()[m
+[1mdiff --git a/ui/dashboard.py b/ui/dashboard.py[m
+[1mindex 9f6fa57..dcc0f10 100644[m
+[1m--- a/ui/dashboard.py[m
+[1m+++ b/ui/dashboard.py[m
+[36m@@ -2,15 +2,21 @@[m [mfrom __future__ import annotations[m
+ [m
+ from typing import Any[m
+ [m
+[31m-from flask import Flask, jsonify, render_template_string[m
+[32m+[m[32mfrom flask import Flask, jsonify, render_template_string, request[m
+ [m
+ from core.config import settings[m
+ from core.db import ([m
+     database_stats,[m
+[31m-    get_events,[m
+[32m+[m[32m    get_recent_actions as db_get_recent_actions,[m
+     query_all,[m
+ )[m
+ from core.logger import get_logger[m
+[32m+[m[32mfrom pihole_ai.rules import ([m
+[32m+[m[32m    add_rule,[m
+[32m+[m[32m    get_rules as load_domain_rules,[m
+[32m+[m[32m    remove_rule,[m
+[32m+[m[32m)[m
+[32m+[m[32mfrom pihole_ai.status import collect_status[m
+ [m
+ [m
+ logger = get_logger(__name__)[m
+[36m@@ -71,7 +77,7 @@[m [mmain {[m
+ .stats {[m
+     display: grid;[m
+     gap: 12px;[m
+[31m-    grid-template-columns: repeat(4, minmax(120px, 1fr));[m
+[32m+[m[32m    grid-template-columns: repeat(6, minmax(120px, 1fr));[m
+ }[m
+ [m
+ .stat,[m
+[36m@@ -97,6 +103,56 @@[m [mmain {[m
+     margin-top: 6px;[m
+ }[m
+ [m
+[32m+[m[32m.toolbar {[m
+[32m+[m[32m    align-items: center;[m
+[32m+[m[32m    display: flex;[m
+[32m+[m[32m    flex-wrap: wrap;[m
+[32m+[m[32m    gap: 10px;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32minput,[m
+[32m+[m[32mselect {[m
+[32m+[m[32m    background: var(--panel);[m
+[32m+[m[32m    border: 1px solid var(--line);[m
+[32m+[m[32m    border-radius: 6px;[m
+[32m+[m[32m    color: var(--text);[m
+[32m+[m[32m    min-height: 36px;[m
+[32m+[m[32m    padding: 7px 10px;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32minput {[m
+[32m+[m[32m    min-width: min(360px, 100%);[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m.toolbar button {[m
+[32m+[m[32m    background: var(--accent);[m
+[32m+[m[32m    border: 0;[m
+[32m+[m[32m    border-radius: 6px;[m
+[32m+[m[32m    color: #06110d;[m
+[32m+[m[32m    font-weight: 700;[m
+[32m+[m[32m    min-height: 36px;[m
+[32m+[m[32m    padding: 7px 12px;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m.inline-actions {[m
+[32m+[m[32m    display: flex;[m
+[32m+[m[32m    flex-wrap: wrap;[m
+[32m+[m[32m    gap: 6px;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m.inline-actions button {[m
+[32m+[m[32m    background: transparent;[m
+[32m+[m[32m    border: 1px solid var(--line);[m
+[32m+[m[32m    border-radius: 6px;[m
+[32m+[m[32m    color: var(--text);[m
+[32m+[m[32m    min-height: 30px;[m
+[32m+[m[32m    padding: 5px 8px;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m.inline-actions button:hover {[m
+[32m+[m[32m    border-color: var(--accent);[m
+[32m+[m[32m}[m
+[32m+[m
+ .grid {[m
+     display: grid;[m
+     gap: 16px;[m
+[36m@@ -154,6 +210,20 @@[m [mth {[m
+     <span class="muted" id="updated">-</span>[m
+ </header>[m
+ <main>[m
+[32m+[m[32m    <section class="toolbar">[m
+[32m+[m[32m        <input id="search" type="search" placeholder="Search domains or devices">[m
+[32m+[m[32m        <select id="min-risk">[m
+[32m+[m[32m            <option value="0">All risks</option>[m
+[32m+[m[32m            <option value="40">Risk 40+</option>[m
+[32m+[m[32m            <option value="70">Risk 70+</option>[m
+[32m+[m[32m        </select>[m
+[32m+[m[32m        <select id="limit">[m
+[32m+[m[32m            <option value="50">50 rows</option>[m
+[32m+[m[32m            <option value="100" selected>100 rows</option>[m
+[32m+[m[32m            <option value="250">250 rows</option>[m
+[32m+[m[32m        </select>[m
+[32m+[m[32m        <button id="refresh" type="button">Refresh</button>[m
+[32m+[m[32m    </section>[m
+     <section class="stats" id="stats"></section>[m
+     <section class="grid">[m
+         <div class="panel">[m
+[36m@@ -176,6 +246,7 @@[m [mth {[m
+                     <tr>[m
+                         <th>Domain</th>[m
+                         <th>Risk</th>[m
+[32m+[m[32m                        <th>Confidence</th>[m
+                         <th>Category</th>[m
+                     </tr>[m
+                 </thead>[m
+[36m@@ -197,6 +268,37 @@[m [mth {[m
+             <tbody id="devices"></tbody>[m
+         </table>[m
+     </section>[m
+[32m+[m[32m    <section class="panel">[m
+[32m+[m[32m        <h2>Action Audit</h2>[m
+[32m+[m[32m        <table>[m
+[32m+[m[32m            <thead>[m
+[32m+[m[32m                <tr>[m
+[32m+[m[32m                    <th>Domain</th>[m
+[32m+[m[32m                    <th>Action</th>[m
+[32m+[m[32m                    <th>Status</th>[m
+[32m+[m[32m                    <th>Risk</th>[m
+[32m+[m[32m                    <th>Reason</th>[m
+[32m+[m[32m                    <th>Manage</th>[m
+[32m+[m[32m                </tr>[m
+[32m+[m[32m            </thead>[m
+[32m+[m[32m            <tbody id="actions"></tbody>[m
+[32m+[m[32m        </table>[m
+[32m+[m[32m    </section>[m
+[32m+[m[32m    <section class="panel">[m
+[32m+[m[32m        <h2>Domain Rules</h2>[m
+[32m+[m[32m        <table>[m
+[32m+[m[32m            <thead>[m
+[32m+[m[32m                <tr>[m
+[32m+[m[32m                    <th>Domain</th>[m
+[32m+[m[32m                    <th>Decision</th>[m
+[32m+[m[32m                    <th>Source</th>[m
+[32m+[m[32m                    <th>Reason</th>[m
+[32m+[m[32m                    <th>Manage</th>[m
+[32m+[m[32m                </tr>[m
+[32m+[m[32m            </thead>[m
+[32m+[m[32m            <tbody id="rules"></tbody>[m
+[32m+[m[32m        </table>[m
+[32m+[m[32m    </section>[m
+ </main>[m
+ <script>[m
+ const text = (value) => String(value ?? "-");[m
+[36m@@ -228,6 +330,23 @@[m [mfunction row(values) {[m
+     return tr;[m
+ }[m
+ [m
+[32m+[m[32mfunction button(label, onClick) {[m
+[32m+[m[32m    const item = document.createElement("button");[m
+[32m+[m[32m    item.type = "button";[m
+[32m+[m[32m    item.textContent = label;[m
+[32m+[m[32m    item.addEventListener("click", onClick);[m
+[32m+[m[32m    return item;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction actionCell(actions) {[m
+[32m+[m[32m    const td = document.createElement("td");[m
+[32m+[m[32m    const wrapper = document.createElement("div");[m
+[32m+[m[32m    wrapper.className = "inline-actions";[m
+[32m+[m[32m    actions.forEach((action) => wrapper.appendChild(action));[m
+[32m+[m[32m    td.appendChild(wrapper);[m
+[32m+[m[32m    return td;[m
+[32m+[m[32m}[m
+[32m+[m
+ function riskClass(risk) {[m
+     if (risk >= 70) return "risk-high";[m
+     if (risk >= 40) return "risk-mid";[m
+[36m@@ -243,6 +362,8 @@[m [mfunction renderStats(stats) {[m
+         ["Processed", stats.processed],[m
+         ["Domains", stats.domains],[m
+         ["Analyses", stats.analyses],[m
+[32m+[m[32m        ["Actions", stats.actions],[m
+[32m+[m[32m        ["Reputations", stats.reputations],[m
+     ].forEach(([label, value]) => {[m
+         const item = document.createElement("div");[m
+         item.className = "stat";[m
+[36m@@ -279,6 +400,7 @@[m [mfunction renderAnalysis(items) {[m
+         target.appendChild(row([[m
+             item.domain,[m
+             [item.risk, riskClass(item.risk)],[m
+[32m+[m[32m            item.confidence,[m
+             item.category,[m
+         ]));[m
+     });[m
+[36m@@ -297,22 +419,100 @@[m [mfunction renderDevices(devices) {[m
+     });[m
+ }[m
+ [m
+[32m+[m[32mfunction renderActions(actions) {[m
+[32m+[m[32m    const target = document.getElementById("actions");[m
+[32m+[m[32m    clear(target);[m
+[32m+[m[32m    actions.forEach((action) => {[m
+[32m+[m[32m        const tr = row([[m
+[32m+[m[32m            action.domain,[m
+[32m+[m[32m            action.action,[m
+[32m+[m[32m            action.status,[m
+[32m+[m[32m            action.risk ?? "-",[m
+[32m+[m[32m            action.reason,[m
+[32m+[m[32m        ]);[m
+[32m+[m[32m        tr.appendChild(actionCell([[m
+[32m+[m[32m            button("Allow", () => saveRule(action.domain, "allow")),[m
+[32m+[m[32m            button("Block", () => saveRule(action.domain, "block")),[m
+[32m+[m[32m        ]));[m
+[32m+[m[32m        target.appendChild(tr);[m
+[32m+[m[32m    });[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunction renderRules(rules) {[m
+[32m+[m[32m    const target = document.getElementById("rules");[m
+[32m+[m[32m    clear(target);[m
+[32m+[m[32m    rules.forEach((rule) => {[m
+[32m+[m[32m        const tr = row([[m
+[32m+[m[32m            rule.domain,[m
+[32m+[m[32m            rule.decision,[m
+[32m+[m[32m            rule.source,[m
+[32m+[m[32m            rule.reason,[m
+[32m+[m[32m        ]);[m
+[32m+[m[32m        tr.appendChild(actionCell([[m
+[32m+[m[32m            button("Remove", () => removeRule(rule.domain)),[m
+[32m+[m[32m        ]));[m
+[32m+[m[32m        target.appendChild(tr);[m
+[32m+[m[32m    });[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32masync function saveRule(domain, decision) {[m
+[32m+[m[32m    await fetch("/api/rules", {[m
+[32m+[m[32m        method: "POST",[m
+[32m+[m[32m        headers: {"Content-Type": "application/json"},[m
+[32m+[m[32m        body: JSON.stringify({[m
+[32m+[m[32m            domain,[m
+[32m+[m[32m            decision,[m
+[32m+[m[32m            reason: `Dashboard ${decision}`,[m
+[32m+[m[32m        }),[m
+[32m+[m[32m    });[m
+[32m+[m[32m    await load();[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32masync function removeRule(domain) {[m
+[32m+[m[32m    await fetch(`/api/rules/${encodeURIComponent(domain)}`, {[m
+[32m+[m[32m        method: "DELETE",[m
+[32m+[m[32m    });[m
+[32m+[m[32m    await load();[m
+[32m+[m[32m}[m
+[32m+[m
+ async function load() {[m
+[31m-    const [stats, events, analysis, devices] = await Promise.all([[m
+[32m+[m[32m    const params = new URLSearchParams();[m
+[32m+[m[32m    const search = document.getElementById("search").value.trim();[m
+[32m+[m[32m    const minRisk = document.getElementById("min-risk").value;[m
+[32m+[m[32m    const limit = document.getElementById("limit").value;[m
+[32m+[m
+[32m+[m[32m    if (search) params.set("q", search);[m
+[32m+[m[32m    if (minRisk !== "0") params.set("min_risk", minRisk);[m
+[32m+[m[32m    params.set("limit", limit);[m
+[32m+[m
+[32m+[m[32m    const suffix = `?${params.toString()}`;[m
+[32m+[m[32m    const [stats, events, analysis, devices, actions, rules] = await Promise.all([[m
+         fetch("/api/stats").then((res) => res.json()),[m
+[31m-        fetch("/api/events").then((res) => res.json()),[m
+[31m-        fetch("/api/analysis").then((res) => res.json()),[m
+[31m-        fetch("/api/devices").then((res) => res.json()),[m
+[32m+[m[32m        fetch(`/api/events${suffix}`).then((res) => res.json()),[m
+[32m+[m[32m        fetch(`/api/analysis${suffix}`).then((res) => res.json()),[m
+[32m+[m[32m        fetch(`/api/devices${suffix}`).then((res) => res.json()),[m
+[32m+[m[32m        fetch(`/api/actions${suffix}`).then((res) => res.json()),[m
+[32m+[m[32m        fetch(`/api/rules${suffix}`).then((res) => res.json()),[m
+     ]);[m
+ [m
+     renderStats(stats);[m
+     renderEvents(events);[m
+     renderAnalysis(analysis);[m
+     renderDevices(devices);[m
+[32m+[m[32m    renderActions(actions);[m
+[32m+[m[32m    renderRules(rules);[m
+     document.getElementById("updated").textContent =[m
+         new Date().toLocaleTimeString();[m
+ }[m
+ [m
+[32m+[m[32mdocument.getElementById("refresh").addEventListener("click", load);[m
+[32m+[m[32mdocument.getElementById("search").addEventListener("keydown", (event) => {[m
+[32m+[m[32m    if (event.key === "Enter") {[m
+[32m+[m[32m        load();[m
+[32m+[m[32m    }[m
+[32m+[m[32m});[m
+[32m+[m[32mdocument.getElementById("min-risk").addEventListener("change", load);[m
+[32m+[m[32mdocument.getElementById("limit").addEventListener("change", load);[m
+ setInterval(load, 3000);[m
+ load();[m
+ </script>[m
+[36m@@ -331,19 +531,132 @@[m [mdef row_to_dict([m
+     return dict(row)[m
+ [m
+ [m
+[32m+[m[32mdef parse_limit([m
+[32m+[m[32m    value: str | None,[m
+[32m+[m[32m    default: int = 100,[m
+[32m+[m[32m    maximum: int = 500,[m
+[32m+[m[32m) -> int:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Parse and clamp endpoint limit parameters.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        limit = int(value or default)[m
+[32m+[m
+[32m+[m[32m    except ValueError:[m
+[32m+[m[32m        return default[m
+[32m+[m
+[32m+[m[32m    return max([m
+[32m+[m[32m        1,[m
+[32m+[m[32m        min(limit, maximum),[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef parse_int([m
+[32m+[m[32m    value: str | None,[m
+[32m+[m[32m    default: int = 0,[m
+[32m+[m[32m) -> int:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Parse integer query parameters.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        return int(value or default)[m
+[32m+[m
+[32m+[m[32m    except ValueError:[m
+[32m+[m[32m        return default[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef get_recent_events([m
+[32m+[m[32m    limit: int = 100,[m
+[32m+[m[32m    search: str = "",[m
+[32m+[m[32m    processed: int | None = None,[m
+[32m+[m[32m) -> list[dict[str, Any]]:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Return recent events with optional filtering.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    where = [][m
+[32m+[m[32m    params: list[Any] = [][m
+[32m+[m
+[32m+[m[32m    if search:[m
+[32m+[m[32m        where.append("(domain LIKE ? OR device LIKE ?)")[m
+[32m+[m[32m        pattern = f"%{search}%"[m
+[32m+[m[32m        params.extend([pattern, pattern])[m
+[32m+[m
+[32m+[m[32m    if processed is not None:[m
+[32m+[m[32m        where.append("processed = ?")[m
+[32m+[m[32m        params.append(processed)[m
+[32m+[m
+[32m+[m[32m    where_sql = ""[m
+[32m+[m
+[32m+[m[32m    if where:[m
+[32m+[m[32m        where_sql = "WHERE " + " AND ".join(where)[m
+[32m+[m
+[32m+[m[32m    rows = query_all([m
+[32m+[m[32m        f"""[m
+[32m+[m[32m        SELECT[m
+[32m+[m
+[32m+[m[32m            id,[m
+[32m+[m[32m            device,[m
+[32m+[m[32m            domain,[m
+[32m+[m[32m            timestamp,[m
+[32m+[m[32m            processed[m
+[32m+[m
+[32m+[m[32m        FROM events[m
+[32m+[m
+[32m+[m[32m        {where_sql}[m
+[32m+[m
+[32m+[m[32m        ORDER BY id DESC[m
+[32m+[m
+[32m+[m[32m        LIMIT ?[m
+[32m+[m[32m        """,[m
+[32m+[m[32m        tuple(params + [limit]),[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    return [[m
+[32m+[m[32m        row_to_dict(row)[m
+[32m+[m[32m        for row in rows[m
+[32m+[m[32m    ][m
+[32m+[m
+[32m+[m
+ def get_recent_analyses([m
+     limit: int = 100,[m
+[32m+[m[32m    search: str = "",[m
+[32m+[m[32m    min_risk: int = 0,[m
+[32m+[m[32m    category: str = "",[m
+ ) -> list[dict[str, Any]]:[m
+     """[m
+     Return recent domain analyses for the dashboard/API.[m
+     """[m
+ [m
+[32m+[m[32m    where = [][m
+[32m+[m[32m    params: list[Any] = [][m
+[32m+[m
+[32m+[m[32m    if search:[m
+[32m+[m[32m        where.append("domain LIKE ?")[m
+[32m+[m[32m        params.append(f"%{search}%")[m
+[32m+[m
+[32m+[m[32m    if min_risk > 0:[m
+[32m+[m[32m        where.append("risk >= ?")[m
+[32m+[m[32m        params.append(min_risk)[m
+[32m+[m
+[32m+[m[32m    if category:[m
+[32m+[m[32m        where.append("category = ?")[m
+[32m+[m[32m        params.append(category)[m
+[32m+[m
+[32m+[m[32m    where_sql = ""[m
+[32m+[m
+[32m+[m[32m    if where:[m
+[32m+[m[32m        where_sql = "WHERE " + " AND ".join(where)[m
+[32m+[m
+     rows = query_all([m
+         """[m
+         SELECT[m
+ [m
+             domain,[m
+             risk,[m
+[32m+[m[32m            confidence,[m
+             category,[m
+             reason,[m
+             model,[m
+[36m@@ -351,11 +664,13 @@[m [mdef get_recent_analyses([m
+ [m
+         FROM analysis[m
+ [m
+[32m+[m[32m        {where_sql}[m
+[32m+[m
+         ORDER BY analyzed_at DESC[m
+ [m
+         LIMIT ?[m
+[31m-        """,[m
+[31m-        (limit,),[m
+[32m+[m[32m        """.format(where_sql=where_sql),[m
+[32m+[m[32m        tuple(params + [limit]),[m
+     )[m
+ [m
+     return [[m
+[36m@@ -366,11 +681,20 @@[m [mdef get_recent_analyses([m
+ [m
+ def get_device_summary([m
+     limit: int = 100,[m
+[32m+[m[32m    search: str = "",[m
+ ) -> list[dict[str, Any]]:[m
+     """[m
+     Return per-device event counts.[m
+     """[m
+ [m
+[32m+[m[32m    where_sql = ""[m
+[32m+[m[32m    params: list[Any] = [][m
+[32m+[m
+[32m+[m[32m    if search:[m
+[32m+[m[32m        where_sql = "WHERE device LIKE ? OR domain LIKE ?"[m
+[32m+[m[32m        pattern = f"%{search}%"[m
+[32m+[m[32m        params.extend([pattern, pattern])[m
+[32m+[m
+     rows = query_all([m
+         """[m
+         SELECT[m
+[36m@@ -382,13 +706,15 @@[m [mdef get_device_summary([m
+ [m
+         FROM events[m
+ [m
+[32m+[m[32m        {where_sql}[m
+[32m+[m
+         GROUP BY device[m
+ [m
+         ORDER BY query_count DESC[m
+ [m
+         LIMIT ?[m
+[31m-        """,[m
+[31m-        (limit,),[m
+[32m+[m[32m        """.format(where_sql=where_sql),[m
+[32m+[m[32m        tuple(params + [limit]),[m
+     )[m
+ [m
+     return [[m
+[36m@@ -397,6 +723,43 @@[m [mdef get_device_summary([m
+     ][m
+ [m
+ [m
+[32m+[m[32mdef get_recent_actions([m
+[32m+[m[32m    limit: int = 100,[m
+[32m+[m[32m    search: str = "",[m
+[32m+[m[32m    action: str = "",[m
+[32m+[m[32m    status: str = "",[m
+[32m+[m[32m) -> list[dict[str, Any]]:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Return recent action audit rows for the dashboard/API.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    return [[m
+[32m+[m[32m        row_to_dict(row)[m
+[32m+[m[32m        for row in db_get_recent_actions([m
+[32m+[m[32m            limit=limit,[m
+[32m+[m[32m            search=search,[m
+[32m+[m[32m            action=action,[m
+[32m+[m[32m            status=status,[m
+[32m+[m[32m        )[m
+[32m+[m[32m    ][m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef get_domain_rules([m
+[32m+[m[32m    limit: int = 100,[m
+[32m+[m[32m    search: str = "",[m
+[32m+[m[32m    decision: str = "",[m
+[32m+[m[32m) -> list[dict[str, Any]]:[m
+[32m+[m[32m    """[m
+[32m+[m[32m    Return active domain rules for the dashboard/API.[m
+[32m+[m[32m    """[m
+[32m+[m
+[32m+[m[32m    return load_domain_rules([m
+[32m+[m[32m        limit=limit,[m
+[32m+[m[32m        search=search,[m
+[32m+[m[32m        decision=decision,[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m
+ def create_app() -> Flask:[m
+     """[m
+     Create the Flask dashboard application.[m
+[36m@@ -414,38 +777,124 @@[m [mdef create_app() -> Flask:[m
+ [m
+     @app.get("/api/events")[m
+     def events():[m
+[32m+[m[32m        processed_arg = request.args.get("processed")[m
+[32m+[m[32m        processed = None[m
+[32m+[m
+[32m+[m[32m        if processed_arg in {"0", "1"}:[m
+[32m+[m[32m            processed = int(processed_arg)[m
+[32m+[m
+         return jsonify([m
+[31m-            [[m
+[31m-                row_to_dict(row)[m
+[31m-                for row in get_events(100)[m
+[31m-            ][m
+[32m+[m[32m            get_recent_events([m
+[32m+[m[32m                limit=parse_limit(request.args.get("limit")),[m
+[32m+[m[32m                search=request.args.get("q", "").strip(),[m
+[32m+[m[32m                processed=processed,[m
+[32m+[m[32m            )[m
+         )[m
+ [m
+     @app.get("/api/analysis")[m
+     def analysis():[m
+         return jsonify([m
+[31m-            get_recent_analyses(100)[m
+[32m+[m[32m            get_recent_analyses([m
+[32m+[m[32m                limit=parse_limit(request.args.get("limit")),[m
+[32m+[m[32m                search=request.args.get("q", "").strip(),[m
+[32m+[m[32m                min_risk=parse_int(request.args.get("min_risk")),[m
+[32m+[m[32m                category=request.args.get("category", "").strip(),[m
+[32m+[m[32m            )[m
+         )[m
+ [m
+     @app.get("/api/devices")[m
+     def devices():[m
+         return jsonify([m
+[31m-            get_device_summary(100)[m
+[32m+[m[32m            get_device_summary([m
+[32m+[m[32m                limit=parse_limit(request.args.get("limit")),[m
+[32m+[m[32m                search=request.args.get("q", "").strip(),[m
+[32m+[m[32m            )[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    @app.get("/api/actions")[m
+[32m+[m[32m    def actions():[m
+[32m+[m[32m        return jsonify([m
+[32m+[m[32m            get_recent_actions([m
+[32m+[m[32m                limit=parse_limit(request.args.get("limit")),[m
+[32m+[m[32m                search=request.args.get("q", "").strip(),[m
+[32m+[m[32m                action=request.args.get("action", "").strip(),[m
+[32m+[m[32m                status=request.args.get("status", "").strip(),[m
+[32m+[m[32m            )[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    @app.get("/api/rules")[m
+[32m+[m[32m    def rules():[m
+[32m+[m[32m        return jsonify([m
+[32m+[m[32m            get_domain_rules([m
+[32m+[m[32m                limit=parse_limit(request.args.get("limit")),[m
+[32m+[m[32m                search=request.args.get("q", "").strip(),[m
+[32m+[m[32m                decision=request.args.get("decision", "").strip(),[m
+[32m+[m[32m            )[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    @app.post("/api/rules")[m
+[32m+[m[32m    def create_rule():[m
+[32m+[m[32m        payload = request.get_json(silent=True) or {}[m
+[32m+[m[32m        domain = str(payload.get("domain", "")).strip()[m
+[32m+[m[32m        decision = str(payload.get("decision", "")).strip()[m
+[32m+[m[32m        reason = str(payload.get("reason", "")).strip()[m
+[32m+[m[32m        apply_block = bool(payload.get("apply", False))[m
+[32m+[m
+[32m+[m[32m        if not domain:[m
+[32m+[m[32m            return jsonify({"error": "domain is required"}), 400[m
+[32m+[m
+[32m+[m[32m        if decision not in {"allow", "block"}:[m
+[32m+[m[32m            return jsonify({"error": "decision must be allow or block"}), 400[m
+[32m+[m
+[32m+[m[32m        add_rule([m
+[32m+[m[32m            domain=domain,[m
+[32m+[m[32m            decision=decision,[m
+[32m+[m[32m            reason=reason,[m
+[32m+[m[32m            apply_block=apply_block,[m
+         )[m
+ [m
+[31m-    @app.get("/api/health")[m
+[31m-    def health():[m
+         return jsonify([m
+             {[m
+[31m-                "status": "ok",[m
+[31m-                "database": database_stats(),[m
+[32m+[m[32m                "domain": domain,[m
+[32m+[m[32m                "decision": decision,[m
+[32m+[m[32m                "status": "saved",[m
+             }[m
+         )[m
+ [m
+[32m+[m[32m    @app.delete("/api/rules/<path:domain>")[m
+[32m+[m[32m    def delete_rule(domain: str):[m
+[32m+[m[32m        removed = remove_rule([m
+[32m+[m[32m            domain,[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m        return jsonify([m
+[32m+[m[32m            {[m
+[32m+[m[32m                "domain": domain,[m
+[32m+[m[32m                "removed": removed,[m
+[32m+[m[32m            }[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32m    @app.get("/api/health")[m
+[32m+[m[32m    def health():[m
+[32m+[m[32m        include_ollama = request.args.get("ollama") in {[m
+[32m+[m[32m            "1",[m
+[32m+[m[32m            "true",[m
+[32m+[m[32m            "yes",[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        return jsonify([m
+[32m+[m[32m            collect_status([m
+[32m+[m[32m                include_ollama=include_ollama,[m
+[32m+[m[32m            )[m
+[32m+[m[32m        )[m
+[32m+[m
+     @app.get("/data")[m
+     def legacy_data():[m
+         return jsonify([m
+[31m-            get_device_summary(100)[m
+[32m+[m[32m            get_device_summary([m
+[32m+[m[32m                limit=parse_limit(request.args.get("limit")),[m
+[32m+[m[32m                search=request.args.get("q", "").strip(),[m
+[32m+[m[32m            )[m
+         )[m
+ [m
+     return app[m

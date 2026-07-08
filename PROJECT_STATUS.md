@@ -339,9 +339,39 @@ Potential features:
 
 ---
 
+## v0.6
+
+Local learning and threat intelligence
+
+Implemented first slice:
+
+* `domain_reputation` table built from observed DNS history
+* `pihole-ai learn` command for periodic reputation updates
+* learned alert/suggest-block audit records
+* manual allow/block rules influence learned scores
+
+Planned features:
+
+* `ReputationClassifier` that uses local behavior before Ollama
+* known-bad feed ingestion for URLhaus, curated hosts files, or similar sources
+* manual allow rules override learned and feed-based suspicion
+* learned results start as alert/suggest-block decisions, not automatic blocks
+
+Initial learning signals:
+
+* sudden query spikes
+* repeated beacon-like timing
+* suspicious domains seen across multiple devices
+* previous heuristic or AI warnings
+* repeated action audit suggestions
+* manual allow/block feedback
+
+---
+
 ## Long-Term Goals
 
 * Threat intelligence integration
+* Local reputation learning
 * Reputation providers
 * Scheduled re-analysis
 * Domain clustering

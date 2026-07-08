@@ -1,0 +1,9 @@
+[Unit]
+Description=Run PiHole-AI Database Maintenance Daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target

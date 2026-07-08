@@ -33,19 +33,53 @@ mark_processed_by_domain()
 
 from __future__ import annotations
 
+import time
+from typing import Any
+
 from core.config import settings
 from core.db import (
     get_analysis,
+    get_domain_metadata,
     get_unprocessed_domains,
     mark_processed_by_domain,
     save_analysis,
 )
 from core.logger import get_logger
 
+from actions.policy import apply_action_policy
 from engine.analyzer import Analyzer
-from engine.models import AnalysisRequest
+from engine.models import AnalysisRequest, DomainMetadata
 
 logger = get_logger(__name__)
+
+
+def is_cache_usable(
+    analysis: Any,
+    now: float | None = None,
+    cache_ttl: int | None = None,
+) -> bool:
+    """
+    Return True if a cached analysis can be reused.
+    """
+
+    if analysis is None:
+        return False
+
+    if analysis["confidence"] <= 0:
+        return False
+
+    if cache_ttl is None:
+        cache_ttl = settings.cache_ttl
+
+    if cache_ttl <= 0:
+        return True
+
+    analyzed_at = analysis["analyzed_at"] or 0
+
+    if now is None:
+        now = time.time()
+
+    return now - analyzed_at <= cache_ttl
 
 
 class AnalysisEngine:
@@ -101,7 +135,7 @@ class AnalysisEngine:
                     domain,
                 )
 
-                if analysis is not None:
+                if is_cache_usable(analysis):
 
                     logger.info(
                         "Cache hit: %s",
@@ -115,12 +149,22 @@ class AnalysisEngine:
                     processed += 1
                     continue
 
+                if analysis is not None:
+
+                    logger.info(
+                        "Retrying stale cached analysis: %s",
+                        domain,
+                    )
+
                 #
                 # AI Analysis
                 #
 
                 request = AnalysisRequest(
                     domain=domain,
+                    metadata=DomainMetadata.from_mapping(
+                        get_domain_metadata(domain),
+                    ),
                 )
 
                 result = self.analyzer.analyze(
@@ -130,10 +174,15 @@ class AnalysisEngine:
                 save_analysis(
                     domain=result.domain,
                     risk=result.risk,
+                    confidence=result.confidence,
                     category=result.category,
                     reason=result.reason,
                     model=result.model,
                     analyzed_at=result.analyzed_at,
+                )
+
+                apply_action_policy(
+                    result,
                 )
 
                 mark_processed_by_domain(
@@ -162,15 +211,45 @@ class AnalysisEngine:
 
         return processed
 
+    def run_loop(
+        self,
+        interval: int | None = None,
+        max_cycles: int | None = None,
+    ) -> None:
+        """
+        Continuously process pending domains.
+        """
+
+        if interval is None:
+            interval = settings.engine_interval
+
+        cycles = 0
+
+        logger.info(
+            "Analysis engine running (interval=%d).",
+            interval,
+        )
+
+        while True:
+
+            self.process_once()
+
+            cycles += 1
+
+            if max_cycles is not None and cycles >= max_cycles:
+                return
+
+            time.sleep(interval)
+
 
 def main() -> None:
     """
-    Run one processing cycle.
+    Run the continuous analysis worker.
     """
 
     engine = AnalysisEngine()
 
-    engine.process_once()
+    engine.run_loop()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,15 @@
+[Unit]
+Description=PiHole-AI Dashboard
+After=network-online.target pihole-ai-engine.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/pihole-ai
+EnvironmentFile=/opt/pihole-ai/.env
+ExecStart=/opt/pihole-ai/.venv/bin/pihole-ai dashboard
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

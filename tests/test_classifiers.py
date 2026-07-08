@@ -17,12 +17,16 @@ from engine.classifiers.rule_engine import RuleEngine
 from engine.models import (
     AnalysisRequest,
     AnalysisResult,
+    DomainMetadata,
     DomainCategory,
     validate_ai_response,
 )
 
 
 class DummyLogger:
+    def info(self, *args, **kwargs):
+        pass
+
     def debug(self, *args, **kwargs):
         pass
 
@@ -31,6 +35,14 @@ class DummyLogger:
 
 
 class FakeClient:
+    def current_model(self) -> str:
+        return "fake-model"
+
+
+class FailingClient:
+    def generate(self, *args, **kwargs):
+        raise RuntimeError("ollama unavailable")
+
     def current_model(self) -> str:
         return "fake-model"
 
@@ -104,6 +116,58 @@ class HeuristicsEngineTests(unittest.TestCase):
             DomainCategory.SUSPICIOUS.value,
         )
         self.assertGreaterEqual(result.risk, 40)
+
+    def test_deep_subdomain_contributes_to_suspicious_score(self) -> None:
+        result = self.engine.classify(
+            AnalysisRequest(
+                domain="login.verify.secure.account.example.com",
+            ),
+        )
+
+        self.assertIsNotNone(result)
+        self.assertIn(
+            "Deep subdomain structure",
+            result.reason,
+        )
+
+    def test_high_query_frequency_uses_metadata(self) -> None:
+        result = self.engine.classify(
+            AnalysisRequest(
+                domain="login-secure.example.com",
+                metadata=DomainMetadata(
+                    domain="login-secure.example.com",
+                    query_count=501,
+                ),
+            ),
+        )
+
+        self.assertIsNotNone(result)
+        self.assertIn(
+            "High query frequency",
+            result.reason,
+        )
+
+
+class DomainMetadataTests(unittest.TestCase):
+    def test_builds_from_mapping_with_defaults(self) -> None:
+        metadata = DomainMetadata.from_mapping(
+            {
+                "domain": "example.com",
+                "query_count": None,
+                "first_seen": None,
+                "last_seen": 20,
+                "device_count": 2,
+                "recent_queries": 7,
+            }
+        )
+
+        self.assertEqual(metadata.domain, "example.com")
+        self.assertEqual(metadata.query_count, 0)
+        self.assertEqual(metadata.first_seen, 0.0)
+        self.assertEqual(metadata.last_seen, 20.0)
+        self.assertEqual(metadata.device_count, 2)
+        self.assertEqual(metadata.recent_queries, 7)
+        self.assertEqual(metadata.tags, [])
 
 
 class AIResponseValidationTests(unittest.TestCase):
@@ -222,6 +286,21 @@ class AIClassifierParsingTests(unittest.TestCase):
         self.assertEqual(result.category, DomainCategory.UNKNOWN.value)
         self.assertEqual(result.risk, 50)
         self.assertEqual(result.confidence, 0)
+
+    def test_generate_exception_falls_back_to_unknown(self) -> None:
+        classifier = AIClassifier.__new__(AIClassifier)
+        classifier.logger = DummyLogger()
+        classifier.client = FailingClient()
+
+        result = classifier.classify(
+            AnalysisRequest(domain="example.com"),
+        )
+
+        self.assertEqual(result.category, DomainCategory.UNKNOWN.value)
+        self.assertEqual(result.risk, 50)
+        self.assertEqual(result.confidence, 0)
+        self.assertEqual(result.reason, "AI backend unavailable.")
+        self.assertEqual(result.model, "fake-model")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,15 @@
+[Unit]
+Description=PiHole-AI Analysis Engine
+After=network-online.target ollama.service pihole-ai-collector.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/pihole-ai
+EnvironmentFile=/opt/pihole-ai/.env
+ExecStart=/opt/pihole-ai/.venv/bin/pihole-ai engine
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

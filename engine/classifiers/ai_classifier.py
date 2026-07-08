@@ -57,10 +57,23 @@ class AIClassifier(BaseClassifier):
             metadata=request.metadata,
         )
 
-        response = self.client.generate(
-            system=SYSTEM_PROMPT,
-            prompt=prompt,
-        )
+        try:
+            response = self.client.generate(
+                system=SYSTEM_PROMPT,
+                prompt=prompt,
+            )
+
+        except Exception as exc:
+            self.logger.warning(
+                "AI backend failed for '%s': %s",
+                request.domain,
+                exc,
+            )
+
+            return self._fallback(
+                request,
+                "AI backend unavailable.",
+            )
 
         return self._parse_response(
             request,

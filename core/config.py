@@ -93,9 +93,22 @@ class Settings:
         os.getenv("PIHOLE_AI_ENGINE_BATCH_SIZE", "500")
     )
 
+    engine_interval: int = int(
+        os.getenv("PIHOLE_AI_ENGINE_INTERVAL", "5")
+    )
+
     high_risk_threshold: int = int(
         os.getenv("PIHOLE_AI_HIGH_RISK_THRESHOLD", "70")
     )
+
+    alert_threshold: int = int(
+        os.getenv("PIHOLE_AI_ALERT_THRESHOLD", "50")
+    )
+
+    action_mode: str = os.getenv(
+        "PIHOLE_AI_ACTION_MODE",
+        "dry-run",
+    ).lower()
 
     # ------------------------------------------------------------------
     # Beacon Detection
@@ -158,6 +171,10 @@ class Settings:
         os.getenv("PIHOLE_AI_CACHE_TTL", "86400")
     )
 
+    keep_latest_events: int = int(
+        os.getenv("PIHOLE_AI_KEEP_LATEST_EVENTS", "100000")
+    )
+
     def validate(self) -> None:
         """
         Validate configuration values.
@@ -167,6 +184,16 @@ class Settings:
         if not (0 <= self.high_risk_threshold <= 100):
             raise ValueError(
                 "HIGH_RISK_THRESHOLD must be between 0 and 100."
+            )
+
+        if not (0 <= self.alert_threshold <= 100):
+            raise ValueError(
+                "ALERT_THRESHOLD must be between 0 and 100."
+            )
+
+        if self.action_mode not in {"off", "dry-run", "block"}:
+            raise ValueError(
+                "ACTION_MODE must be one of: off, dry-run, block."
             )
 
         if not (0 <= self.ai_minimum_score <= 100):
@@ -179,9 +206,19 @@ class Settings:
                 "COLLECT_INTERVAL must be greater than zero."
             )
 
+        if self.engine_interval <= 0:
+            raise ValueError(
+                "ENGINE_INTERVAL must be greater than zero."
+            )
+
         if self.http_timeout <= 0:
             raise ValueError(
                 "HTTP_TIMEOUT must be greater than zero."
+            )
+
+        if self.keep_latest_events <= 0:
+            raise ValueError(
+                "KEEP_LATEST_EVENTS must be greater than zero."
             )
 
 
@@ -205,7 +242,10 @@ COLLECT_BATCH_SIZE = settings.collect_batch_size
 COLLECT_INTERVAL = settings.collect_interval
 
 ENGINE_BATCH_SIZE = settings.engine_batch_size
+ENGINE_INTERVAL = settings.engine_interval
 HIGH_RISK_THRESHOLD = settings.high_risk_threshold
+ALERT_THRESHOLD = settings.alert_threshold
+ACTION_MODE = settings.action_mode
 
 BEACON_HISTORY = settings.beacon_history
 BEACON_MIN_EVENTS = settings.beacon_min_events
@@ -216,3 +256,4 @@ OLLAMA_MODEL = settings.ollama_model
 
 AI_ENABLED = settings.ai_enabled
 AI_MINIMUM_SCORE = settings.ai_minimum_score
+KEEP_LATEST_EVENTS = settings.keep_latest_events

@@ -1,0 +1,8 @@
+[Unit]
+Description=PiHole-AI Database Maintenance
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/pihole-ai
+EnvironmentFile=/opt/pihole-ai/.env
+ExecStart=/opt/pihole-ai/.venv/bin/pihole-ai maintenance --vacuum

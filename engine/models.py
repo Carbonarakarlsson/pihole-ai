@@ -98,6 +98,25 @@ class DomainMetadata:
 
     tags: list[str] = field(default_factory=list)
 
+    @classmethod
+    def from_mapping(
+        cls,
+        values: dict[str, Any],
+    ) -> "DomainMetadata":
+        """
+        Build metadata from a database mapping.
+        """
+
+        return cls(
+            domain=str(values.get("domain", "")),
+            query_count=int(values.get("query_count", 0) or 0),
+            first_seen=float(values.get("first_seen", 0.0) or 0.0),
+            last_seen=float(values.get("last_seen", 0.0) or 0.0),
+            device_count=int(values.get("device_count", 0) or 0),
+            recent_queries=int(values.get("recent_queries", 0) or 0),
+            tags=list(values.get("tags", []) or []),
+        )
+
 
 # ============================================================================
 # AI Request

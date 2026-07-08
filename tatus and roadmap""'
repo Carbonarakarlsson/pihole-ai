@@ -1,0 +1,17 @@
+ .gitignore                         |   3 [32m+[m
+ PROJECT_STATUS.md                  |  30 [32m+[m
+ README.md                          | 530 [32m+++++++[m[31m-[m
+ actions/alerts.py                  |  13 [32m+[m
+ actions/blocklist.py               |  13 [32m+[m
+ core/config.py                     |  41 [32m+[m
+ core/db.py                         | 717 [32m++++++++++[m[31m-[m
+ engine/anomaly.py                  |   7 [32m+[m
+ .../classifiers/ai_classifier.py   |  21 [32m+[m[31m-[m
+ engine/engine.py                   |  89 [32m+[m[31m-[m
+ engine/models.py                   |  19 [32m+[m
+ engine/scoring.py                  |   7 [32m+[m
+ pyproject.toml                     |   4 [32m+[m
+ tests/test_classifiers.py          |  79 [32m++[m
+ tests/test_dashboard.py            | 194 [32m++[m[31m-[m
+ ui/dashboard.py                    | 493 [32m++++++[m[31m-[m
+ 16 files changed, 2196 insertions(+), 64 deletions(-)

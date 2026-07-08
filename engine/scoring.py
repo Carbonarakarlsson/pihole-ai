@@ -1,3 +1,10 @@
+"""
+Legacy scoring helpers.
+
+The active analysis path uses engine.classifiers.heuristics.HeuristicsEngine.
+Keep this module only as historical reference until it is removed.
+"""
+
 import math
 
 
