@@ -42,6 +42,7 @@ from core.db import (
     get_domain_metadata,
     get_unprocessed_domains,
     mark_processed_by_domain,
+    record_action,
     save_analysis,
 )
 from core.logger import get_logger
@@ -49,6 +50,7 @@ from core.logger import get_logger
 from actions.policy import apply_action_policy
 from engine.analyzer import Analyzer
 from engine.models import AnalysisRequest, DomainMetadata
+from pihole_ai.learn import update_reputation_from_analysis
 
 logger = get_logger(__name__)
 
@@ -109,7 +111,7 @@ class AnalysisEngine:
         )
 
         if not domains:
-            logger.info(
+            logger.debug(
                 "No pending domains."
             )
             return 0
@@ -137,7 +139,7 @@ class AnalysisEngine:
 
                 if is_cache_usable(analysis):
 
-                    logger.info(
+                    logger.debug(
                         "Cache hit: %s",
                         domain,
                     )
@@ -151,7 +153,7 @@ class AnalysisEngine:
 
                 if analysis is not None:
 
-                    logger.info(
+                    logger.debug(
                         "Retrying stale cached analysis: %s",
                         domain,
                     )
@@ -181,6 +183,27 @@ class AnalysisEngine:
                     analyzed_at=result.analyzed_at,
                 )
 
+                if _is_ai_parse_error(result):
+                    record_action(
+                        domain=result.domain,
+                        action="review",
+                        source="ai",
+                        status="parse_error",
+                        reason=result.reason,
+                        risk=result.risk,
+                    )
+
+                try:
+                    update_reputation_from_analysis(
+                        result,
+                    )
+
+                except Exception:
+                    logger.exception(
+                        "Failed updating reputation for '%s'",
+                        result.domain,
+                    )
+
                 apply_action_policy(
                     result,
                 )
@@ -191,7 +214,7 @@ class AnalysisEngine:
 
                 processed += 1
 
-                logger.info(
+                logger.debug(
                     "✓ %s (risk=%d)",
                     result.domain,
                     result.risk,
@@ -250,6 +273,21 @@ def main() -> None:
     engine = AnalysisEngine()
 
     engine.run_loop()
+
+
+def _is_ai_parse_error(
+    result: Any,
+) -> bool:
+    """
+    Return True when the AI returned an invalid response.
+    """
+
+    return (
+        result.model == "ai"
+        and result.category == "unknown"
+        and result.risk == 0
+        and result.reason == "AI returned invalid response"
+    )
 
 
 if __name__ == "__main__":

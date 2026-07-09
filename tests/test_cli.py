@@ -52,6 +52,25 @@ class CLITests(unittest.TestCase):
         analysis_engine.assert_called_once_with()
         analysis_engine.return_value.run_loop.assert_called_once_with()
 
+    def test_path_commands_print_runtime_paths(self) -> None:
+        from core.config import settings
+
+        expected = {
+            "config-path": str(settings.config_file),
+            "data-path": str(settings.events_db),
+            "log-path": str(settings.log_file),
+        }
+
+        for command, path in expected.items():
+            with self.subTest(command=command), patch(
+                "sys.stdout",
+                io.StringIO(),
+            ) as stdout:
+                exit_code = cli.main([command])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stdout.getvalue().strip(), path)
+
     def test_dashboard_dispatches_to_dashboard_main(self) -> None:
         with patch("ui.dashboard.main") as dashboard_main:
             exit_code = cli.main(
@@ -72,12 +91,22 @@ class CLITests(unittest.TestCase):
 
     def test_status_dispatches_to_status_printer(self) -> None:
         with patch("pihole_ai.service.service_status") as service_status:
-            exit_code = cli.main(["status", "--no-ollama", "--dry-run"])
+            exit_code = cli.main(["status", "--dry-run"])
 
         self.assertEqual(exit_code, 0)
         service_status.assert_called_once_with(
             include_ollama=False,
             dry_run=True,
+        )
+
+    def test_status_can_include_ollama_when_requested(self) -> None:
+        with patch("pihole_ai.service.service_status") as service_status:
+            exit_code = cli.main(["status", "--ollama"])
+
+        self.assertEqual(exit_code, 0)
+        service_status.assert_called_once_with(
+            include_ollama=True,
+            dry_run=False,
         )
 
     def test_explain_dispatches_to_explanation_printer(self) -> None:
@@ -236,6 +265,19 @@ class CLITests(unittest.TestCase):
                 dry_run=True,
             )
 
+    def test_service_errors_are_printed_without_traceback(self) -> None:
+        from pihole_ai.service import ServiceError
+
+        with patch(
+            "pihole_ai.service.service_action",
+            side_effect=ServiceError("Command failed cleanly."),
+        ), patch("sys.stdout", io.StringIO()) as stdout:
+            exit_code = cli.main(["start"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Command failed cleanly.", stdout.getvalue())
+        self.assertNotIn("Traceback", stdout.getvalue())
+
     def test_logs_dispatches_with_options(self) -> None:
         with patch("pihole_ai.service.service_logs") as service_logs:
             exit_code = cli.main(
@@ -243,7 +285,7 @@ class CLITests(unittest.TestCase):
                     "logs",
                     "--lines",
                     "25",
-                    "--follow",
+                    "-f",
                     "--dry-run",
                 ]
             )
@@ -253,6 +295,17 @@ class CLITests(unittest.TestCase):
             lines=25,
             follow=True,
             dry_run=True,
+        )
+
+    def test_logs_defaults_to_last_80_lines_without_follow(self) -> None:
+        with patch("pihole_ai.service.service_logs") as service_logs:
+            exit_code = cli.main(["logs"])
+
+        self.assertEqual(exit_code, 0)
+        service_logs.assert_called_once_with(
+            lines=80,
+            follow=False,
+            dry_run=False,
         )
 
     def test_export_dispatches_with_options(self) -> None:

@@ -41,6 +41,18 @@ def build_parser() -> argparse.ArgumentParser:
         "engine-once",
         help="Run one analysis engine cycle.",
     )
+    subcommands.add_parser(
+        "config-path",
+        help="Print the PiHole-AI runtime config file path.",
+    )
+    subcommands.add_parser(
+        "data-path",
+        help="Print the PiHole-AI events database path.",
+    )
+    subcommands.add_parser(
+        "log-path",
+        help="Print the PiHole-AI log file path.",
+    )
     dashboard = subcommands.add_parser(
         "dashboard",
         help="Run the dashboard web server.",
@@ -63,7 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument(
         "--no-ollama",
         action="store_true",
-        help="Skip Ollama health check.",
+        help="Deprecated: Ollama checks are skipped by default.",
+    )
+    status.add_argument(
+        "--ollama",
+        action="store_true",
+        help="Include Ollama health check.",
     )
     status.add_argument(
         "--dry-run",
@@ -183,11 +200,12 @@ def build_parser() -> argparse.ArgumentParser:
     logs.add_argument(
         "--lines",
         type=int,
-        default=100,
+        default=80,
         help="Number of journal lines to show.",
     )
     logs.add_argument(
         "--follow",
+        "-f",
         action="store_true",
         help="Follow logs.",
     )
@@ -441,6 +459,17 @@ def main(
         run_engine_once()
         return 0
 
+    if args.command in {"config-path", "data-path", "log-path"}:
+        from core.config import settings
+
+        paths = {
+            "config-path": settings.config_file,
+            "data-path": settings.events_db,
+            "log-path": settings.log_file,
+        }
+        print(paths[args.command])
+        return 0
+
     if args.command == "dashboard":
         from ui.dashboard import main as dashboard_main
 
@@ -454,7 +483,7 @@ def main(
         from pihole_ai.service import service_status
 
         service_status(
-            include_ollama=not args.no_ollama,
+            include_ollama=args.ollama and not args.no_ollama,
             dry_run=args.dry_run,
         )
         return 0
@@ -492,66 +521,91 @@ def main(
         return 0
 
     if args.command == "service":
-        from pihole_ai.service import service_install, service_uninstall
+        from pihole_ai.service import ServiceError, service_install, service_uninstall
 
-        if args.service_command == "install":
-            service_install(
-                dry_run=args.dry_run,
-            )
-            return 0
+        try:
+            if args.service_command == "install":
+                service_install(
+                    dry_run=args.dry_run,
+                )
+                return 0
 
-        if args.service_command == "uninstall":
+            if args.service_command == "uninstall":
+                service_uninstall(
+                    dry_run=args.dry_run,
+                )
+                return 0
+
+        except ServiceError as exc:
+            print(str(exc))
+            return 1
+
+    if args.command in {"install", "uninstall"}:
+        from pihole_ai.service import ServiceError, service_install, service_uninstall
+
+        try:
+            if args.command == "install":
+                service_install(
+                    dry_run=args.dry_run,
+                )
+                return 0
+
             service_uninstall(
                 dry_run=args.dry_run,
             )
             return 0
 
-    if args.command in {"install", "uninstall"}:
-        from pihole_ai.service import service_install, service_uninstall
-
-        if args.command == "install":
-            service_install(
-                dry_run=args.dry_run,
-            )
-            return 0
-
-        service_uninstall(
-            dry_run=args.dry_run,
-        )
-        return 0
+        except ServiceError as exc:
+            print(str(exc))
+            return 1
 
     if args.command in {"enable", "disable"}:
-        from pihole_ai.service import service_disable, service_enable
+        from pihole_ai.service import ServiceError, service_disable, service_enable
 
-        if args.command == "enable":
-            service_enable(
+        try:
+            if args.command == "enable":
+                service_enable(
+                    dry_run=args.dry_run,
+                )
+                return 0
+
+            service_disable(
                 dry_run=args.dry_run,
             )
             return 0
 
-        service_disable(
-            dry_run=args.dry_run,
-        )
-        return 0
+        except ServiceError as exc:
+            print(str(exc))
+            return 1
 
     if args.command in {"start", "stop", "restart"}:
-        from pihole_ai.service import service_action
+        from pihole_ai.service import ServiceError, service_action
 
-        service_action(
-            action=args.command,
-            dry_run=args.dry_run,
-        )
-        return 0
+        try:
+            service_action(
+                action=args.command,
+                dry_run=args.dry_run,
+            )
+            return 0
+
+        except ServiceError as exc:
+            print(str(exc))
+            return 1
 
     if args.command == "logs":
-        from pihole_ai.service import service_logs
+        from pihole_ai.service import ServiceError, service_logs
 
-        service_logs(
-            lines=args.lines,
-            follow=args.follow,
-            dry_run=args.dry_run,
-        )
-        return 0
+        try:
+            service_logs(
+                lines=args.lines,
+                follow=args.follow,
+                dry_run=args.dry_run,
+            )
+            return 0
+
+        except ServiceError as exc:
+            print(str(exc))
+            return 1
 
     if args.command == "export":
         from pihole_ai.export import export_rows

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from flask import Flask, jsonify, render_template_string, request
@@ -803,7 +804,7 @@ document.getElementById("search").addEventListener("keydown", (event) => {
 });
 document.getElementById("min-risk").addEventListener("change", load);
 document.getElementById("limit").addEventListener("change", load);
-setInterval(load, 3000);
+setInterval(load, __POLL_INTERVAL_MS__);
 load();
 </script>
 </body>
@@ -1083,7 +1084,12 @@ def create_app() -> Flask:
 
     @app.get("/")
     def home():
-        return render_template_string(HTML)
+        return render_template_string(
+            HTML.replace(
+                "__POLL_INTERVAL_MS__",
+                str(settings.dashboard_poll_interval_ms),
+            )
+        )
 
     @app.get("/api/stats")
     def stats():
@@ -1280,6 +1286,12 @@ def main(
     """
 
     selected_port = port if port is not None else settings.dashboard_port
+
+    if settings.dev_access_logs:
+        logging.getLogger("werkzeug").setLevel(logging.INFO)
+
+    else:
+        logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
     logger.info(
         "Starting dashboard on port %d.",

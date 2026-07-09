@@ -1,6 +1,8 @@
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 sys.modules.setdefault(
@@ -10,6 +12,7 @@ sys.modules.setdefault(
     ),
 )
 
+from core import db
 from engine.classifiers.ai_classifier import AIClassifier
 from engine.classifiers.base import BaseClassifier
 from engine.classifiers.heuristics import HeuristicsEngine
@@ -42,12 +45,53 @@ class FakeClient:
         return "fake-model"
 
 
+class RecordingClient:
+    def __init__(self) -> None:
+        self.prompt = ""
+        self.calls = 0
+
+    def generate(self, *args, **kwargs):
+        self.calls += 1
+        self.prompt = kwargs["prompt"]
+        return (
+            '{"risk": 10, "confidence": 90, '
+            '"category": "benign", "reason": "Looks safe."}'
+        )
+
+    def current_model(self) -> str:
+        return "recording-model"
+
+
 class FailingClient:
     def generate(self, *args, **kwargs):
         raise RuntimeError("ollama unavailable")
 
     def current_model(self) -> str:
         return "fake-model"
+
+
+class InvalidJSONClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate(self, *args, **kwargs):
+        self.calls += 1
+        return "not json"
+
+    def current_model(self) -> str:
+        return "invalid-json-model"
+
+
+class TimeoutClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate(self, *args, **kwargs):
+        self.calls += 1
+        raise TimeoutError("ollama timed out")
+
+    def current_model(self) -> str:
+        return "timeout-model"
 
 
 class FakeClassifier(BaseClassifier):
@@ -433,10 +477,23 @@ class ClassifierPipelineTests(unittest.TestCase):
 
 class AIClassifierParsingTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.database_path = Path(self.tmpdir.name) / "events.db"
+        self.path_patch = patch.object(
+            db,
+            "DATABASE_PATH",
+            self.database_path,
+        )
+        self.path_patch.start()
+        db.init_db()
         self.classifier = AIClassifier.__new__(AIClassifier)
         self.classifier.logger = DummyLogger()
         self.classifier.client = FakeClient()
         self.request = AnalysisRequest(domain="example.com")
+
+    def tearDown(self) -> None:
+        self.path_patch.stop()
+        self.tmpdir.cleanup()
 
     def test_parse_valid_json_response(self) -> None:
         result = self.classifier._parse_response(
@@ -460,8 +517,10 @@ class AIClassifierParsingTests(unittest.TestCase):
         )
 
         self.assertEqual(result.category, DomainCategory.UNKNOWN.value)
-        self.assertEqual(result.risk, 50)
+        self.assertEqual(result.risk, 0)
         self.assertEqual(result.confidence, 0)
+        self.assertEqual(result.reason, "AI returned invalid response")
+        self.assertEqual(result.model, "ai")
 
     def test_invalid_schema_falls_back_to_unknown(self) -> None:
         result = self.classifier._parse_response(
@@ -470,23 +529,266 @@ class AIClassifierParsingTests(unittest.TestCase):
         )
 
         self.assertEqual(result.category, DomainCategory.UNKNOWN.value)
-        self.assertEqual(result.risk, 50)
+        self.assertEqual(result.risk, 0)
         self.assertEqual(result.confidence, 0)
+        self.assertEqual(result.reason, "AI returned invalid response")
+        self.assertEqual(result.model, "ai")
 
     def test_generate_exception_falls_back_to_unknown(self) -> None:
         classifier = AIClassifier.__new__(AIClassifier)
         classifier.logger = DummyLogger()
         classifier.client = FailingClient()
-
-        result = classifier.classify(
-            AnalysisRequest(domain="example.com"),
+        patched_settings = types.SimpleNamespace(
+            ai_enabled=True,
+            ai_max_calls_per_minute=2,
+            ai_cooldown_seconds=60,
+            ai_timeout_seconds=20,
         )
+
+        with patch(
+            "engine.classifiers.ai_classifier.settings",
+            patched_settings,
+        ):
+            result = classifier.classify(
+                AnalysisRequest(domain="example.com"),
+            )
 
         self.assertEqual(result.category, DomainCategory.UNKNOWN.value)
         self.assertEqual(result.risk, 50)
         self.assertEqual(result.confidence, 0)
         self.assertEqual(result.reason, "AI backend unavailable.")
         self.assertEqual(result.model, "fake-model")
+
+    def test_classify_accepts_domain_metadata_dataclass(self) -> None:
+        classifier = AIClassifier.__new__(AIClassifier)
+        classifier.logger = DummyLogger()
+        classifier.client = RecordingClient()
+        patched_settings = types.SimpleNamespace(
+            ai_enabled=True,
+            ai_max_calls_per_minute=2,
+            ai_cooldown_seconds=60,
+            ai_timeout_seconds=20,
+        )
+
+        with patch(
+            "engine.classifiers.ai_classifier.settings",
+            patched_settings,
+        ):
+            result = classifier.classify(
+                AnalysisRequest(
+                    domain="it",
+                    metadata=DomainMetadata(
+                        domain="it",
+                        query_count=5,
+                        device_count=2,
+                    ),
+                )
+            )
+
+        self.assertEqual(result.category, DomainCategory.BENIGN.value)
+        self.assertEqual(result.model, "recording-model")
+        self.assertIn('"query_count": 5', classifier.client.prompt)
+        self.assertIn('"device_count": 2', classifier.client.prompt)
+
+    def test_disabled_ai_returns_safe_unknown_without_calling_client(self) -> None:
+        classifier = AIClassifier.__new__(AIClassifier)
+        classifier.logger = DummyLogger()
+        classifier.client = RecordingClient()
+        patched_settings = types.SimpleNamespace(
+            ai_enabled=False,
+            ai_max_calls_per_minute=2,
+            ai_cooldown_seconds=60,
+            ai_timeout_seconds=20,
+        )
+
+        with patch(
+            "engine.classifiers.ai_classifier.settings",
+            patched_settings,
+        ):
+            result = classifier.classify(
+                AnalysisRequest(domain="example.com"),
+            )
+
+        self.assertEqual(result.risk, 0)
+        self.assertEqual(result.confidence, 0)
+        self.assertEqual(result.category, DomainCategory.UNKNOWN.value)
+        self.assertEqual(result.reason, "ai_disabled")
+        self.assertEqual(result.model, "ai")
+        self.assertEqual(classifier.client.calls, 0)
+        self.assertEqual(db.ai_metrics()["disabled_skips"], 1)
+        self.assertEqual(db.ai_metrics()["ai_skipped"], 1)
+
+    def test_rate_limit_returns_safe_unknown_without_calling_client(self) -> None:
+        classifier = AIClassifier.__new__(AIClassifier)
+        classifier.logger = DummyLogger()
+        classifier.client = RecordingClient()
+        patched_settings = types.SimpleNamespace(
+            ai_enabled=True,
+            ai_max_calls_per_minute=1,
+            ai_cooldown_seconds=0,
+            ai_timeout_seconds=20,
+        )
+
+        with patch(
+            "engine.classifiers.ai_classifier.settings",
+            patched_settings,
+        ):
+            first = classifier.classify(
+                AnalysisRequest(domain="one.example"),
+            )
+            second = classifier.classify(
+                AnalysisRequest(domain="two.example"),
+            )
+
+        self.assertEqual(first.model, "recording-model")
+        self.assertEqual(second.risk, 0)
+        self.assertEqual(second.reason, "ai_rate_limited")
+        self.assertEqual(classifier.client.calls, 1)
+        metrics = db.ai_metrics()
+        self.assertEqual(metrics["ai_calls"], 1)
+        self.assertEqual(metrics["rate_limit_skips"], 1)
+        self.assertEqual(metrics["ai_skipped"], 1)
+
+    def test_timeout_returns_safe_unknown_and_tracks_timeout(self) -> None:
+        classifier = AIClassifier.__new__(AIClassifier)
+        classifier.logger = DummyLogger()
+        classifier.client = TimeoutClient()
+        patched_settings = types.SimpleNamespace(
+            ai_enabled=True,
+            ai_max_calls_per_minute=2,
+            ai_cooldown_seconds=60,
+            ai_timeout_seconds=20,
+        )
+
+        with patch(
+            "engine.classifiers.ai_classifier.settings",
+            patched_settings,
+        ), patch(
+            "engine.classifiers.ai_classifier.time.time",
+            return_value=100,
+        ):
+            result = classifier.classify(
+                AnalysisRequest(domain="timeout.example"),
+            )
+
+        self.assertEqual(result.risk, 0)
+        self.assertEqual(result.confidence, 0)
+        self.assertEqual(result.category, DomainCategory.UNKNOWN.value)
+        self.assertEqual(result.reason, "ai_timeout")
+        self.assertEqual(result.model, "ai")
+        self.assertEqual(classifier.client.calls, 1)
+        metrics = db.ai_metrics()
+        self.assertEqual(metrics["ai_calls"], 1)
+        self.assertEqual(metrics["ai_timeouts"], 1)
+        self.assertEqual(metrics["ai_skipped"], 1)
+        self.assertEqual(metrics["cooldown_until"], 160)
+
+    def test_invalid_response_starts_cooldown_for_later_calls(self) -> None:
+        classifier = AIClassifier.__new__(AIClassifier)
+        classifier.logger = DummyLogger()
+        classifier.client = InvalidJSONClient()
+        patched_settings = types.SimpleNamespace(
+            ai_enabled=True,
+            ai_max_calls_per_minute=5,
+            ai_cooldown_seconds=60,
+            ai_timeout_seconds=20,
+        )
+
+        with patch(
+            "engine.classifiers.ai_classifier.settings",
+            patched_settings,
+        ), patch(
+            "engine.classifiers.ai_classifier.time.time",
+            return_value=100,
+        ):
+            first = classifier.classify(
+                AnalysisRequest(domain="one.example"),
+            )
+            second = classifier.classify(
+                AnalysisRequest(domain="two.example"),
+            )
+
+        self.assertEqual(first.reason, "AI returned invalid response")
+        self.assertEqual(second.reason, "ai_cooldown")
+        self.assertEqual(classifier.client.calls, 1)
+        metrics = db.ai_metrics()
+        self.assertEqual(metrics["ai_parse_errors"], 1)
+        self.assertEqual(metrics["cooldown_skips"], 1)
+        self.assertEqual(metrics["ai_skipped"], 1)
+        self.assertEqual(metrics["cooldown_until"], 160)
+
+    def test_slow_response_starts_cooldown_for_later_calls(self) -> None:
+        classifier = AIClassifier.__new__(AIClassifier)
+        classifier.logger = DummyLogger()
+        classifier.client = RecordingClient()
+        patched_settings = types.SimpleNamespace(
+            ai_enabled=True,
+            ai_max_calls_per_minute=5,
+            ai_cooldown_seconds=60,
+            ai_timeout_seconds=20,
+        )
+
+        with patch(
+            "engine.classifiers.ai_classifier.settings",
+            patched_settings,
+        ), patch(
+            "engine.classifiers.ai_classifier.time.time",
+            return_value=100,
+        ), patch(
+            "engine.classifiers.ai_classifier.time.monotonic",
+            side_effect=[0, 21],
+        ):
+            first = classifier.classify(
+                AnalysisRequest(domain="one.example"),
+            )
+            second = classifier.classify(
+                AnalysisRequest(domain="two.example"),
+            )
+
+        self.assertEqual(first.model, "recording-model")
+        self.assertEqual(second.reason, "ai_cooldown")
+        self.assertEqual(classifier.client.calls, 1)
+        metrics = db.ai_metrics()
+        self.assertEqual(metrics["slow_responses"], 1)
+        self.assertEqual(metrics["cooldown_skips"], 1)
+        self.assertEqual(metrics["ai_skipped"], 1)
+        self.assertEqual(metrics["cooldown_until"], 160)
+
+
+class ReputationClassifierIntegrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.database_path = Path(self.tmpdir.name) / "events.db"
+        self.path_patch = patch.object(
+            db,
+            "DATABASE_PATH",
+            self.database_path,
+        )
+        self.path_patch.start()
+        db.init_db()
+
+    def tearDown(self) -> None:
+        self.path_patch.stop()
+        self.tmpdir.cleanup()
+
+    def test_reputation_classifier_uses_learned_database_rows(self) -> None:
+        db.save_domain_reputation(
+            domain="learned.example",
+            score=85,
+            confidence=90,
+            signals=[
+                "heuristics classification",
+            ],
+        )
+
+        result = ReputationClassifier().classify(
+            AnalysisRequest(domain="learned.example"),
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.model, "local-reputation")
+        self.assertEqual(result.risk, 85)
+        self.assertEqual(result.category, DomainCategory.SUSPICIOUS.value)
 
 
 if __name__ == "__main__":

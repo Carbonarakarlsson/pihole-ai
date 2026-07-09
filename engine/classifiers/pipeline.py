@@ -44,7 +44,7 @@ class ClassifierPipeline:
 
         ]
 
-        self.logger.info(
+        self.logger.debug(
             "Initialized classifier pipeline (%d classifiers).",
             len(self.classifiers),
         )

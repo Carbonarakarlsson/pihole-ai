@@ -7,15 +7,25 @@ from pihole_ai.learn import (
     learn,
     print_learned,
     score_candidate,
+    update_reputation_from_analysis,
 )
+from engine.models import AnalysisResult, DomainCategory
 
 
 class LearningTests(unittest.TestCase):
-    def test_score_candidate_respects_allow_rule(self) -> None:
+    def test_score_candidate_does_not_treat_manual_rules_as_model_evidence(self) -> None:
         result = score_candidate(
             {
                 "domain": "example.com",
                 "rule_decision": "allow",
+                "query_count": 1,
+                "device_count": 1,
+                "recent_queries": 1,
+                "analysis_risk": 0,
+                "analysis_confidence": 0,
+                "suggest_block_count": 0,
+                "alert_count": 0,
+                "review_count": 0,
             }
         )
 
@@ -24,9 +34,9 @@ class LearningTests(unittest.TestCase):
             ReputationResult(
                 domain="example.com",
                 score=0,
-                confidence=95,
+                confidence=60,
                 signals=[
-                    "manual allow rule",
+                    "no suspicious local signals",
                 ],
             ),
         )
@@ -101,6 +111,65 @@ class LearningTests(unittest.TestCase):
             record_action.call_args.kwargs["domain"],
             "bad.example",
         )
+
+    def test_update_reputation_from_analysis_saves_model_evidence(self) -> None:
+        result = AnalysisResult(
+            domain="bad.example",
+            risk=82,
+            confidence=88,
+            category=DomainCategory.SUSPICIOUS.value,
+            reason="Suspicious heuristic match.",
+            model="heuristics",
+        )
+
+        with patch(
+            "pihole_ai.learn.save_domain_reputation",
+        ) as save_domain_reputation:
+            reputation = update_reputation_from_analysis(
+                result,
+            )
+
+        self.assertEqual(
+            reputation,
+            ReputationResult(
+                domain="bad.example",
+                score=82,
+                confidence=88,
+                signals=[
+                    "heuristics classification",
+                    "category suspicious",
+                ],
+            ),
+        )
+        save_domain_reputation.assert_called_once_with(
+            domain="bad.example",
+            score=82,
+            confidence=88,
+            signals=[
+                "heuristics classification",
+                "category suspicious",
+            ],
+        )
+
+    def test_update_reputation_from_analysis_skips_manual_rules(self) -> None:
+        result = AnalysisResult(
+            domain="manual.example",
+            risk=100,
+            confidence=95,
+            category=DomainCategory.SUSPICIOUS.value,
+            reason="Manual block.",
+            model="manual-rule",
+        )
+
+        with patch(
+            "pihole_ai.learn.save_domain_reputation",
+        ) as save_domain_reputation:
+            reputation = update_reputation_from_analysis(
+                result,
+            )
+
+        self.assertIsNone(reputation)
+        save_domain_reputation.assert_not_called()
 
     def test_print_learned_prints_results(self) -> None:
         with patch(

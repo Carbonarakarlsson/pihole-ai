@@ -12,8 +12,9 @@ Keeping prompts centralized makes it easy to:
 
 from __future__ import annotations
 
+from dataclasses import asdict, is_dataclass
 import json
-from typing import Any, Dict
+from typing import Any, Mapping
 
 from engine.models import ALLOWED_CATEGORIES
 
@@ -72,7 +73,7 @@ Short explanation (1-3 sentences).
 
 def build_domain_prompt(
     domain: str,
-    metadata: Dict[str, Any] | None = None,
+    metadata: Mapping[str, Any] | Any | None = None,
 ) -> str:
     """
     Build a prompt for analyzing a single domain.
@@ -91,12 +92,12 @@ def build_domain_prompt(
         Prompt sent to the language model.
     """
 
-    metadata = metadata or {}
+    metadata_dict = metadata_to_dict(metadata)
 
     prompt = {
         "task": "Analyze this DNS domain.",
         "domain": domain,
-        "metadata": metadata,
+        "metadata": metadata_dict,
         "instructions": [
             "Assess the likelihood that this domain is malicious.",
             "Consider whether it appears to be advertising, tracking, analytics, malware, phishing, or command-and-control.",
@@ -106,6 +107,25 @@ def build_domain_prompt(
     }
 
     return json.dumps(prompt, indent=2)
+
+
+def metadata_to_dict(
+    metadata: Mapping[str, Any] | Any | None,
+) -> dict[str, Any]:
+    """
+    Convert metadata into a JSON-safe plain dictionary.
+    """
+
+    if metadata is None:
+        return {}
+
+    if isinstance(metadata, dict):
+        return metadata
+
+    if is_dataclass(metadata):
+        return asdict(metadata)
+
+    return dict(metadata)
 
 
 # ============================================================================

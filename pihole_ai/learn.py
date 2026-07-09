@@ -13,6 +13,7 @@ from core.db import (
     record_action,
     save_domain_reputation,
 )
+from engine.models import AnalysisResult
 from engine.classifiers.heuristics import SUSPICIOUS_TLDS, HeuristicsEngine
 
 
@@ -46,23 +47,6 @@ def score_candidate(
     """
 
     domain = str(row["domain"]).lower()
-    rule_decision = row["rule_decision"]
-
-    if rule_decision == "allow":
-        return ReputationResult(
-            domain=domain,
-            score=0,
-            confidence=95,
-            signals=["manual allow rule"],
-        )
-
-    if rule_decision == "block":
-        return ReputationResult(
-            domain=domain,
-            score=100,
-            confidence=95,
-            signals=["manual block rule"],
-        )
 
     score = 0
     signals: list[str] = []
@@ -179,6 +163,52 @@ def learn(
         for result in results
         if result.score >= min_score
     ]
+
+
+def update_reputation_from_analysis(
+    result: AnalysisResult,
+) -> ReputationResult | None:
+    """
+    Incrementally update reputation from completed classifier evidence.
+    """
+
+    if result.model in {
+        "manual-rule",
+        "local-reputation",
+    }:
+        return None
+
+    if result.confidence <= 0:
+        return None
+
+    signals = [
+        f"{result.model} classification",
+        f"category {result.category}",
+    ]
+
+    score = max(
+        0,
+        min(result.risk, 100),
+    )
+    confidence = max(
+        0,
+        min(result.confidence, 100),
+    )
+    reputation = ReputationResult(
+        domain=result.domain.lower(),
+        score=score,
+        confidence=confidence,
+        signals=signals,
+    )
+
+    save_domain_reputation(
+        domain=reputation.domain,
+        score=reputation.score,
+        confidence=reputation.confidence,
+        signals=reputation.signals,
+    )
+
+    return reputation
 
 
 def get_reputations(

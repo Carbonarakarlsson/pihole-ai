@@ -1,4 +1,6 @@
+import logging
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from ui.dashboard import create_app, parse_limit
@@ -396,6 +398,59 @@ class DashboardTests(unittest.TestCase):
         self.assertIn(b"PiHole-AI", response.data)
         self.assertIn(b"/api/metrics/decisions", response.data)
         self.assertIn(b"/api/feedback", response.data)
+        self.assertIn(b"setInterval(load, 10000)", response.data)
+
+    def test_dashboard_main_disables_werkzeug_access_logs_by_default(self) -> None:
+        werkzeug_logger = logging.getLogger("werkzeug")
+        original_level = werkzeug_logger.level
+
+        try:
+            with patch(
+                "ui.dashboard.settings",
+                SimpleNamespace(
+                    dashboard_port=8080,
+                    dev_access_logs=False,
+                ),
+            ), patch("ui.dashboard.app.run") as run:
+                from ui.dashboard import main
+
+                main(
+                    host="127.0.0.1",
+                    port=9000,
+                )
+
+            self.assertEqual(werkzeug_logger.level, logging.WARNING)
+            run.assert_called_once_with(
+                host="127.0.0.1",
+                port=9000,
+            )
+
+        finally:
+            werkzeug_logger.setLevel(original_level)
+
+    def test_dashboard_main_can_enable_werkzeug_access_logs_for_dev(self) -> None:
+        werkzeug_logger = logging.getLogger("werkzeug")
+        original_level = werkzeug_logger.level
+
+        try:
+            with patch(
+                "ui.dashboard.settings",
+                SimpleNamespace(
+                    dashboard_port=8080,
+                    dev_access_logs=True,
+                ),
+            ), patch("ui.dashboard.app.run"):
+                from ui.dashboard import main
+
+                main(
+                    host="127.0.0.1",
+                    port=9000,
+                )
+
+            self.assertEqual(werkzeug_logger.level, logging.INFO)
+
+        finally:
+            werkzeug_logger.setLevel(original_level)
 
     def test_parse_limit_clamps_values(self) -> None:
         self.assertEqual(parse_limit("10"), 10)

@@ -37,9 +37,10 @@ class OllamaClient:
 
         self.client = ollama.Client(
             host=self.host,
+            timeout=settings.ai_timeout_seconds,
         )
 
-        self.logger.info(
+        self.logger.debug(
             "Initialized Ollama client (host=%s, model=%s)",
             self.host,
             self.model,
@@ -59,7 +60,7 @@ class OllamaClient:
         Generate a response from the configured model.
         """
 
-        self.logger.info(
+        self.logger.debug(
             "Generating response using '%s'.",
             self.model,
         )
@@ -85,7 +86,7 @@ class OllamaClient:
 
             content = response["message"]["content"]
 
-            self.logger.info(
+            self.logger.debug(
                 "Generation completed successfully."
             )
 
@@ -145,7 +146,7 @@ class OllamaClient:
 
             models.sort()
 
-            self.logger.info(
+            self.logger.debug(
                 "Discovered %d installed model(s).",
                 len(models),
             )
@@ -205,7 +206,7 @@ class OllamaClient:
 
             return False
 
-        self.logger.info(
+        self.logger.debug(
             "Ollama validation successful."
         )
 

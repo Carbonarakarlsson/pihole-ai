@@ -44,7 +44,7 @@ LOG_FORMAT = (
 
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-LOG_FILE = Path(settings.log_dir) / "pihole-ai.log"
+LOG_FILE = Path(settings.log_file)
 
 MAX_LOG_SIZE = 5 * 1024 * 1024  # 5 MB
 BACKUP_COUNT = 5
@@ -68,8 +68,6 @@ def configure_logging() -> None:
     if _configured:
         return
 
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-
     formatter = logging.Formatter(
         fmt=LOG_FORMAT,
         datefmt=DATE_FORMAT,
@@ -88,21 +86,29 @@ def configure_logging() -> None:
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
 
-    # ------------------------------------------------------------------
-    # Rotating File Handler
-    # ------------------------------------------------------------------
-
-    file_handler = RotatingFileHandler(
-        filename=LOG_FILE,
-        maxBytes=MAX_LOG_SIZE,
-        backupCount=BACKUP_COUNT,
-        encoding="utf-8",
-    )
-
-    file_handler.setFormatter(formatter)
-
     root_logger.addHandler(console_handler)
-    root_logger.addHandler(file_handler)
+
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+        file_handler = RotatingFileHandler(
+            filename=LOG_FILE,
+            maxBytes=MAX_LOG_SIZE,
+            backupCount=BACKUP_COUNT,
+            encoding="utf-8",
+        )
+
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+
+    except OSError:
+        root_logger.debug(
+            "File logging disabled; cannot write %s",
+            LOG_FILE,
+        )
+
+    for noisy_logger in ("httpx", "httpcore", "ollama"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
     _configured = True
 

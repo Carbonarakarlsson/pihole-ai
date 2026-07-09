@@ -1489,6 +1489,108 @@ def set_state(
     )
 
 
+def get_int_state(
+    key: str,
+    default: int = 0,
+) -> int:
+    """
+    Return a persisted application state value as an integer.
+    """
+
+    value = get_state(
+        key,
+        str(default),
+    )
+
+    try:
+        return int(value or default)
+
+    except (TypeError, ValueError):
+        return default
+
+
+def increment_state_counter(
+    key: str,
+    amount: int = 1,
+) -> int:
+    """
+    Increment a persisted integer counter and return the new value.
+    """
+
+    with transaction() as conn:
+        row = conn.execute(
+            """
+            SELECT value
+
+            FROM app_state
+
+            WHERE key = ?
+            """,
+            (key,),
+        ).fetchone()
+
+        try:
+            current = int(row["value"]) if row else 0
+
+        except (TypeError, ValueError):
+            current = 0
+
+        updated = current + amount
+
+        conn.execute(
+            """
+            INSERT INTO app_state
+            (
+                key,
+                value
+            )
+            VALUES (?, ?)
+
+            ON CONFLICT(key)
+
+            DO UPDATE SET
+
+                value = excluded.value
+            """,
+            (
+                key,
+                str(updated),
+            ),
+        )
+
+        return updated
+
+
+def ai_metrics() -> dict[str, int]:
+    """
+    Return persisted AI call and skip counters.
+    """
+
+    calls = get_int_state("ai.calls.total", 0)
+    rate_limit_skips = get_int_state("ai.rate_limit_skips.total", 0)
+    disabled_skips = get_int_state("ai.disabled_skips.total", 0)
+    cooldown_skips = get_int_state("ai.cooldown_skips.total", 0)
+    parse_errors = get_int_state("ai.parse_errors.total", 0)
+    timeouts = get_int_state("ai.timeouts.total", 0)
+    slow_responses = get_int_state("ai.slow_responses.total", 0)
+    skipped = rate_limit_skips + disabled_skips + cooldown_skips + timeouts
+
+    return {
+        "ai_calls": calls,
+        "ai_skipped": skipped,
+        "ai_parse_errors": parse_errors,
+        "ai_timeouts": timeouts,
+        "calls": calls,
+        "rate_limit_skips": rate_limit_skips,
+        "disabled_skips": disabled_skips,
+        "cooldown_skips": cooldown_skips,
+        "parse_errors": parse_errors,
+        "timeouts": timeouts,
+        "slow_responses": slow_responses,
+        "cooldown_until": get_int_state("ai.cooldown_until", 0),
+    }
+
+
 # ============================================================================
 # Maintenance
 # ============================================================================
@@ -1653,8 +1755,17 @@ def decision_metrics() -> dict[str, Any]:
         FROM action_audit
         """
     )
+    parse_error = query_one(
+        """
+        SELECT COUNT(*) AS count
 
-    return {
+        FROM action_audit
+
+        WHERE status = 'parse_error'
+        """
+    )
+
+    metrics = {
         "analysis": {
             "total": int(analysis["total"] or 0) if analysis else 0,
             "low_risk": int(analysis["low_risk"] or 0) if analysis else 0,
@@ -1686,6 +1797,7 @@ def decision_metrics() -> dict[str, Any]:
         ),
         "actions": {
             "total": int(action["total"] or 0) if action else 0,
+            "parse_errors": int(parse_error["count"] or 0) if parse_error else 0,
             "by_action": _count_rows_by(
                 """
                 SELECT action AS name, COUNT(*) AS count
@@ -1738,6 +1850,10 @@ def decision_metrics() -> dict[str, Any]:
         ),
     }
 
+    metrics["ai"] = ai_metrics()
+
+    return metrics
+
 
 def vacuum() -> None:
     """
@@ -1752,4 +1868,11 @@ def vacuum() -> None:
 # Initialize Database
 # ============================================================================
 
-init_db()
+try:
+    init_db()
+
+except (OSError, sqlite3.Error):
+    # Appliance installs create the runtime directory before services start.
+    # Local commands may import this module before /var/lib/pihole-ai exists
+    # or is writable; explicit DB use will still surface the real error.
+    pass

@@ -89,10 +89,10 @@ Current order:
 
 ## Database
 
-The main database is configured by `PIHOLE_AI_EVENTS_DB` and defaults to:
+The main database is configured by `EVENTS_DB_PATH` and defaults to:
 
 ```text
-data/events.db
+/var/lib/pihole-ai/events.db
 ```
 
 Tables:
@@ -210,9 +210,17 @@ The AI fallback uses the local Ollama Python client.
 Default settings:
 
 ```text
+AI_ENABLED=true
+AI_MAX_CALLS_PER_MINUTE=2
+AI_COOLDOWN_SECONDS=60
+AI_TIMEOUT_SECONDS=20
 PIHOLE_AI_OLLAMA_URL=http://127.0.0.1:11434
 PIHOLE_AI_OLLAMA_MODEL=llama3.2:1b
 ```
+
+PiHole-AI limits Ollama fallback calls to two per minute by default. If AI is
+disabled, rate-limited, or cooling down after invalid/slow responses, the engine
+saves a safe unknown result instead of calling Ollama.
 
 If Ollama is unavailable, the AI classifier returns a safe fallback result:
 
@@ -283,7 +291,7 @@ Configuration lives in `core/config.py` and is controlled with environment varia
 Common variables:
 
 ```text
-PIHOLE_AI_EVENTS_DB=data/events.db
+EVENTS_DB_PATH=/var/lib/pihole-ai/events.db
 PIHOLE_AI_PIHOLE_DB=/etc/pihole/pihole-FTL.db
 PIHOLE_AI_COLLECT_BATCH_SIZE=200
 PIHOLE_AI_COLLECT_INTERVAL=2
@@ -294,9 +302,17 @@ PIHOLE_AI_KEEP_LATEST_EVENTS=100000
 PIHOLE_AI_ALERT_THRESHOLD=50
 PIHOLE_AI_HIGH_RISK_THRESHOLD=70
 PIHOLE_AI_ACTION_MODE=dry-run
+AI_ENABLED=true
+AI_MAX_CALLS_PER_MINUTE=2
+AI_COOLDOWN_SECONDS=60
+AI_TIMEOUT_SECONDS=20
 PIHOLE_AI_OLLAMA_URL=http://127.0.0.1:11434
 PIHOLE_AI_OLLAMA_MODEL=llama3.2:1b
 PIHOLE_AI_DASHBOARD_PORT=8080
+PIHOLE_AI_DASHBOARD_POLL_INTERVAL_MS=10000
+DEV_ACCESS_LOGS=false
+LOG_PATH=/var/log/pihole-ai/pihole-ai.log
+LOG_LEVEL=INFO
 PIHOLE_AI_LOG_LEVEL=INFO
 ```
 
@@ -346,10 +362,10 @@ Print runtime status:
 pihole-ai status
 ```
 
-Skip the Ollama health check:
+Include the Ollama health check:
 
 ```bash
-pihole-ai status --no-ollama
+pihole-ai status --ollama
 ```
 
 Explain local evidence for a domain:
@@ -423,6 +439,23 @@ Exports support `--limit`, `--q`, `--min-risk`, and `--category`.
 
 PiHole-AI can generate and manage Linux systemd services from the current project directory and current Python interpreter.
 
+Standard Linux runtime layout:
+
+```text
+/etc/pihole-ai/pihole-ai.env
+/var/lib/pihole-ai/events.db
+/var/log/pihole-ai/pihole-ai.log
+/usr/local/bin/pihole-ai
+```
+
+Path helpers:
+
+```bash
+pihole-ai config-path
+pihole-ai data-path
+pihole-ai log-path
+```
+
 Preview generated unit files and systemctl commands:
 
 ```bash
@@ -431,36 +464,47 @@ pihole-ai enable --dry-run
 pihole-ai start --dry-run
 pihole-ai status --dry-run
 pihole-ai logs --dry-run
+pihole-ai logs --lines 120 --dry-run
 ```
 
-Install service files:
+Install service files and the global `/usr/local/bin/pihole-ai` launcher:
 
 ```bash
 sudo pihole-ai install
 ```
 
+Install creates `/etc/pihole-ai`, `/var/lib/pihole-ai`, and `/var/log/pihole-ai`.
+If `/etc/pihole-ai/pihole-ai.env` does not exist, it is created from
+`.env.example` plus the runtime database and log paths. If `data/events.db`
+exists and `/var/lib/pihole-ai/events.db` does not, install copies the database
+there and leaves the old project copy untouched.
+
+The launcher points to the current project virtualenv executable, for example `/home/carbonarakarlsson/pihole-ai/.venv/bin/pihole-ai`.
+
 Enable automatic startup at boot:
 
 ```bash
-sudo pihole-ai enable
+sudo /usr/local/bin/pihole-ai enable
 ```
 
 Manage services:
 
 ```bash
-sudo pihole-ai start
-sudo pihole-ai status
-pihole-ai logs
-pihole-ai logs --follow
-sudo pihole-ai stop
-sudo pihole-ai restart
-sudo pihole-ai disable
+sudo /usr/local/bin/pihole-ai start
+/usr/local/bin/pihole-ai status
+/usr/local/bin/pihole-ai logs
+/usr/local/bin/pihole-ai logs -f
+sudo /usr/local/bin/pihole-ai stop
+sudo /usr/local/bin/pihole-ai restart
+sudo /usr/local/bin/pihole-ai disable
 ```
+
+`pihole-ai logs` prints the last 80 journal lines by default. Use `--lines N` to change the count and `--follow`/`-f` for a live tail.
 
 Uninstall services:
 
 ```bash
-sudo pihole-ai uninstall
+sudo /usr/local/bin/pihole-ai uninstall
 ```
 
 Generated services:

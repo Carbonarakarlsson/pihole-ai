@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.config import settings
-from core.db import database_stats, get_state
+from core.db import ai_metrics, database_stats, get_state
 
 
 def get_ollama_health() -> dict[str, Any]:
@@ -45,11 +45,16 @@ def collect_status(
                 "0",
             ),
         },
+        "ai": ai_metrics(),
         "config": {
             "events_db": str(settings.events_db),
             "pihole_db": str(settings.pihole_db),
             "ollama_url": settings.ollama_url,
             "ollama_model": settings.ollama_model,
+            "ai_enabled": settings.ai_enabled,
+            "ai_max_calls_per_minute": settings.ai_max_calls_per_minute,
+            "ai_cooldown_seconds": settings.ai_cooldown_seconds,
+            "ai_timeout_seconds": settings.ai_timeout_seconds,
             "dashboard_port": settings.dashboard_port,
             "cache_ttl": settings.cache_ttl,
         },
@@ -73,6 +78,7 @@ def print_status(
     )
     database = status["database"]
     collector = status["collector"]
+    ai = status["ai"]
     config = status["config"]
 
     print("PiHole-AI status")
@@ -85,6 +91,15 @@ def print_status(
     print(f"  reputations: {database.get('reputations', 0)}")
     print(f"  threat_intel: {database.get('threat_intel', 0)}")
     print(f"  collector.last_query_id: {collector['last_query_id']}")
+    print("AI:")
+    print(f"  enabled: {config['ai_enabled']}")
+    print(f"  max_calls_per_minute: {config['ai_max_calls_per_minute']}")
+    print(f"  cooldown_seconds: {config['ai_cooldown_seconds']}")
+    print(f"  timeout_seconds: {config['ai_timeout_seconds']}")
+    print(f"  ai_calls: {ai['ai_calls']}")
+    print(f"  ai_skipped: {ai['ai_skipped']}")
+    print(f"  ai_parse_errors: {ai['ai_parse_errors']}")
+    print(f"  ai_timeouts: {ai['ai_timeouts']}")
 
     if include_ollama:
         ollama = status["ollama"]

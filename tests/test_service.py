@@ -1,13 +1,17 @@
 import io
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import call, patch
+from unittest.mock import ANY, call, patch
 
 from pihole_ai.service import (
     SERVICE_NAMES,
     SERVICE_DEFINITIONS,
+    ServiceError,
     generate_unit_file,
+    launcher_content,
+    launcher_target,
     service_action,
     service_disable,
     service_enable,
@@ -24,11 +28,15 @@ class ServiceTests(unittest.TestCase):
             service=SERVICE_DEFINITIONS[0],
             python_path="/project/.venv/bin/python",
             project_dir="/project/pihole-ai",
+            user="pihole",
+            group="pihole",
         )
 
         self.assertIn("Description=PiHole-AI Collector", unit)
+        self.assertIn("User=pihole", unit)
+        self.assertIn("Group=pihole", unit)
         self.assertIn("WorkingDirectory=/project/pihole-ai", unit)
-        self.assertIn("EnvironmentFile=-/project/pihole-ai/.env", unit)
+        self.assertIn("EnvironmentFile=/etc/pihole-ai/pihole-ai.env", unit)
         self.assertIn(
             "ExecStart=/project/.venv/bin/python -m pihole_ai.cli collect",
             unit,
@@ -52,15 +60,31 @@ class ServiceTests(unittest.TestCase):
     def test_service_install_writes_units_and_enables_services(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch(
             "pihole_ai.service.subprocess.run",
-        ) as run, patch("sys.stdout", io.StringIO()):
+        ) as run, patch("pihole_ai.service.os.geteuid", return_value=0), patch(
+            "sys.stdout",
+            io.StringIO(),
+        ):
+            wrapper = Path(tmpdir) / "pihole-ai"
+            config_dir = Path(tmpdir) / "etc" / "pihole-ai"
+            data_dir = Path(tmpdir) / "var" / "lib" / "pihole-ai"
+            log_dir = Path(tmpdir) / "var" / "log" / "pihole-ai"
             service_install(
-                systemd_dir=tmpdir,
+                systemd_dir=Path(tmpdir) / "systemd",
                 python_path="/venv/bin/python",
                 project_dir="/app",
+                wrapper_path=wrapper,
+                config_dir=config_dir,
+                data_dir=data_dir,
+                log_dir=log_dir,
             )
 
             for name in SERVICE_NAMES:
-                self.assertTrue((Path(tmpdir) / name).exists())
+                self.assertTrue((Path(tmpdir) / "systemd" / name).exists())
+            self.assertTrue(wrapper.exists())
+            self.assertTrue(config_dir.exists())
+            self.assertTrue(data_dir.exists())
+            self.assertTrue(log_dir.exists())
+            self.assertTrue((config_dir / "pihole-ai.env").exists())
 
         run.assert_has_calls(
             [
@@ -80,6 +104,10 @@ class ServiceTests(unittest.TestCase):
                 systemd_dir=tmpdir,
                 python_path="/venv/bin/python",
                 project_dir="/app",
+                wrapper_path=Path(tmpdir) / "pihole-ai",
+                config_dir=Path(tmpdir) / "etc" / "pihole-ai",
+                data_dir=Path(tmpdir) / "var" / "lib" / "pihole-ai",
+                log_dir=Path(tmpdir) / "var" / "log" / "pihole-ai",
             )
 
             files = list(Path(tmpdir).iterdir())
@@ -91,6 +119,9 @@ class ServiceTests(unittest.TestCase):
 
     def test_service_enable_and_disable_dispatch_systemctl(self) -> None:
         with patch("pihole_ai.service.subprocess.run") as run, patch(
+            "pihole_ai.service.os.geteuid",
+            return_value=0,
+        ), patch(
             "sys.stdout",
             io.StringIO(),
         ):
@@ -113,7 +144,15 @@ class ServiceTests(unittest.TestCase):
     def test_service_uninstall_removes_units_and_disables_services(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch(
             "pihole_ai.service.subprocess.run",
-        ) as run, patch("sys.stdout", io.StringIO()):
+        ) as run, patch("pihole_ai.service.os.geteuid", return_value=0), patch(
+            "sys.stdout",
+            io.StringIO(),
+        ):
+            wrapper = Path(tmpdir) / "pihole-ai"
+            wrapper.write_text(
+                launcher_content("/app"),
+                encoding="utf-8",
+            )
             for name in SERVICE_NAMES:
                 (Path(tmpdir) / name).write_text(
                     "unit",
@@ -122,10 +161,13 @@ class ServiceTests(unittest.TestCase):
 
             service_uninstall(
                 systemd_dir=tmpdir,
+                project_dir="/app",
+                wrapper_path=wrapper,
             )
 
             for name in SERVICE_NAMES:
                 self.assertFalse((Path(tmpdir) / name).exists())
+            self.assertFalse(wrapper.exists())
 
         run.assert_has_calls(
             [
@@ -142,6 +184,9 @@ class ServiceTests(unittest.TestCase):
 
     def test_service_action_dispatches_systemctl(self) -> None:
         with patch("pihole_ai.service.subprocess.run") as run, patch(
+            "pihole_ai.service.os.geteuid",
+            return_value=0,
+        ), patch(
             "sys.stdout",
             io.StringIO(),
         ):
@@ -151,6 +196,179 @@ class ServiceTests(unittest.TestCase):
             ["systemctl", "restart", *SERVICE_NAMES],
             check=True,
         )
+
+    def test_service_action_shows_sudo_hint_when_not_root(self) -> None:
+        with patch("pihole_ai.service.os.geteuid", return_value=1000), patch(
+            "pihole_ai.service.subprocess.run",
+        ) as run, patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(ServiceError) as context:
+                service_action("start")
+
+        self.assertIn(
+            "Run: sudo /usr/local/bin/pihole-ai start",
+            str(context.exception),
+        )
+        run.assert_not_called()
+
+    def test_failed_systemctl_raises_clean_error(self) -> None:
+        with patch("pihole_ai.service.os.geteuid", return_value=0), patch(
+            "pihole_ai.service.subprocess.run",
+            side_effect=subprocess.CalledProcessError(
+                returncode=1,
+                cmd=["systemctl", "restart", *SERVICE_NAMES],
+            ),
+        ), patch("sys.stdout", io.StringIO()):
+            with self.assertRaises(ServiceError) as context:
+                service_action("restart")
+
+        message = str(context.exception)
+        self.assertIn("Command failed: systemctl restart", message)
+        self.assertIn("Exit code: 1", message)
+        self.assertNotIn("Traceback", message)
+
+    def test_launcher_content_points_to_project_venv_executable(self) -> None:
+        self.assertEqual(
+            launcher_target("/app"),
+            Path("/app/.venv/bin/pihole-ai"),
+        )
+        content = launcher_content("/app")
+
+        self.assertIn("# Managed by PiHole-AI", content)
+        self.assertIn("# Project: /app", content)
+        self.assertIn("# Target: /app/.venv/bin/pihole-ai", content)
+        self.assertIn("exec /app/.venv/bin/pihole-ai \"$@\"", content)
+
+    def test_service_install_creates_launcher_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "pihole_ai.service.subprocess.run",
+        ), patch("pihole_ai.service.os.geteuid", return_value=0), patch(
+            "sys.stdout",
+            io.StringIO(),
+        ):
+            wrapper = Path(tmpdir) / "pihole-ai"
+            service_install(
+                systemd_dir=Path(tmpdir) / "systemd",
+                python_path="/venv/bin/python",
+                project_dir="/app",
+                wrapper_path=wrapper,
+                config_dir=Path(tmpdir) / "etc" / "pihole-ai",
+                data_dir=Path(tmpdir) / "var" / "lib" / "pihole-ai",
+                log_dir=Path(tmpdir) / "var" / "log" / "pihole-ai",
+            )
+
+            self.assertTrue(wrapper.exists())
+            self.assertIn(
+                "exec /app/.venv/bin/pihole-ai",
+                wrapper.read_text(encoding="utf-8"),
+            )
+
+    def test_service_uninstall_keeps_non_matching_launcher(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "pihole_ai.service.subprocess.run",
+        ), patch("pihole_ai.service.os.geteuid", return_value=0), patch(
+            "sys.stdout",
+            io.StringIO(),
+        ):
+            wrapper = Path(tmpdir) / "pihole-ai"
+            wrapper.write_text(
+                launcher_content("/other-project"),
+                encoding="utf-8",
+            )
+
+            service_uninstall(
+                systemd_dir=Path(tmpdir) / "systemd",
+                project_dir="/app",
+                wrapper_path=wrapper,
+            )
+
+            self.assertTrue(wrapper.exists())
+
+    def test_service_install_creates_runtime_paths_and_migrates_project_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "pihole_ai.service.subprocess.run",
+        ) as run, patch("pihole_ai.service.os.geteuid", return_value=0), patch(
+            "sys.stdout",
+            io.StringIO(),
+        ) as stdout:
+            root = Path(tmpdir)
+            project = root / "project"
+            project_data = project / "data"
+            config_dir = root / "etc" / "pihole-ai"
+            data_dir = root / "var" / "lib" / "pihole-ai"
+            log_dir = root / "var" / "log" / "pihole-ai"
+            project_data.mkdir(parents=True)
+            (project / ".env.example").write_text(
+                "AI_ENABLED=true\n",
+                encoding="utf-8",
+            )
+            (project_data / "events.db").write_text(
+                "old-db",
+                encoding="utf-8",
+            )
+
+            service_install(
+                systemd_dir=root / "systemd",
+                python_path="/venv/bin/python",
+                project_dir=project,
+                wrapper_path=root / "pihole-ai",
+                config_dir=config_dir,
+                data_dir=data_dir,
+                log_dir=log_dir,
+            )
+
+            env_content = (config_dir / "pihole-ai.env").read_text(
+                encoding="utf-8",
+            )
+            migrated = (data_dir / "events.db").read_text(
+                encoding="utf-8",
+            )
+
+            self.assertTrue(config_dir.exists())
+            self.assertTrue(data_dir.exists())
+            self.assertTrue(log_dir.exists())
+            self.assertEqual(migrated, "old-db")
+            self.assertIn(f"EVENTS_DB_PATH={data_dir / 'events.db'}", env_content)
+            self.assertIn(f"LOG_PATH={log_dir / 'pihole-ai.log'}", env_content)
+            self.assertIn("Migrating existing project database", stdout.getvalue())
+            run.assert_any_call(
+                ["chown", "-R", ANY, str(data_dir)],
+                check=True,
+            )
+            run.assert_any_call(
+                ["chown", "-R", ANY, str(log_dir)],
+                check=True,
+            )
+
+    def test_service_install_dry_run_does_not_migrate_project_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "pihole_ai.service.subprocess.run",
+        ) as run, patch("sys.stdout", io.StringIO()) as stdout:
+            root = Path(tmpdir)
+            project = root / "project"
+            project_data = project / "data"
+            config_dir = root / "etc" / "pihole-ai"
+            data_dir = root / "var" / "lib" / "pihole-ai"
+            log_dir = root / "var" / "log" / "pihole-ai"
+            project_data.mkdir(parents=True)
+            (project_data / "events.db").write_text(
+                "old-db",
+                encoding="utf-8",
+            )
+
+            service_install(
+                dry_run=True,
+                systemd_dir=root / "systemd",
+                python_path="/venv/bin/python",
+                project_dir=project,
+                wrapper_path=root / "pihole-ai",
+                config_dir=config_dir,
+                data_dir=data_dir,
+                log_dir=log_dir,
+            )
+
+        self.assertFalse((data_dir / "events.db").exists())
+        self.assertIn("Would migrate existing project database", stdout.getvalue())
+        run.assert_not_called()
 
     def test_service_status_prints_service_and_project_state(self) -> None:
         status = {
@@ -166,15 +384,33 @@ class ServiceTests(unittest.TestCase):
             "collector": {
                 "last_query_id": "42",
             },
+            "ai": {
+                "ai_calls": 2,
+                "ai_skipped": 1,
+                "ai_parse_errors": 0,
+                "ai_timeouts": 0,
+                "calls": 2,
+                "rate_limit_skips": 1,
+                "disabled_skips": 0,
+                "cooldown_skips": 0,
+                "parse_errors": 0,
+                "timeouts": 0,
+                "slow_responses": 0,
+                "cooldown_until": 0,
+            },
             "config": {
                 "events_db": "data/events.db",
                 "pihole_db": "/etc/pihole/pihole-FTL.db",
+                "ai_enabled": True,
+                "ai_max_calls_per_minute": 2,
+                "ai_cooldown_seconds": 60,
+                "ai_timeout_seconds": 20,
                 "dashboard_port": 8080,
             },
         }
 
         with patch(
-            "pihole_ai.service.collect_status",
+            "pihole_ai.status.collect_status",
             return_value=status,
         ), patch("pihole_ai.service.subprocess.run") as run, patch(
             "sys.stdout",
@@ -197,6 +433,7 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("PiHole-AI appliance status", output)
         self.assertIn("pihole-ai-collector.service: active=active enabled=enabled", output)
         self.assertIn("events: 3", output)
+        self.assertIn("ai_skipped: 1", output)
 
     def test_service_logs_dispatches_journalctl(self) -> None:
         with patch("pihole_ai.service.subprocess.run") as run, patch(
@@ -211,6 +448,7 @@ class ServiceTests(unittest.TestCase):
         run.assert_called_once_with(
             [
                 "journalctl",
+                "--no-pager",
                 "-u",
                 "pihole-ai-collector.service",
                 "-u",
@@ -223,6 +461,17 @@ class ServiceTests(unittest.TestCase):
             ],
             check=True,
         )
+
+    def test_service_logs_handles_keyboard_interrupt_cleanly(self) -> None:
+        with patch(
+            "pihole_ai.service.subprocess.run",
+            side_effect=KeyboardInterrupt,
+        ), patch("sys.stdout", io.StringIO()) as stdout:
+            service_logs(
+                follow=True,
+            )
+
+        self.assertIn("Stopped log tail.", stdout.getvalue())
 
 
 if __name__ == "__main__":

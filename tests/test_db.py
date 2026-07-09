@@ -263,6 +263,15 @@ class DatabaseTests(unittest.TestCase):
             reason="Human feedback.",
             created_at=50.0,
         )
+        db.record_action(
+            domain="parse.example",
+            action="review",
+            source="ai",
+            status="parse_error",
+            reason="AI returned invalid response",
+            risk=0,
+            created_at=55.0,
+        )
         db.save_domain_rule(
             domain="bad.example",
             decision="block",
@@ -271,6 +280,10 @@ class DatabaseTests(unittest.TestCase):
             created_at=60.0,
             updated_at=60.0,
         )
+        db.increment_state_counter("ai.calls.total")
+        db.increment_state_counter("ai.calls.total")
+        db.increment_state_counter("ai.rate_limit_skips.total")
+        db.increment_state_counter("ai.timeouts.total")
 
         metrics = db.decision_metrics()
 
@@ -286,11 +299,17 @@ class DatabaseTests(unittest.TestCase):
         )
         self.assertEqual(metrics["categories"]["malware"], 1)
         self.assertEqual(metrics["models"]["ollama"], 1)
-        self.assertEqual(metrics["actions"]["total"], 2)
+        self.assertEqual(metrics["actions"]["total"], 3)
+        self.assertEqual(metrics["actions"]["parse_errors"], 1)
         self.assertEqual(metrics["actions"]["by_action"]["feedback"], 1)
         self.assertEqual(metrics["actions"]["by_status"]["dry_run"], 1)
+        self.assertEqual(metrics["actions"]["by_status"]["parse_error"], 1)
         self.assertEqual(metrics["actions"]["feedback"]["false-negative"], 1)
         self.assertEqual(metrics["rules"]["block"], 1)
+        self.assertEqual(metrics["ai"]["ai_calls"], 2)
+        self.assertEqual(metrics["ai"]["ai_skipped"], 2)
+        self.assertEqual(metrics["ai"]["ai_timeouts"], 1)
+        self.assertEqual(metrics["ai"]["rate_limit_skips"], 1)
 
     def test_domain_rules_are_upserted_listed_and_deleted(self) -> None:
         db.save_domain_rule(

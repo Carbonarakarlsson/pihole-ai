@@ -15,7 +15,7 @@ Features
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -27,9 +27,43 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DATA_DIR = PROJECT_ROOT / "data"
 LOG_DIR = PROJECT_ROOT / "logs"
+CONFIG_DIR = Path("/etc/pihole-ai")
+CONFIG_FILE = CONFIG_DIR / "pihole-ai.env"
+RUNTIME_DATA_DIR = Path("/var/lib/pihole-ai")
+RUNTIME_LOG_DIR = Path("/var/log/pihole-ai")
+RUNTIME_EVENTS_DB = RUNTIME_DATA_DIR / "events.db"
+RUNTIME_LOG_FILE = RUNTIME_LOG_DIR / "pihole-ai.log"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def load_env_file(
+    path: Path,
+) -> None:
+    """
+    Load simple KEY=VALUE pairs without overriding existing environment.
+    """
+
+    if not path.exists():
+        return
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("\"'")
+
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_env_file(CONFIG_FILE)
+load_env_file(PROJECT_ROOT / ".env")
 
 
 # ============================================================================
@@ -49,13 +83,42 @@ class Settings:
     # ------------------------------------------------------------------
 
     project_root: Path = PROJECT_ROOT
-    data_dir: Path = DATA_DIR
-    log_dir: Path = LOG_DIR
+    data_dir: Path = Path(
+        os.getenv(
+            "PIHOLE_AI_DATA_DIR",
+            str(RUNTIME_DATA_DIR),
+        )
+    )
+    log_dir: Path = Path(
+        os.getenv(
+            "PIHOLE_AI_LOG_DIR",
+            str(RUNTIME_LOG_DIR),
+        )
+    )
+    config_file: Path = Path(
+        os.getenv(
+            "PIHOLE_AI_CONFIG_FILE",
+            str(CONFIG_FILE),
+        )
+    )
 
     events_db: Path = Path(
         os.getenv(
-            "PIHOLE_AI_EVENTS_DB",
-            str(DATA_DIR / "events.db"),
+            "EVENTS_DB_PATH",
+            os.getenv(
+                "PIHOLE_AI_EVENTS_DB",
+                str(RUNTIME_EVENTS_DB),
+            ),
+        )
+    )
+
+    log_file: Path = Path(
+        os.getenv(
+            "LOG_PATH",
+            os.getenv(
+                "PIHOLE_AI_LOG_FILE",
+                str(RUNTIME_LOG_FILE),
+            ),
         )
     )
 
@@ -141,8 +204,23 @@ class Settings:
     )
 
     ai_enabled: bool = (
-        os.getenv("PIHOLE_AI_ENABLED", "true").lower()
+        os.getenv(
+            "PIHOLE_AI_ENABLED",
+            os.getenv("AI_ENABLED", "true"),
+        ).lower()
         in ("1", "true", "yes", "on")
+    )
+
+    ai_max_calls_per_minute: int = int(
+        os.getenv("AI_MAX_CALLS_PER_MINUTE", "2")
+    )
+
+    ai_cooldown_seconds: int = int(
+        os.getenv("AI_COOLDOWN_SECONDS", "60")
+    )
+
+    ai_timeout_seconds: int = int(
+        os.getenv("AI_TIMEOUT_SECONDS", "20")
     )
 
     ai_minimum_score: int = int(
@@ -158,13 +236,24 @@ class Settings:
         in ("1", "true", "yes", "on")
     )
 
-    log_level: str = os.getenv(
-        "PIHOLE_AI_LOG_LEVEL",
-        "INFO",
-    ).upper()
+    log_level: str = field(
+        default_factory=lambda: os.getenv(
+            "PIHOLE_AI_LOG_LEVEL",
+            os.getenv("LOG_LEVEL", "INFO"),
+        ).upper()
+    )
 
     dashboard_port: int = int(
         os.getenv("PIHOLE_AI_DASHBOARD_PORT", "8080")
+    )
+
+    dashboard_poll_interval_ms: int = int(
+        os.getenv("PIHOLE_AI_DASHBOARD_POLL_INTERVAL_MS", "10000")
+    )
+
+    dev_access_logs: bool = (
+        os.getenv("DEV_ACCESS_LOGS", "false").lower()
+        in ("1", "true", "yes", "on")
     )
 
     cache_ttl: int = int(
@@ -235,8 +324,10 @@ settings.validate()
 # ============================================================================
 
 EVENTS_DB = settings.events_db
+EVENTS_DB_PATH = settings.events_db
 PIHOLE_DB = settings.pihole_db
 ALERT_LOG = settings.alert_log
+LOG_PATH = settings.log_file
 
 COLLECT_BATCH_SIZE = settings.collect_batch_size
 COLLECT_INTERVAL = settings.collect_interval
@@ -255,5 +346,8 @@ OLLAMA_URL = settings.ollama_url
 OLLAMA_MODEL = settings.ollama_model
 
 AI_ENABLED = settings.ai_enabled
+AI_MAX_CALLS_PER_MINUTE = settings.ai_max_calls_per_minute
+AI_COOLDOWN_SECONDS = settings.ai_cooldown_seconds
+AI_TIMEOUT_SECONDS = settings.ai_timeout_seconds
 AI_MINIMUM_SCORE = settings.ai_minimum_score
 KEEP_LATEST_EVENTS = settings.keep_latest_events

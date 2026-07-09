@@ -1,12 +1,27 @@
 import unittest
+import sys
+import tempfile
+import types
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+sys.modules.setdefault(
+    "ollama",
+    types.SimpleNamespace(
+        Client=lambda *args, **kwargs: None,
+    ),
+)
+
 from engine.engine import AnalysisEngine, is_cache_usable
 from engine.models import AnalysisResult, DomainCategory
+from core import db
 
 
 class DummyLogger:
+    def debug(self, *args, **kwargs):
+        pass
+
     def info(self, *args, **kwargs):
         pass
 
@@ -361,6 +376,126 @@ class AnalysisEngineTests(unittest.TestCase):
         )
         apply_action_policy.assert_called_once()
         mark_processed_by_domain.assert_called_once_with("fallback.example")
+
+    def test_process_once_increases_reputation_after_heuristic_classification(self) -> None:
+        class HeuristicAnalyzer:
+            def analyze(self, request):
+                return AnalysisResult(
+                    domain=request.domain,
+                    risk=82,
+                    confidence=88,
+                    category=DomainCategory.SUSPICIOUS.value,
+                    reason="Suspicious heuristic match.",
+                    model="heuristics",
+                    analyzed_at=456.0,
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "events.db"
+
+            with patch.object(
+                db,
+                "DATABASE_PATH",
+                database_path,
+            ):
+                db.init_db()
+                db.insert_event(
+                    device="device-a",
+                    domain="bad.example",
+                    timestamp=100.0,
+                )
+
+                engine = AnalysisEngine.__new__(AnalysisEngine)
+                engine.analyzer = HeuristicAnalyzer()
+
+                with patch(
+                    "engine.engine.logger",
+                    DummyLogger(),
+                ), patch(
+                    "engine.engine.settings",
+                    SimpleNamespace(
+                        cache_ttl=0,
+                        engine_batch_size=500,
+                        action_mode="dry-run",
+                        alert_threshold=50,
+                        high_risk_threshold=70,
+                    ),
+                ), patch(
+                    "actions.policy.settings",
+                    SimpleNamespace(
+                        action_mode="dry-run",
+                        alert_threshold=50,
+                        high_risk_threshold=70,
+                    ),
+                ):
+                    processed = engine.process_once()
+
+                reputation = db.get_domain_reputation("bad.example")
+
+        self.assertEqual(processed, 1)
+        self.assertIsNotNone(reputation)
+        self.assertEqual(reputation["score"], 82)
+        self.assertEqual(reputation["confidence"], 88)
+
+    def test_process_once_persists_ai_parse_error_and_metrics_count(self) -> None:
+        class ParseErrorAnalyzer:
+            def analyze(self, request):
+                return AnalysisResult(
+                    domain=request.domain,
+                    risk=0,
+                    confidence=0,
+                    category=DomainCategory.UNKNOWN.value,
+                    reason="AI returned invalid response",
+                    model="ai",
+                    analyzed_at=789.0,
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "events.db"
+
+            with patch.object(
+                db,
+                "DATABASE_PATH",
+                database_path,
+            ):
+                db.init_db()
+                db.insert_event(
+                    device="device-a",
+                    domain="parse.example",
+                    timestamp=100.0,
+                )
+
+                engine = AnalysisEngine.__new__(AnalysisEngine)
+                engine.analyzer = ParseErrorAnalyzer()
+
+                with patch(
+                    "engine.engine.logger",
+                    DummyLogger(),
+                ), patch(
+                    "engine.engine.settings",
+                    SimpleNamespace(
+                        cache_ttl=0,
+                        engine_batch_size=500,
+                    ),
+                ):
+                    processed = engine.process_once()
+
+                analysis = db.get_analysis("parse.example")
+                actions = db.get_recent_actions(
+                    search="parse.example",
+                    status="parse_error",
+                )
+                metrics = db.decision_metrics()
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(analysis["risk"], 0)
+        self.assertEqual(analysis["category"], DomainCategory.UNKNOWN.value)
+        self.assertEqual(analysis["model"], "ai")
+        self.assertEqual(analysis["reason"], "AI returned invalid response")
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["source"], "ai")
+        self.assertEqual(actions[0]["status"], "parse_error")
+        self.assertEqual(metrics["actions"]["parse_errors"], 1)
 
     def test_run_loop_processes_until_max_cycles(self) -> None:
         engine = LoopEngine()
