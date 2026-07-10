@@ -1,13 +1,40 @@
+import json
 import os
 import tempfile
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import patch
 
-from core.config import Settings, load_env_file
+from core.config import (
+    ConfigurationIssue,
+    ConfigurationValidationResult,
+    Settings,
+    ValidationMode,
+    ValidationSeverity,
+    load_env_file,
+    validate_config,
+)
+from pihole_ai import cli
 
 
 class ConfigTests(unittest.TestCase):
+    def valid_env(self, tmpdir: str) -> dict[str, str]:
+        root = Path(tmpdir)
+        pihole_db = root / "pihole-FTL.db"
+        pihole_db.write_text("", encoding="utf-8")
+        data_dir = root / "data"
+        log_dir = root / "logs"
+        data_dir.mkdir()
+        log_dir.mkdir()
+
+        return {
+            "PIHOLE_AI_PIHOLE_DB": str(pihole_db),
+            "EVENTS_DB_PATH": str(data_dir / "events.db"),
+            "LOG_PATH": str(log_dir / "pihole-ai.log"),
+            "PIHOLE_AI_DASHBOARD_HOST": "127.0.0.1",
+        }
+
     def test_load_env_file_sets_log_level_without_overriding_existing_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / ".env"
@@ -48,6 +75,281 @@ class ConfigTests(unittest.TestCase):
             clear=True,
         ):
             self.assertEqual(Settings().log_level, "WARNING")
+
+    def test_valid_test_configuration_has_no_issues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Settings(
+                env=self.valid_env(tmpdir),
+            )
+            result = validate_config(
+                config,
+                mode=ValidationMode.RUNTIME,
+            )
+
+        self.assertEqual(result.error_count, 0)
+        self.assertEqual(result.warning_count, 0)
+
+    def test_invalid_integer_parsing_is_structured(self) -> None:
+        with self.assertRaises(Exception) as raised:
+            Settings(
+                env={
+                    "PIHOLE_AI_COLLECT_BATCH_SIZE": "many",
+                },
+            )
+
+        self.assertEqual(
+            raised.exception.issues[0].code,
+            "config.collect_batch_size.invalid_integer",
+        )
+
+    def test_invalid_boolean_parsing_is_structured(self) -> None:
+        with self.assertRaises(Exception) as raised:
+            Settings(
+                env={
+                    "AI_ENABLED": "maybe",
+                },
+            )
+
+        self.assertEqual(
+            raised.exception.issues[0].code,
+            "config.ai_enabled.invalid_boolean",
+        )
+
+    def test_invalid_dashboard_port_is_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = self.valid_env(tmpdir) | {
+                "PIHOLE_AI_DASHBOARD_PORT": "70000",
+            }
+            result = validate_config(
+                Settings(env=env),
+                mode=ValidationMode.RUNTIME,
+            )
+
+        self.assertIn(
+            "config.dashboard.invalid_port",
+            {issue.code for issue in result.issues},
+        )
+
+    def test_missing_pihole_database_allowed_in_syntax_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = self.valid_env(tmpdir) | {
+                "PIHOLE_AI_PIHOLE_DB": str(Path(tmpdir) / "missing.db"),
+            }
+            result = validate_config(
+                Settings(env=env),
+                mode=ValidationMode.SYNTAX,
+            )
+
+        self.assertNotIn(
+            "config.pihole_db.missing",
+            {issue.code for issue in result.issues},
+        )
+
+    def test_missing_pihole_database_is_runtime_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = self.valid_env(tmpdir) | {
+                "PIHOLE_AI_PIHOLE_DB": str(Path(tmpdir) / "missing.db"),
+            }
+            result = validate_config(
+                Settings(env=env),
+                mode=ValidationMode.RUNTIME,
+            )
+
+        self.assertIn(
+            "config.pihole_db.missing",
+            {issue.code for issue in result.issues},
+        )
+
+    def test_unreadable_pihole_database_is_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "core.config.os.access",
+            return_value=False,
+        ):
+            result = validate_config(
+                Settings(env=self.valid_env(tmpdir)),
+                mode=ValidationMode.RUNTIME,
+            )
+
+        self.assertIn(
+            "config.pihole_db.not_readable",
+            {issue.code for issue in result.issues},
+        )
+
+    def test_unwritable_events_database_parent_is_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = self.valid_env(tmpdir)
+
+            def fake_access(path: Path, mode: int) -> bool:
+                return not str(path).endswith("/data")
+
+            with patch("core.config.os.access", side_effect=fake_access):
+                result = validate_config(
+                    Settings(env=env),
+                    mode=ValidationMode.RUNTIME,
+                )
+
+        self.assertIn(
+            "config.events_db.parent_not_writable",
+            {issue.code for issue in result.issues},
+        )
+
+    def test_database_paths_conflict_is_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = self.valid_env(tmpdir)
+            env["EVENTS_DB_PATH"] = env["PIHOLE_AI_PIHOLE_DB"]
+            result = validate_config(
+                Settings(env=env),
+                mode=ValidationMode.RUNTIME,
+            )
+
+        self.assertIn(
+            "config.database_paths.conflict",
+            {issue.code for issue in result.issues},
+        )
+
+    def test_events_database_path_directory_is_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = self.valid_env(tmpdir)
+            env["EVENTS_DB_PATH"] = str(Path(tmpdir) / "data")
+            result = validate_config(
+                Settings(env=env),
+                mode=ValidationMode.RUNTIME,
+            )
+
+        self.assertIn(
+            "config.events_db.is_directory",
+            {issue.code for issue in result.issues},
+        )
+
+    def test_malformed_ollama_url_is_error(self) -> None:
+        config = Settings(
+            env={
+                "PIHOLE_AI_OLLAMA_URL": "ftp://example.com",
+            },
+        )
+        result = validate_config(
+            config,
+            mode=ValidationMode.SYNTAX,
+        )
+
+        self.assertIn(
+            "config.ollama.invalid_url",
+            {issue.code for issue in result.issues},
+        )
+
+    def test_ollama_url_credentials_are_rejected_and_redacted(self) -> None:
+        config = Settings(
+            env={
+                "PIHOLE_AI_OLLAMA_URL": "http://user:secret@example.com:11434",
+            },
+        )
+        result = validate_config(
+            config,
+            mode=ValidationMode.SYNTAX,
+        )
+        encoded = json.dumps(result.to_dict()) + json.dumps(config.to_safe_dict())
+
+        self.assertIn(
+            "config.ollama.credentials_in_url",
+            {issue.code for issue in result.issues},
+        )
+        self.assertNotIn("secret", encoded)
+
+    def test_empty_ollama_model_when_ai_enabled_is_error(self) -> None:
+        result = validate_config(
+            Settings(
+                env={
+                    "AI_ENABLED": "true",
+                    "PIHOLE_AI_OLLAMA_MODEL": "",
+                },
+            ),
+            mode=ValidationMode.SYNTAX,
+        )
+
+        self.assertIn(
+            "config.ollama.empty_model",
+            {issue.code for issue in result.issues},
+        )
+
+    def test_non_loopback_dashboard_binding_warns(self) -> None:
+        result = validate_config(
+            Settings(
+                env={
+                    "PIHOLE_AI_DASHBOARD_HOST": "0.0.0.0",
+                },
+            ),
+            mode=ValidationMode.SYNTAX,
+        )
+
+        self.assertIn(
+            "config.dashboard.non_loopback_bind",
+            {issue.code for issue in result.issues},
+        )
+
+    def test_all_validation_issues_are_collected(self) -> None:
+        result = validate_config(
+            Settings(
+                env={
+                    "PIHOLE_AI_DASHBOARD_PORT": "0",
+                    "PIHOLE_AI_OLLAMA_URL": "invalid",
+                    "PIHOLE_AI_OLLAMA_MODEL": "",
+                },
+            ),
+            mode=ValidationMode.SYNTAX,
+        )
+        codes = {issue.code for issue in result.issues}
+
+        self.assertIn("config.dashboard.invalid_port", codes)
+        self.assertIn("config.ollama.invalid_url", codes)
+        self.assertIn("config.ollama.empty_model", codes)
+
+    def test_config_check_text_output(self) -> None:
+        result = ConfigurationValidationResult(
+            mode="runtime",
+            issues=[],
+        )
+
+        with patch(
+            "pihole_ai.config_cli.load_config_with_result",
+            return_value=(Settings(env={}), result),
+        ), patch("sys.stdout") as stdout:
+            exit_code = cli.main(["config", "check"])
+
+        self.assertEqual(exit_code, 0)
+        stdout.write.assert_any_call("PiHole-AI configuration check (runtime)")
+
+    def test_config_check_json_output_and_exit_code(self) -> None:
+        result = ConfigurationValidationResult(
+            mode="runtime",
+            issues=[
+                ConfigurationIssue(
+                    code="config.test.warning",
+                    severity=ValidationSeverity.WARNING.value,
+                    setting="TEST",
+                    summary="warning",
+                    remediation="fix",
+                )
+            ],
+        )
+
+        with patch(
+            "pihole_ai.config_cli.load_config_with_result",
+            return_value=(Settings(env={}), result),
+        ), patch("sys.stdout") as stdout:
+            exit_code = cli.main(["config", "check", "--json"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertTrue(stdout.write.called)
+
+    def test_config_show_json_output(self) -> None:
+        with patch(
+            "pihole_ai.config_cli.load_config",
+            return_value=Settings(env={}),
+        ), patch("sys.stdout") as stdout:
+            exit_code = cli.main(["config", "show", "--json"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(stdout.write.called)
 
 
 if __name__ == "__main__":

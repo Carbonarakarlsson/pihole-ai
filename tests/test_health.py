@@ -305,24 +305,31 @@ class HealthTests(unittest.TestCase):
         )
 
     def test_health_output_does_not_expose_configured_secrets(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir, patch(
-            "pihole_ai.health.settings",
-            FakeSettings(
-                events_db=str(Path(tmpdir) / "events.db"),
-                pihole_db=str(Path(tmpdir) / "pihole.db"),
-                ollama_url="http://user:secret@example.com:11434",
-            ),
-        ):
-            from pihole_ai.health import check_configuration
+        from core.config import Settings, validate_config
 
-            payload = report_to_dict(
-                HealthReport(
-                    overall_status=HealthStatus.HEALTHY.value,
-                    checks=[check_configuration()],
-                    version="0.4",
-                    checked_at=1.0,
-                )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = Settings(
+                env={
+                    "EVENTS_DB_PATH": str(Path(tmpdir) / "events.db"),
+                    "PIHOLE_AI_PIHOLE_DB": str(Path(tmpdir) / "pihole.db"),
+                    "PIHOLE_AI_OLLAMA_URL": "http://user:secret@example.com:11434",
+                }
             )
+
+            with patch(
+                "pihole_ai.health.load_config_with_result",
+                return_value=(config, validate_config(config, mode="syntax")),
+            ):
+                from pihole_ai.health import check_configuration
+
+                payload = report_to_dict(
+                    HealthReport(
+                        overall_status=HealthStatus.HEALTHY.value,
+                        checks=[check_configuration()],
+                        version="0.4",
+                        checked_at=1.0,
+                    )
+                )
 
         encoded = json.dumps(payload)
         self.assertNotIn("secret", encoded)

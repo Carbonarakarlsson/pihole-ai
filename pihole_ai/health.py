@@ -15,7 +15,11 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from core.config import settings
+from core.config import (
+    ValidationSeverity,
+    load_config_with_result,
+    settings,
+)
 from core.logger import get_logger
 from core.migrations import UnsupportedSchemaVersion, database_status
 from pihole_ai.version import get_version
@@ -161,7 +165,7 @@ def check_configuration() -> HealthCheck:
     started_at = time.perf_counter()
 
     try:
-        settings.validate()
+        config, result = load_config_with_result(mode="runtime")
 
     except Exception as exc:
         logger.warning("Configuration health check failed: %s", exc)
@@ -173,15 +177,42 @@ def check_configuration() -> HealthCheck:
             started_at=started_at,
         )
 
+    if config is None:
+        status = HealthStatus.UNHEALTHY
+        summary = "Configuration could not be parsed."
+    elif result.error_count:
+        status = HealthStatus.UNHEALTHY
+        summary = "Configuration has errors."
+    elif result.warning_count:
+        status = HealthStatus.DEGRADED
+        summary = "Configuration has warnings."
+    else:
+        status = HealthStatus.HEALTHY
+        summary = "Configuration loaded."
+
     return _check(
         name="configuration",
-        status=HealthStatus.HEALTHY,
-        summary="Configuration loaded.",
+        status=status,
+        summary=summary,
         details={
-            "events_db": str(settings.events_db),
-            "pihole_db": str(settings.pihole_db),
-            "ollama_host": _safe_url(settings.ollama_url),
-            "ollama_model": settings.ollama_model,
+            "events_db": str(config.events_db) if config else "",
+            "pihole_db": str(config.pihole_db) if config else "",
+            "ollama_host": _safe_url(config.ollama_url) if config else "",
+            "ollama_model": config.ollama_model if config else "",
+            "issues": [
+                {
+                    "code": issue.code,
+                    "severity": issue.severity,
+                    "setting": issue.setting,
+                    "summary": issue.summary,
+                }
+                for issue in result.issues
+                if issue.severity
+                in {
+                    ValidationSeverity.ERROR.value,
+                    ValidationSeverity.WARNING.value,
+                }
+            ],
         },
         started_at=started_at,
     )

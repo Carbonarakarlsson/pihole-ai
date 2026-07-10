@@ -396,6 +396,35 @@ Include the Ollama health check:
 pihole-ai status --ollama
 ```
 
+Validate the effective configuration:
+
+```bash
+pihole-ai config check
+pihole-ai config check --mode syntax
+pihole-ai config check --json
+```
+
+Show safe effective configuration values:
+
+```bash
+pihole-ai config show
+pihole-ai config show --json
+```
+
+Run read-only appliance diagnostics:
+
+```bash
+pihole-ai doctor
+pihole-ai doctor --json
+```
+
+`.env` remains supported. `config show` displays normalized effective values
+instead of raw `.env` source text and redacts URL credentials. Health checks
+report current state, while `doctor` combines configuration validation, health,
+database schema status, runtime metadata, and systemd presence with remediation
+guidance. `doctor` does not migrate databases, create directories, change
+permissions, start services, stop services, or modify Pi-hole.
+
 Explain local evidence for a domain:
 
 ```bash

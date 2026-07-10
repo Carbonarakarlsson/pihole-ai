@@ -97,6 +97,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print machine-readable health JSON.",
     )
 
+    config = subcommands.add_parser(
+        "config",
+        help="Inspect and validate PiHole-AI configuration.",
+    )
+    config_commands = config.add_subparsers(
+        dest="config_command",
+        required=True,
+    )
+    config_check = config_commands.add_parser(
+        "check",
+        help="Validate PiHole-AI configuration.",
+    )
+    config_check.add_argument(
+        "--mode",
+        choices=[
+            "syntax",
+            "install",
+            "runtime",
+        ],
+        default="runtime",
+        help="Validation mode.",
+    )
+    config_check.add_argument(
+        "--json",
+        action="store_true",
+        help="Print validation result as JSON.",
+    )
+    config_show = config_commands.add_parser(
+        "show",
+        help="Print safe effective configuration.",
+    )
+    config_show.add_argument(
+        "--json",
+        action="store_true",
+        help="Print effective configuration as JSON.",
+    )
+
+    doctor = subcommands.add_parser(
+        "doctor",
+        help="Run read-only appliance diagnostics.",
+    )
+    doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="Print diagnostics as JSON.",
+    )
+
     explain = subcommands.add_parser(
         "explain",
         help="Explain local evidence for a domain.",
@@ -562,6 +609,27 @@ def main(
             print_report(report)
 
         return exit_code_for_status(report.overall_status)
+
+    if args.command == "config":
+        from pihole_ai.config_cli import print_config_check, print_config_show
+
+        if args.config_command == "check":
+            return print_config_check(
+                mode=args.mode,
+                as_json=args.json,
+            )
+
+        if args.config_command == "show":
+            return print_config_show(
+                as_json=args.json,
+            )
+
+    if args.command == "doctor":
+        from pihole_ai.doctor import print_doctor
+
+        return print_doctor(
+            as_json=args.json,
+        )
 
     if args.command == "db":
         import json
