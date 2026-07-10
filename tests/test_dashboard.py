@@ -91,6 +91,24 @@ class DashboardTests(unittest.TestCase):
             },
         )
 
+    def test_setup_endpoint_returns_shared_report_shape(self) -> None:
+        report = SimpleNamespace(
+            to_dict=lambda: {
+                "overall_stage": "ready",
+                "ready": True,
+                "steps": [],
+                "application_version": "0.4",
+                "generated_at": 1,
+            }
+        )
+
+        with patch("ui.dashboard.evaluate_setup", return_value=report) as evaluate:
+            response = self.client.get("/api/setup")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["ready"])
+        evaluate.assert_called_once_with()
+
     def test_settings_api_returns_current_ai_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             env_path = Path(tmpdir) / "pihole-ai.env"
@@ -527,6 +545,10 @@ class DashboardTests(unittest.TestCase):
         ):
             self.assertIn(label, response.data)
         self.assertIn(b"Companion appliance", response.data)
+        self.assertIn(b'id="setup-banner"', response.data)
+        self.assertIn(b'id="setup-steps"', response.data)
+        self.assertIn(b"Derived from live state", response.data)
+        self.assertIn(b"/api/setup", response.data)
         self.assertIn(b"Network Summary", response.data)
         self.assertIn(b"Recent High-Risk Domains", response.data)
         self.assertIn(b"Activity Timeline", response.data)

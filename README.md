@@ -24,6 +24,7 @@ Working today:
 - durable action audit log
 - manual allow/block domain rules
 - Flask dashboard and JSON API
+- first-run setup status and onboarding guidance
 - unit tests for classifier, collector, engine, dashboard, and compatibility entrypoints
 
 The project is intentionally local-first. ChatGPT/OpenAI API integration is not part of the current path; Ollama remains the AI backend.
@@ -285,6 +286,7 @@ Endpoints:
 - `GET /api/reputations`
 - `GET /api/explain/<domain>`
 - `GET /api/metrics/decisions`
+- `GET /api/setup`
 - `POST /api/feedback`
 - `POST /api/rules`
 - `DELETE /api/rules/<domain>`
@@ -424,6 +426,67 @@ report current state, while `doctor` combines configuration validation, health,
 database schema status, runtime metadata, and systemd presence with remediation
 guidance. `doctor` does not migrate databases, create directories, change
 permissions, start services, stop services, or modify Pi-hole.
+
+## First-Run Setup
+
+The setup command gives a guided view over installation, configuration, database
+schema, services, health, and optional Ollama state:
+
+```bash
+pihole-ai setup
+pihole-ai setup status
+pihole-ai setup status --json
+pihole-ai setup --dry-run
+pihole-ai setup --non-interactive
+```
+
+For automation, setup never mutates implicitly in non-interactive mode. Add
+explicit flags for lifecycle work:
+
+```bash
+pihole-ai setup --non-interactive --install --enable --start
+pihole-ai setup --non-interactive --skip-ollama-check
+```
+
+Readiness is derived from live state, not from an “onboarding complete” flag.
+If configuration becomes invalid, services stop, schema becomes incompatible,
+Pi-hole DB access disappears, or required health checks fail, setup status
+changes automatically.
+
+Required readiness checks:
+
+- compatible managed or recognized installation
+- valid runtime configuration
+- readable Pi-hole FTL database
+- writable/readable PiHole-AI events database
+- current supported schema
+- dedicated service identity
+- collector, engine, and dashboard services active
+- required health checks healthy
+
+Optional or degraded checks:
+
+- Ollama unavailable when AI is enabled
+- Ollama check skipped during automation
+- no learned reputation yet
+- no threat-intelligence rows yet
+- collector idle with no new DNS queries
+
+Ollama is optional. Interactive setup can keep deterministic-only operation by
+setting `AI_ENABLED=false`; it does not install Ollama or download models.
+
+The dashboard exposes `GET /api/setup` and shows a setup banner plus ordered
+steps when setup is incomplete. Dashboard setup is diagnostic/read-only for
+privileged lifecycle actions because the dashboard does not yet have
+authentication or CSRF protection suitable for a web installer. Use the CLI to
+resume after fixing a blocked step:
+
+```bash
+pihole-ai setup status
+sudo pihole-ai install
+sudo pihole-ai start
+pihole-ai setup status
+```
 
 Explain local evidence for a domain:
 

@@ -144,6 +144,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print diagnostics as JSON.",
     )
 
+    setup = subcommands.add_parser(
+        "setup",
+        help="Run first-run setup guidance.",
+    )
+    setup.add_argument(
+        "setup_command",
+        nargs="?",
+        choices=["status"],
+        help="Use 'status' to print read-only setup state.",
+    )
+    setup.add_argument(
+        "--json",
+        action="store_true",
+        help="Print setup report as JSON.",
+    )
+    setup.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Never prompt; mutate only when explicit flags are supplied.",
+    )
+    setup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show setup plan without making changes.",
+    )
+    setup.add_argument(
+        "--install",
+        action="store_true",
+        help="Install or refresh appliance services during setup.",
+    )
+    setup.add_argument(
+        "--start",
+        action="store_true",
+        help="Start PiHole-AI services during setup.",
+    )
+    setup.add_argument(
+        "--enable",
+        action="store_true",
+        help="Enable PiHole-AI services at boot during setup.",
+    )
+    setup.add_argument(
+        "--skip-ollama-check",
+        action="store_true",
+        help="Skip Ollama availability check.",
+    )
+
     explain = subcommands.add_parser(
         "explain",
         help="Explain local evidence for a domain.",
@@ -679,6 +725,25 @@ def main(
 
         return print_doctor(
             as_json=args.json,
+        )
+
+    if args.command == "setup":
+        from pihole_ai.setup import print_setup_status, run_setup
+
+        if args.setup_command == "status":
+            return print_setup_status(
+                as_json=args.json,
+                skip_ollama_check=args.skip_ollama_check,
+            )
+
+        return run_setup(
+            non_interactive=args.non_interactive,
+            dry_run=args.dry_run,
+            as_json=args.json,
+            install=args.install,
+            start=args.start,
+            enable=args.enable,
+            skip_ollama_check=args.skip_ollama_check,
         )
 
     if args.command == "db":

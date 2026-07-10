@@ -23,6 +23,7 @@ from pihole_ai.rules import (
     get_rules as load_domain_rules,
     remove_rule,
 )
+from pihole_ai.setup import evaluate_setup
 from pihole_ai.status import collect_status
 
 
@@ -472,6 +473,46 @@ input {
     padding: 18px 12px;
 }
 
+.setup-banner {
+    background: rgba(231, 183, 95, 0.12);
+    border: 1px solid rgba(231, 183, 95, 0.22);
+    border-radius: 10px;
+    display: none;
+    gap: 10px;
+    padding: 12px;
+}
+
+.setup-banner.ready {
+    background: rgba(88, 196, 167, 0.12);
+    border-color: rgba(88, 196, 167, 0.22);
+}
+
+.setup-banner.blocked {
+    background: rgba(232, 105, 105, 0.12);
+    border-color: rgba(232, 105, 105, 0.22);
+}
+
+.setup-steps {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+}
+
+.setup-step {
+    background: var(--panel-soft);
+    border-radius: 8px;
+    display: grid;
+    gap: 4px;
+    padding: 10px;
+}
+
+.setup-step-header {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+}
+
 .timeline {
     display: grid;
     gap: 10px;
@@ -599,7 +640,16 @@ th {
             </section>
         </section>
 
+        <section class="setup-banner" id="setup-banner"></section>
+
         <section class="tab-panel active" id="page-overview">
+            <section class="panel" id="setup-panel">
+                <div class="panel-title">
+                    <h2>Setup</h2>
+                    <span class="muted">Derived from live state</span>
+                </div>
+                <div class="setup-steps" id="setup-steps"></div>
+            </section>
             <section class="stats" id="stats"></section>
             <section class="metrics" id="service-status"></section>
             <section class="panel">
@@ -905,6 +955,61 @@ function renderStats(stats) {
 
         item.append(labelNode, valueNode);
         target.appendChild(item);
+    });
+}
+
+function setupBadgeClass(status) {
+    if (status === "complete" || status === "skipped") return "risk-low";
+    if (status === "blocked") return "risk-high";
+    return "risk-mid";
+}
+
+function renderSetup(report) {
+    const banner = document.getElementById("setup-banner");
+    const stepsTarget = document.getElementById("setup-steps");
+    clear(banner);
+    clear(stepsTarget);
+
+    banner.style.display = "grid";
+    banner.classList.toggle("ready", Boolean(report.ready));
+    banner.classList.toggle("blocked", report.overall_stage === "blocked");
+
+    const title = document.createElement("strong");
+    title.textContent = report.ready
+        ? "Setup complete"
+        : `Setup needs attention: ${text(report.overall_stage)}`;
+    const body = document.createElement("span");
+    body.className = "muted";
+    body.textContent = report.ready
+        ? "The dashboard is using live appliance state."
+        : "Diagnostics remain available while you finish setup from the CLI.";
+    banner.append(title, body);
+
+    (report.steps ?? []).forEach((step) => {
+        const item = document.createElement("div");
+        item.className = "setup-step";
+
+        const header = document.createElement("div");
+        header.className = "setup-step-header";
+        const name = document.createElement("strong");
+        name.textContent = step.title;
+        const badge = document.createElement("span");
+        badge.className = `badge ${setupBadgeClass(step.status)}`;
+        badge.textContent = step.status;
+        header.append(name, badge);
+
+        const summary = document.createElement("span");
+        summary.className = "muted";
+        summary.textContent = step.summary;
+        item.append(header, summary);
+
+        if (step.remediation) {
+            const remediation = document.createElement("span");
+            remediation.className = "muted";
+            remediation.textContent = step.remediation;
+            item.appendChild(remediation);
+        }
+        stepsTarget.appendChild(item);
     });
 }
 
@@ -1359,12 +1464,14 @@ function paramsForTables() {
 }
 
 async function loadOverview() {
-    const [stats, status, highRisk] = await Promise.all([
+    const [setup, stats, status, highRisk] = await Promise.all([
+        fetch("/api/setup").then((res) => res.json()),
         fetch("/api/stats").then((res) => res.json()),
         fetch("/api/status").then((res) => res.json()),
         fetch("/api/analysis?min_risk=70&limit=12").then((res) => res.json()),
     ]);
 
+    renderSetup(setup);
     renderStats(stats);
     renderServiceStatus(status);
     renderNetworkSummary(status);
@@ -1989,6 +2096,10 @@ def create_app() -> Flask:
     @app.get("/api/settings")
     def current_settings():
         return jsonify(_merged_settings())
+
+    @app.get("/api/setup")
+    def setup_status():
+        return jsonify(evaluate_setup().to_dict())
 
     @app.post("/api/settings")
     def update_settings():
