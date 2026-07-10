@@ -2,9 +2,12 @@ import io
 import subprocess
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import ANY, call, patch
 
+from pihole_ai import service as service_module
 from pihole_ai.service import (
     InstallationLayout,
     SERVICE_NAMES,
@@ -16,6 +19,7 @@ from pihole_ai.service import (
     installation_status,
     launcher_content,
     launcher_target,
+    lifecycle_lock,
     run_preflight,
     service_action,
     service_disable,
@@ -91,6 +95,15 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("pihole-ai-collector.service", plan.unit_paths)
         self.assertIn(layout.config_file, plan.files_to_write)
 
+    def test_install_plan_defaults_to_dedicated_appliance_identity(self) -> None:
+        plan = build_install_plan(
+            python_path="/usr/bin/python3",
+            project_dir="/app",
+        )
+
+        self.assertEqual(plan.service_user, "pihole-ai")
+        self.assertEqual(plan.service_group, "pihole-ai")
+
     def test_preflight_collects_multiple_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch(
             "pihole_ai.service.shutil.which",
@@ -114,6 +127,23 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("install.privileges.required", codes)
         self.assertIn("install.python.missing", codes)
 
+    def test_preflight_marks_blocking_issues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "pihole_ai.service.shutil.which",
+            return_value=None,
+        ), patch("pihole_ai.service._effective_uid", return_value=1000):
+            result = run_preflight(
+                build_install_plan(
+                    python_path=str(Path(tmpdir) / "missing-python"),
+                    project_dir=tmpdir,
+                    layout=InstallationLayout(systemd_dir=Path(tmpdir) / "systemd"),
+                ),
+                dry_run=False,
+            )
+
+        self.assertGreater(result.blocking_count, 0)
+        self.assertFalse(result.ok)
+
     def test_generated_unit_has_hardening_and_no_secrets(self) -> None:
         unit = generate_unit_file(
             service=SERVICE_DEFINITIONS[0],
@@ -126,10 +156,135 @@ class ServiceTests(unittest.TestCase):
 
         self.assertIn("NoNewPrivileges=true", unit)
         self.assertIn("PrivateTmp=true", unit)
-        self.assertIn("ProtectSystem=full", unit)
+        self.assertIn("ProtectSystem=strict", unit)
         self.assertIn("ReadWritePaths=", unit)
         self.assertIn("ReadOnlyPaths=/etc/pihole", unit)
+        self.assertIn("MemoryDenyWriteExecute=true", unit)
+        self.assertIn("StateDirectory=pihole-ai", unit)
+        self.assertIn("LogsDirectory=pihole-ai", unit)
+        self.assertIn("RuntimeDirectory=pihole-ai", unit)
         self.assertNotIn("secret", unit.lower())
+
+    def test_engine_unit_does_not_get_pihole_read_path(self) -> None:
+        unit = generate_unit_file(
+            service=SERVICE_DEFINITIONS[1],
+            python_path="/usr/bin/python3",
+            project_dir="/app",
+            user="pihole-ai",
+            group="pihole-ai",
+        )
+
+        self.assertNotIn("ReadOnlyPaths=/etc/pihole", unit)
+
+    def test_install_preflight_blocks_before_mutation(self) -> None:
+        blocking_result = type(
+            "Result",
+            (),
+            {
+                "blocking_count": 1,
+                "issues": [
+                    type(
+                        "Issue",
+                        (),
+                        {
+                            "blocking": True,
+                            "code": "install.test.blocked",
+                            "summary": "blocked",
+                            "remediation": "fix",
+                        },
+                    )()
+                ],
+            },
+        )()
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "pihole_ai.service.run_preflight",
+            return_value=blocking_result,
+        ), patch("pihole_ai.service.subprocess.run") as run, patch(
+            "sys.stdout",
+            io.StringIO(),
+        ):
+            with self.assertRaises(ServiceError):
+                service_install(
+                    systemd_dir=Path(tmpdir) / "systemd",
+                    python_path="/usr/bin/python3",
+                    project_dir="/app",
+                    wrapper_path=Path(tmpdir) / "pihole-ai",
+                    config_dir=Path(tmpdir) / "etc" / "pihole-ai",
+                    data_dir=Path(tmpdir) / "var" / "lib" / "pihole-ai",
+                    log_dir=Path(tmpdir) / "var" / "log" / "pihole-ai",
+                )
+
+            self.assertFalse((Path(tmpdir) / "systemd").exists())
+            run.assert_not_called()
+
+    def test_lifecycle_lock_blocks_concurrent_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            layout = InstallationLayout(runtime_dir=Path(tmpdir) / "run")
+
+            with lifecycle_lock("install", layout=layout):
+                with self.assertRaises(ServiceError):
+                    with lifecycle_lock("upgrade", layout=layout):
+                        pass
+
+    def test_service_identity_creation_uses_system_group_and_user(self) -> None:
+        with patch("pihole_ai.service._group_exists", return_value=False), patch(
+            "pihole_ai.service._user_exists",
+            return_value=False,
+        ), patch("pihole_ai.service._command_path", side_effect=lambda value: value), patch(
+            "pihole_ai.service._nologin_shell",
+            return_value="/usr/sbin/nologin",
+        ), patch("pihole_ai.service.subprocess.run") as run:
+            actions = service_module._ensure_service_identity(
+                user="pihole-ai",
+                group="pihole-ai",
+                dry_run=False,
+            )
+
+        self.assertIn("created group pihole-ai", actions)
+        self.assertIn("created user pihole-ai", actions)
+        run.assert_any_call(["groupadd", "--system", "pihole-ai"], check=True)
+        run.assert_any_call(
+            [
+                "useradd",
+                "--system",
+                "--gid",
+                "pihole-ai",
+                "--home-dir",
+                "/var/lib/pihole-ai",
+                "--no-create-home",
+                "--shell",
+                "/usr/sbin/nologin",
+                "pihole-ai",
+            ],
+            check=True,
+        )
+
+    def test_pihole_group_access_uses_existing_read_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pihole_db = Path(tmpdir) / "pihole-FTL.db"
+            pihole_db.write_text("", encoding="utf-8")
+            pihole_db.chmod(0o640)
+            config = SimpleNamespace(pihole_db=pihole_db)
+
+            with patch(
+                "pihole_ai.service.load_config_with_result",
+                return_value=(config, object()),
+            ), patch("pihole_ai.service.grp.getgrgid") as getgrgid, patch(
+                "pihole_ai.service._command_path",
+                side_effect=lambda value: value,
+            ), patch("pihole_ai.service.subprocess.run") as run:
+                getgrgid.return_value.gr_name = "pihole"
+                actions = service_module._ensure_pihole_group_access(
+                    user="pihole-ai",
+                    dry_run=False,
+                )
+
+        self.assertEqual(actions, ["added pihole-ai to group pihole"])
+        run.assert_called_once_with(
+            ["usermod", "-a", "-G", "pihole", "pihole-ai"],
+            check=True,
+        )
 
     def test_atomic_write_refuses_unmanaged_file_and_updates_managed_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -196,6 +351,11 @@ class ServiceTests(unittest.TestCase):
         ) as run, patch("pihole_ai.service.os.geteuid", return_value=0), patch(
             "sys.stdout",
             io.StringIO(),
+        ), patch(
+            "pihole_ai.service._enforce_preflight",
+        ), patch(
+            "pihole_ai.service.lifecycle_lock",
+            return_value=nullcontext(),
         ):
             wrapper = Path(tmpdir) / "pihole-ai"
             config_dir = Path(tmpdir) / "etc" / "pihole-ai"
@@ -257,6 +417,11 @@ class ServiceTests(unittest.TestCase):
         ), patch(
             "sys.stdout",
             io.StringIO(),
+        ), patch(
+            "pihole_ai.service._enforce_service_control_preflight",
+        ), patch(
+            "pihole_ai.service.lifecycle_lock",
+            return_value=nullcontext(),
         ):
             service_enable()
             service_disable()
@@ -280,6 +445,11 @@ class ServiceTests(unittest.TestCase):
         ) as run, patch("pihole_ai.service.os.geteuid", return_value=0), patch(
             "sys.stdout",
             io.StringIO(),
+        ), patch(
+            "pihole_ai.service._enforce_preflight",
+        ), patch(
+            "pihole_ai.service.lifecycle_lock",
+            return_value=nullcontext(),
         ):
             wrapper = Path(tmpdir) / "pihole-ai"
             wrapper.write_text(
@@ -322,6 +492,11 @@ class ServiceTests(unittest.TestCase):
         ), patch(
             "sys.stdout",
             io.StringIO(),
+        ), patch(
+            "pihole_ai.service._enforce_service_control_preflight",
+        ), patch(
+            "pihole_ai.service.lifecycle_lock",
+            return_value=nullcontext(),
         ):
             service_action("restart")
 
@@ -337,10 +512,7 @@ class ServiceTests(unittest.TestCase):
             with self.assertRaises(ServiceError) as context:
                 service_action("start")
 
-        self.assertIn(
-            "Run: sudo /usr/local/bin/pihole-ai start",
-            str(context.exception),
-        )
+        self.assertIn("start preflight failed", str(context.exception))
         run.assert_not_called()
 
     def test_failed_systemctl_raises_clean_error(self) -> None:
@@ -350,7 +522,12 @@ class ServiceTests(unittest.TestCase):
                 returncode=1,
                 cmd=["systemctl", "restart", *SERVICE_NAMES],
             ),
-        ), patch("sys.stdout", io.StringIO()):
+        ), patch("sys.stdout", io.StringIO()), patch(
+            "pihole_ai.service._enforce_service_control_preflight",
+        ), patch(
+            "pihole_ai.service.lifecycle_lock",
+            return_value=nullcontext(),
+        ):
             with self.assertRaises(ServiceError) as context:
                 service_action("restart")
 
@@ -377,6 +554,11 @@ class ServiceTests(unittest.TestCase):
         ), patch("pihole_ai.service.os.geteuid", return_value=0), patch(
             "sys.stdout",
             io.StringIO(),
+        ), patch(
+            "pihole_ai.service._enforce_preflight",
+        ), patch(
+            "pihole_ai.service.lifecycle_lock",
+            return_value=nullcontext(),
         ):
             wrapper = Path(tmpdir) / "pihole-ai"
             service_install(
@@ -401,6 +583,11 @@ class ServiceTests(unittest.TestCase):
         ), patch("pihole_ai.service.os.geteuid", return_value=0), patch(
             "sys.stdout",
             io.StringIO(),
+        ), patch(
+            "pihole_ai.service._enforce_preflight",
+        ), patch(
+            "pihole_ai.service.lifecycle_lock",
+            return_value=nullcontext(),
         ):
             wrapper = Path(tmpdir) / "pihole-ai"
             wrapper.write_text(
@@ -422,7 +609,12 @@ class ServiceTests(unittest.TestCase):
         ) as run, patch("pihole_ai.service.os.geteuid", return_value=0), patch(
             "sys.stdout",
             io.StringIO(),
-        ) as stdout:
+        ) as stdout, patch(
+            "pihole_ai.service._enforce_preflight",
+        ), patch(
+            "pihole_ai.service.lifecycle_lock",
+            return_value=nullcontext(),
+        ):
             root = Path(tmpdir)
             project = root / "project"
             project_data = project / "data"
@@ -464,11 +656,11 @@ class ServiceTests(unittest.TestCase):
             self.assertIn(f"LOG_PATH={log_dir / 'pihole-ai.log'}", env_content)
             self.assertIn("Migrating existing project database", stdout.getvalue())
             run.assert_any_call(
-                ["chown", "-R", ANY, str(data_dir)],
+                ["chown", ANY, str(data_dir)],
                 check=True,
             )
             run.assert_any_call(
-                ["chown", "-R", ANY, str(log_dir)],
+                ["chown", ANY, str(log_dir)],
                 check=True,
             )
 

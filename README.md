@@ -546,6 +546,19 @@ If `/etc/pihole-ai/pihole-ai.env` does not exist, it is created from
 exists and `/var/lib/pihole-ai/events.db` does not, install copies the database
 there and leaves the old project copy untouched.
 
+Mutating lifecycle commands run a blocking preflight before changing anything.
+If a blocking issue is found, no files are written, no database migration runs,
+and no mutating `systemctl` command is invoked. Install, upgrade, uninstall,
+enable, disable, start, stop, and restart also take an OS-backed lifecycle lock
+at `/run/pihole-ai/lifecycle.lock` so concurrent appliance changes fail cleanly.
+
+Production appliance units run as the dedicated `pihole-ai:pihole-ai` identity.
+During privileged install, the installer creates that system group and user when
+missing, using a no-login shell and `/var/lib/pihole-ai` as the service home.
+Pi-hole FTL database permissions are not relaxed: the installer inspects the
+existing database group and, when group read/traverse access is present, adds
+`pihole-ai` to that existing group instead of chmodding or chowning Pi-hole data.
+
 Install and upgrade write managed files atomically and refuse to overwrite
 unrelated unit files. Existing administrator configuration is preserved during
 upgrade. Managed unit files are backed up before replacement when their content

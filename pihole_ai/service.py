@@ -13,6 +13,11 @@ import json
 import tempfile
 import hashlib
 import sqlite3
+import fcntl
+import grp
+import pwd
+import stat
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -144,6 +149,7 @@ class PreflightIssue:
     summary: str
     remediation: str
     details: dict[str, Any] = field(default_factory=dict)
+    blocking: bool = False
 
 
 @dataclass(frozen=True)
@@ -160,13 +166,18 @@ class PreflightResult:
 
     @property
     def ok(self) -> bool:
-        return self.error_count == 0
+        return self.blocking_count == 0
+
+    @property
+    def blocking_count(self) -> int:
+        return sum(1 for issue in self.issues if issue.blocking)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ok": self.ok,
             "error_count": self.error_count,
             "warning_count": self.warning_count,
+            "blocking_count": self.blocking_count,
             "issues": [asdict(issue) for issue in self.issues],
         }
 
@@ -254,8 +265,8 @@ def generate_unit_file(
     python = str(Path(python_path or sys.executable).resolve())
     working_directory = Path(project_dir or Path.cwd()).resolve()
     environment_file = Path(env_file)
-    service_user = user or _service_user_for_directory(working_directory)
-    service_group = group or _current_service_group(service_user)
+    service_user = user or DEFAULT_SERVICE_USER
+    service_group = group or DEFAULT_SERVICE_GROUP
     exec_start = " ".join(
         shlex.quote(part)
         for part in [
@@ -265,6 +276,30 @@ def generate_unit_file(
             *service.command,
         ]
     )
+    read_only_paths = "/etc/pihole" if service.name == "pihole-ai-collector.service" else ""
+    hardening = [
+        "TimeoutStopSec=30",
+        "NoNewPrivileges=true",
+        "PrivateTmp=true",
+        "PrivateDevices=true",
+        "ProtectSystem=strict",
+        "ProtectHome=true",
+        "ProtectKernelTunables=true",
+        "ProtectKernelModules=true",
+        "ProtectKernelLogs=true",
+        "ProtectControlGroups=true",
+        "RestrictSUIDSGID=true",
+        "RestrictRealtime=true",
+        "LockPersonality=true",
+        "MemoryDenyWriteExecute=true",
+        "StateDirectory=pihole-ai",
+        "LogsDirectory=pihole-ai",
+        "RuntimeDirectory=pihole-ai",
+        f"ReadWritePaths={runtime_layout.data_dir} {runtime_layout.log_dir} {runtime_layout.runtime_dir}",
+    ]
+
+    if read_only_paths:
+        hardening.append(f"ReadOnlyPaths={read_only_paths}")
 
     return MANAGED_FILE_HEADER + "\n".join(
         [
@@ -282,15 +317,7 @@ def generate_unit_file(
             f"ExecStart={exec_start}",
             "Restart=always",
             "RestartSec=5",
-            "TimeoutStopSec=30",
-            "NoNewPrivileges=true",
-            "PrivateTmp=true",
-            "ProtectSystem=full",
-            "ProtectHome=read-only",
-            f"ReadWritePaths={runtime_layout.data_dir} {runtime_layout.log_dir} {runtime_layout.runtime_dir}",
-            "ReadOnlyPaths=/etc/pihole",
-            "RestrictSUIDSGID=true",
-            "LockPersonality=true",
+            *hardening,
             "",
             "[Install]",
             "WantedBy=multi-user.target",
@@ -341,8 +368,8 @@ def build_install_plan(
     runtime_layout = layout or InstallationLayout()
     project = Path(project_dir or Path.cwd()).resolve()
     python = Path(python_path or sys.executable).resolve()
-    service_user = user or _service_user_for_directory(project)
-    service_group = group or _current_service_group(service_user)
+    service_user = user or DEFAULT_SERVICE_USER
+    service_group = group or DEFAULT_SERVICE_GROUP
     unit_paths = {
         name: runtime_layout.systemd_dir / name
         for name in SERVICE_NAMES
@@ -454,6 +481,7 @@ def run_preflight(
 
     _check_service_identity(plan, issues)
     _check_config_for_install(issues)
+    _check_pihole_db_access(plan, issues)
     _check_database_schema(plan, issues)
     _check_unit_conflicts(plan, issues)
     _check_install_disk_space(plan, issues)
@@ -585,6 +613,7 @@ def _preflight_issue(
     summary: str,
     remediation: str,
     details: dict[str, Any] | None = None,
+    blocking: bool | None = None,
 ) -> PreflightIssue:
     return PreflightIssue(
         code=code,
@@ -592,6 +621,7 @@ def _preflight_issue(
         summary=summary,
         remediation=remediation,
         details=details or {},
+        blocking=severity in {"error", "fatal"} if blocking is None else blocking,
     )
 
 
@@ -620,13 +650,23 @@ def _check_config_for_install(
     _config, result = load_config_with_result(mode=ValidationMode.INSTALL)
 
     for issue in result.issues:
+        code = issue.code
+
+        if issue.code == "config.pihole_db.missing":
+            code = "install.pihole_db.missing"
+        elif issue.code == "config.pihole_db.not_readable":
+            code = "install.pihole_db.unreadable"
+        elif issue.code == "config.dashboard.non_loopback_bind":
+            code = "install.dashboard.non_loopback_bind"
+
         issues.append(
             _preflight_issue(
-                issue.code,
+                code,
                 issue.severity,
                 issue.summary,
                 issue.remediation,
                 issue.details or {},
+                blocking=issue.severity in {"error", "fatal"},
             )
         )
 
@@ -675,6 +715,87 @@ def _check_database_schema(
         )
 
 
+def _check_pihole_db_access(
+    plan: InstallPlan,
+    issues: list[PreflightIssue],
+) -> None:
+    config, _result = load_config_with_result(mode=ValidationMode.SYNTAX)
+
+    if config is None or not config.pihole_db.exists():
+        return
+
+    try:
+        db_stat = config.pihole_db.stat()
+        parent_stat = config.pihole_db.parent.stat()
+    except OSError:
+        return
+
+    file_mode = db_stat.st_mode
+    parent_mode = parent_stat.st_mode
+    other_can_read = bool(file_mode & stat.S_IROTH)
+    group_can_read = bool(file_mode & stat.S_IRGRP)
+    other_can_traverse = bool(parent_mode & stat.S_IXOTH)
+    group_can_traverse = bool(parent_mode & stat.S_IXGRP)
+
+    if other_can_read and other_can_traverse:
+        return
+
+    if group_can_read and group_can_traverse:
+        try:
+            group_name = grp.getgrgid(db_stat.st_gid).gr_name
+        except KeyError:
+            issues.append(
+                _preflight_issue(
+                    "install.pihole_group.missing",
+                    "error",
+                    "Pi-hole database group could not be resolved.",
+                    "Check Pi-hole database group ownership.",
+                )
+            )
+            return
+
+        issues.append(
+            _preflight_issue(
+                "install.pihole_group.membership.required",
+                "warning",
+                "PiHole-AI service user needs membership in the Pi-hole database group.",
+                f"Installer will add {plan.service_user} to group {group_name}.",
+                {"group": group_name},
+                blocking=False,
+            )
+        )
+        return
+
+    issues.append(
+        _preflight_issue(
+            "install.pihole_db.no_service_access",
+            "error",
+            "Pi-hole database permissions do not expose a safe read group for PiHole-AI.",
+            "Grant read/traverse access through a dedicated Pi-hole group; do not make the database world-writable.",
+        )
+    )
+
+
+def _pihole_read_group() -> str | None:
+    config, _result = load_config_with_result(mode=ValidationMode.SYNTAX)
+
+    if config is None or not config.pihole_db.exists():
+        return None
+
+    try:
+        db_stat = config.pihole_db.stat()
+    except OSError:
+        return None
+
+    if not (db_stat.st_mode & stat.S_IRGRP):
+        return None
+
+    try:
+        return grp.getgrgid(db_stat.st_gid).gr_name
+    except KeyError:
+        return None
+
+
 def _check_unit_conflicts(
     plan: InstallPlan,
     issues: list[PreflightIssue],
@@ -683,7 +804,7 @@ def _check_unit_conflicts(
         if path.exists() and not _is_managed_content(path.read_text(encoding="utf-8")):
             issues.append(
                 _preflight_issue(
-                    "install.unit.conflict",
+                    "install.unit.unmanaged_conflict",
                     "error",
                     f"{name} exists but is not managed by PiHole-AI.",
                     "Move or remove the conflicting unit file before installing.",
@@ -710,6 +831,213 @@ def _check_install_disk_space(
                 "Free disk space before installing.",
                 {"free_bytes": usage.free},
             )
+        )
+
+
+@contextmanager
+def lifecycle_lock(
+    operation: str,
+    layout: InstallationLayout | None = None,
+    dry_run: bool = False,
+):
+    """
+    Hold an exclusive OS lock for mutating lifecycle operations.
+    """
+
+    if dry_run:
+        yield
+        return
+
+    runtime_layout = layout or InstallationLayout()
+    lock_path = runtime_layout.runtime_dir / "lifecycle.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ServiceError(
+                "Another PiHole-AI lifecycle operation is already running."
+            ) from exc
+
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid={os.getpid()} operation={operation}\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _enforce_preflight(
+    plan: InstallPlan,
+    operation: str,
+    dry_run: bool,
+) -> PreflightResult:
+    result = run_preflight(
+        plan,
+        require_root=True,
+        dry_run=dry_run,
+    )
+
+    if result.blocking_count and not dry_run:
+        _print_preflight_failures(
+            operation=operation,
+            result=result,
+        )
+        raise ServiceError(
+            f"{operation} preflight failed. No changes were made."
+        )
+
+    return result
+
+
+def _enforce_service_control_preflight(
+    operation: str,
+    dry_run: bool,
+) -> None:
+    issues: list[PreflightIssue] = []
+
+    if shutil.which("systemctl") is None:
+        issues.append(
+            _preflight_issue(
+                "install.systemctl.unavailable",
+                "error",
+                "systemctl was not found.",
+                "Run this command on the Pi-hole systemd host.",
+            )
+        )
+
+    if not dry_run and _effective_uid() != 0:
+        issues.append(
+            _preflight_issue(
+                "install.privileges.required",
+                "error",
+                "This command requires root privileges.",
+                f"Re-run this command with sudo: sudo pihole-ai {operation}",
+            )
+        )
+
+    result = PreflightResult(issues)
+
+    if result.blocking_count and not dry_run:
+        _print_preflight_failures(operation, result)
+        raise ServiceError(
+            f"{operation} preflight failed. No changes were made."
+        )
+
+
+def _print_preflight_failures(
+    operation: str,
+    result: PreflightResult,
+) -> None:
+    print(f"PiHole-AI {operation} preflight failed:")
+
+    for issue in result.issues:
+        if not issue.blocking:
+            continue
+        print(f"- [{issue.code}] {issue.summary}")
+        print(f"  fix: {issue.remediation}")
+
+
+def _ensure_service_identity(
+    user: str,
+    group: str,
+    dry_run: bool,
+) -> list[str]:
+    actions: list[str] = []
+
+    if not _group_exists(group):
+        command = [_command_path("groupadd"), "--system", group]
+        _run_command(command, dry_run=dry_run)
+        actions.append(f"created group {group}")
+
+    if not _user_exists(user):
+        command = [
+            _command_path("useradd"),
+            "--system",
+            "--gid",
+            group,
+            "--home-dir",
+            str(RUNTIME_DATA_DIR),
+            "--no-create-home",
+            "--shell",
+            _nologin_shell(),
+            user,
+        ]
+        _run_command(command, dry_run=dry_run)
+        actions.append(f"created user {user}")
+
+    return actions
+
+
+def _ensure_pihole_group_access(
+    user: str,
+    dry_run: bool,
+) -> list[str]:
+    group = _pihole_read_group()
+
+    if group is None or group == DEFAULT_SERVICE_GROUP:
+        return []
+
+    command = [_command_path("usermod"), "-a", "-G", group, user]
+    _run_command(command, dry_run=dry_run)
+    return [f"added {user} to group {group}"]
+
+
+def _group_exists(
+    group: str,
+) -> bool:
+    try:
+        grp.getgrnam(group)
+        return True
+    except KeyError:
+        return False
+
+
+def _user_exists(
+    user: str,
+) -> bool:
+    try:
+        pwd.getpwnam(user)
+        return True
+    except KeyError:
+        return False
+
+
+def _command_path(
+    name: str,
+) -> str:
+    return shutil.which(name) or name
+
+
+def _nologin_shell() -> str:
+    for candidate in ("/usr/sbin/nologin", "/sbin/nologin"):
+        if Path(candidate).exists():
+            return candidate
+
+    return "/usr/sbin/nologin"
+
+
+def _validate_managed_directory(
+    path: Path,
+) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+
+    if stat.S_ISLNK(info.st_mode):
+        raise ServiceError(
+            f"Refusing to manage symlink path: {path}"
+        )
+
+    if not stat.S_ISDIR(info.st_mode):
+        raise ServiceError(
+            f"Expected directory path is not a directory: {path}"
         )
 
 
@@ -808,79 +1136,92 @@ def service_install(
     preserved: list[str] = []
 
     print("Installing PiHole-AI systemd service files.")
-    _require_root(
-        dry_run=dry_run,
-        sudo_command=f"sudo {WRAPPER_PATH} install",
-    )
+    _enforce_preflight(plan, "install", dry_run)
 
-    _prepare_runtime_layout(
-        project_dir=project,
-        config_dir=config_path,
-        data_dir=data_path,
-        log_dir=log_path,
-        env_file=environment_file,
-        runtime_db_path=database_path,
-        runtime_log_path=log_file,
-        user=service_user,
-        group=service_group,
-        dry_run=dry_run,
-    )
-
-    if not dry_run:
-        target.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-        actions.append(f"created {target}")
-
-    for name, content in units.items():
-        path = target / name
-
-        if dry_run:
-            print(f"Would write {path}:")
-            print(content)
-
-        else:
-            _atomic_write_managed(
-                path=path,
-                content=content,
-                mode=0o644,
-                backup=True,
+    with lifecycle_lock("install", layout=layout, dry_run=dry_run):
+        actions.extend(
+            _ensure_service_identity(
+                user=service_user,
+                group=service_group,
+                dry_run=dry_run,
             )
-            print(f"Wrote {path}.")
-            actions.append(f"wrote {path}")
+        )
+        actions.extend(
+            _ensure_pihole_group_access(
+                user=service_user,
+                dry_run=dry_run,
+            )
+        )
 
-    if create_wrapper:
-        _write_launcher(
-            path=Path(wrapper_path),
+        _prepare_runtime_layout(
             project_dir=project,
+            config_dir=config_path,
+            data_dir=data_path,
+            log_dir=log_path,
+            env_file=environment_file,
+            runtime_db_path=database_path,
+            runtime_log_path=log_file,
+            user=service_user,
+            group=service_group,
             dry_run=dry_run,
         )
-        actions.append(f"wrote {wrapper_path}")
 
-    if not dry_run:
-        _initialize_database(database_path)
-        actions.append(f"migrated {database_path}")
+        if not dry_run:
+            _validate_managed_directory(target)
+            target.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            actions.append(f"created {target}")
 
-    _run_systemctl(
-        ["daemon-reload"],
-        dry_run=dry_run,
-    )
-    actions.append("systemctl daemon-reload")
+        for name, content in units.items():
+            path = target / name
 
-    if enable_services:
+            if dry_run:
+                print(f"Would write {path}:")
+                print(content)
+
+            else:
+                _atomic_write_managed(
+                    path=path,
+                    content=content,
+                    mode=0o644,
+                    backup=True,
+                )
+                print(f"Wrote {path}.")
+                actions.append(f"wrote {path}")
+
+        if create_wrapper:
+            _write_launcher(
+                path=Path(wrapper_path),
+                project_dir=project,
+                dry_run=dry_run,
+            )
+            actions.append(f"wrote {wrapper_path}")
+
+        if not dry_run:
+            _initialize_database(database_path)
+            actions.append(f"migrated {database_path}")
+
         _run_systemctl(
-            ["enable", *SERVICE_NAMES],
+            ["daemon-reload"],
             dry_run=dry_run,
         )
-        actions.append("enabled services")
+        actions.append("systemctl daemon-reload")
 
-    if start_services:
-        _run_systemctl(
-            ["start", *START_ORDER],
-            dry_run=dry_run,
-        )
-        actions.append("started services")
+        if enable_services:
+            _run_systemctl(
+                ["enable", *SERVICE_NAMES],
+                dry_run=dry_run,
+            )
+            actions.append("enabled services")
+
+        if start_services:
+            _run_systemctl(
+                ["start", *START_ORDER],
+                dry_run=dry_run,
+            )
+            actions.append("started services")
 
     if dry_run:
         print("Dry-run complete. No systemd files were changed.")
@@ -923,10 +1264,16 @@ def service_uninstall(
             "Run: sudo /usr/local/bin/pihole-ai uninstall --purge --confirm-purge"
         )
 
-    _require_root(
-        dry_run=dry_run,
-        sudo_command=f"sudo {WRAPPER_PATH} uninstall",
+    plan = build_install_plan(
+        project_dir=project_dir,
+        layout=InstallationLayout(
+            systemd_dir=Path(systemd_dir),
+            wrapper_path=Path(wrapper_path),
+        ),
+        enable_services=False,
+        start_services=False,
     )
+    _enforce_preflight(plan, "uninstall", dry_run)
     actions: list[str] = []
     removed: list[str] = []
     preserved = [
@@ -935,42 +1282,43 @@ def service_uninstall(
         str(RUNTIME_DATA_DIR),
     ]
 
-    _run_systemctl(
-        ["disable", "--now", *SERVICE_NAMES],
-        dry_run=dry_run,
-    )
-    actions.append("disabled and stopped services")
+    with lifecycle_lock("uninstall", layout=plan.layout, dry_run=dry_run):
+        _run_systemctl(
+            ["disable", "--now", *SERVICE_NAMES],
+            dry_run=dry_run,
+        )
+        actions.append("disabled and stopped services")
 
-    for name in SERVICE_NAMES:
-        path = Path(systemd_dir) / name
+        for name in SERVICE_NAMES:
+            path = Path(systemd_dir) / name
 
-        if dry_run:
-            print(f"Would remove {path}.")
-
-        elif path.exists():
-            path.unlink()
-            print(f"Removed {path}.")
-            removed.append(str(path))
-
-    _remove_launcher(
-        path=Path(wrapper_path),
-        project_dir=project_dir or Path.cwd(),
-        dry_run=dry_run,
-    )
-
-    _run_systemctl(
-        ["daemon-reload"],
-        dry_run=dry_run,
-    )
-    actions.append("systemctl daemon-reload")
-
-    if purge:
-        for path in (RUNTIME_LOG_DIR,):
             if dry_run:
-                print(f"Would purge {path}.")
+                print(f"Would remove {path}.")
+
             elif path.exists():
-                shutil.rmtree(path)
+                path.unlink()
+                print(f"Removed {path}.")
                 removed.append(str(path))
+
+        _remove_launcher(
+            path=Path(wrapper_path),
+            project_dir=project_dir or Path.cwd(),
+            dry_run=dry_run,
+        )
+
+        _run_systemctl(
+            ["daemon-reload"],
+            dry_run=dry_run,
+        )
+        actions.append("systemctl daemon-reload")
+
+        if purge:
+            for path in (RUNTIME_LOG_DIR,):
+                if dry_run:
+                    print(f"Would purge {path}.")
+                elif path.exists():
+                    shutil.rmtree(path)
+                    removed.append(str(path))
 
     print("Preserved configuration and data by default.")
 
@@ -1008,10 +1356,7 @@ def service_upgrade(
         start_services=False,
     )
     print("Upgrading PiHole-AI appliance files.")
-    _require_root(
-        dry_run=dry_run,
-        sudo_command=f"sudo {WRAPPER_PATH} upgrade",
-    )
+    _enforce_preflight(plan, "upgrade", dry_run)
     actions: list[str] = []
     preserved: list[str] = [str(plan.layout.config_file), str(plan.layout.events_db)]
     previous_states = {
@@ -1021,48 +1366,45 @@ def service_upgrade(
     backups: dict[Path, str] = {}
 
     try:
-        if not dry_run:
-            database_status(plan.layout.events_db)
+        with lifecycle_lock("upgrade", layout=plan.layout, dry_run=dry_run):
+            if not dry_run:
+                database_status(plan.layout.events_db)
 
-        units = generated_units(
-            python_path=str(plan.python_path),
-            project_dir=plan.project_dir,
-            env_file=plan.layout.config_file,
-            user=plan.service_user,
-            group=plan.service_group,
-            layout=plan.layout,
-        )
-
-        for name, content in units.items():
-            path = plan.unit_paths[name]
-
-            if dry_run:
-                print(f"Would update {path}.")
-                continue
-
-            if path.exists():
-                backups[path] = path.read_text(encoding="utf-8")
-
-            _atomic_write_managed(
-                path=path,
-                content=content,
-                mode=0o644,
-                backup=True,
+            units = generated_units(
+                python_path=str(plan.python_path),
+                project_dir=plan.project_dir,
+                env_file=plan.layout.config_file,
+                user=plan.service_user,
+                group=plan.service_group,
+                layout=plan.layout,
             )
-            actions.append(f"updated {path}")
 
-        if not dry_run:
-            _initialize_database(plan.layout.events_db)
-            actions.append(f"migrated {plan.layout.events_db}")
+            for name, content in units.items():
+                path = plan.unit_paths[name]
 
-        _run_systemctl(["daemon-reload"], dry_run=dry_run)
-        actions.append("systemctl daemon-reload")
+                if dry_run:
+                    print(f"Would update {path}.")
+                    continue
 
-        for name, state in previous_states.items():
-            if state.get("enabled") == "enabled":
-                _run_systemctl(["enable", name], dry_run=dry_run)
-            if state.get("active") == "active":
-                _run_systemctl(["start", name], dry_run=dry_run)
+                if path.exists():
+                    backups[path] = path.read_text(encoding="utf-8")
+
+                _atomic_write_managed(
+                    path=path,
+                    content=content,
+                    mode=0o644,
+                    backup=True,
+                )
+                actions.append(f"updated {path}")
+
+            if not dry_run:
+                _initialize_database(plan.layout.events_db)
+                actions.append(f"migrated {plan.layout.events_db}")
+
+            _run_systemctl(["daemon-reload"], dry_run=dry_run)
+            actions.append("systemctl daemon-reload")
+
+            _restore_service_states(previous_states, dry_run=dry_run)
 
     except Exception:
         for path, content in backups.items():
@@ -1075,6 +1417,7 @@ def service_upgrade(
                 )
             except Exception:
                 pass
+        _restore_service_states(previous_states, dry_run=dry_run)
         raise
 
     result = InstallResult(
@@ -1099,15 +1442,14 @@ def service_enable(
     """
 
     print("Enabling PiHole-AI services at boot.")
-    _require_root(
-        dry_run=dry_run,
-        sudo_command=f"sudo {WRAPPER_PATH} enable",
-    )
+    _enforce_service_control_preflight("enable", dry_run)
+    plan = build_install_plan(enable_services=False, start_services=False)
 
-    _run_systemctl(
-        ["enable", *SERVICE_NAMES],
-        dry_run=dry_run,
-    )
+    with lifecycle_lock("enable", layout=plan.layout, dry_run=dry_run):
+        _run_systemctl(
+            ["enable", *SERVICE_NAMES],
+            dry_run=dry_run,
+        )
 
 
 def service_disable(
@@ -1118,15 +1460,14 @@ def service_disable(
     """
 
     print("Disabling PiHole-AI services at boot.")
-    _require_root(
-        dry_run=dry_run,
-        sudo_command=f"sudo {WRAPPER_PATH} disable",
-    )
+    _enforce_service_control_preflight("disable", dry_run)
+    plan = build_install_plan(enable_services=False, start_services=False)
 
-    _run_systemctl(
-        ["disable", *SERVICE_NAMES],
-        dry_run=dry_run,
-    )
+    with lifecycle_lock("disable", layout=plan.layout, dry_run=dry_run):
+        _run_systemctl(
+            ["disable", *SERVICE_NAMES],
+            dry_run=dry_run,
+        )
 
 
 def service_action(
@@ -1148,22 +1489,21 @@ def service_action(
         "restart": "Restarting",
     }
     print(f"{labels[action]} PiHole-AI services.")
-    _require_root(
-        dry_run=dry_run,
-        sudo_command=f"sudo {WRAPPER_PATH} {action}",
-    )
+    _enforce_service_control_preflight(action, dry_run)
+    plan = build_install_plan(enable_services=False, start_services=False)
 
-    if action == "start":
-        for name in START_ORDER:
-            _run_systemctl([action, name], dry_run=dry_run)
-    elif action == "stop":
-        for name in STOP_ORDER:
-            _run_systemctl([action, name], dry_run=dry_run)
-    else:
-        _run_systemctl(
-            [action, *SERVICE_NAMES],
-            dry_run=dry_run,
-        )
+    with lifecycle_lock(action, layout=plan.layout, dry_run=dry_run):
+        if action == "start":
+            for name in START_ORDER:
+                _run_systemctl([action, name], dry_run=dry_run)
+        elif action == "stop":
+            for name in STOP_ORDER:
+                _run_systemctl([action, name], dry_run=dry_run)
+        else:
+            _run_systemctl(
+                [action, *SERVICE_NAMES],
+                dry_run=dry_run,
+            )
 
 
 def service_status(
@@ -1341,10 +1681,12 @@ def _prepare_runtime_layout(
         if dry_run:
             print(f"Would create {directory}.")
         else:
+            _validate_managed_directory(directory)
             directory.mkdir(
                 parents=True,
                 exist_ok=True,
             )
+            os.chmod(directory, 0o750)
             print(f"Ensured {directory}.")
 
     _ensure_runtime_env(
@@ -1629,9 +1971,10 @@ def _chown_runtime_paths(
     target = f"{user}:{group}"
 
     for path in paths:
+        if not dry_run:
+            _validate_managed_directory(path)
         command = [
             "chown",
-            "-R",
             target,
             str(path),
         ]
@@ -1639,6 +1982,23 @@ def _chown_runtime_paths(
             command,
             dry_run=dry_run,
         )
+
+
+def _restore_service_states(
+    states: dict[str, dict[str, str]],
+    dry_run: bool,
+) -> None:
+    for name, state in states.items():
+        if state.get("enabled") == "enabled":
+            _run_systemctl(["enable", name], dry_run=dry_run)
+        elif state.get("enabled") == "disabled":
+            _run_systemctl(["disable", name], dry_run=dry_run)
+
+    for name, state in states.items():
+        if state.get("active") == "active":
+            _run_systemctl(["start", name], dry_run=dry_run)
+        elif state.get("active") == "inactive":
+            _run_systemctl(["stop", name], dry_run=dry_run)
 
 
 def _run_systemctl(
