@@ -6,12 +6,17 @@ from pathlib import Path
 from unittest.mock import ANY, call, patch
 
 from pihole_ai.service import (
+    InstallationLayout,
     SERVICE_NAMES,
     SERVICE_DEFINITIONS,
     ServiceError,
+    _atomic_write_managed,
+    build_install_plan,
     generate_unit_file,
+    installation_status,
     launcher_content,
     launcher_target,
+    run_preflight,
     service_action,
     service_disable,
     service_enable,
@@ -19,6 +24,7 @@ from pihole_ai.service import (
     service_logs,
     service_status,
     service_uninstall,
+    service_upgrade,
 )
 
 
@@ -56,6 +62,133 @@ class ServiceTests(unittest.TestCase):
             "dashboard --host 0.0.0.0 --port 8080",
             unit,
         )
+
+    def test_install_plan_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            layout = InstallationLayout(
+                config_dir=Path(tmpdir) / "etc" / "pihole-ai",
+                config_file=Path(tmpdir) / "etc" / "pihole-ai" / "pihole-ai.env",
+                data_dir=Path(tmpdir) / "var" / "lib" / "pihole-ai",
+                events_db=Path(tmpdir) / "var" / "lib" / "pihole-ai" / "events.db",
+                log_dir=Path(tmpdir) / "var" / "log" / "pihole-ai",
+                log_file=Path(tmpdir) / "var" / "log" / "pihole-ai" / "pihole-ai.log",
+                runtime_dir=Path(tmpdir) / "run" / "pihole-ai",
+                systemd_dir=Path(tmpdir) / "systemd",
+                wrapper_path=Path(tmpdir) / "bin" / "pihole-ai",
+            )
+            plan = build_install_plan(
+                python_path="/usr/bin/python3",
+                project_dir="/app",
+                layout=layout,
+                user="pihole-ai",
+                group="pihole-ai",
+                enable_services=False,
+                start_services=False,
+            )
+
+        self.assertEqual(plan.service_user, "pihole-ai")
+        self.assertFalse(plan.enable_services)
+        self.assertIn("pihole-ai-collector.service", plan.unit_paths)
+        self.assertIn(layout.config_file, plan.files_to_write)
+
+    def test_preflight_collects_multiple_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "pihole_ai.service.shutil.which",
+            return_value=None,
+        ), patch("pihole_ai.service._effective_uid", return_value=1000), patch(
+            "pihole_ai.service.sys.platform",
+            "linux",
+        ):
+            plan = build_install_plan(
+                python_path=str(Path(tmpdir) / "missing-python"),
+                project_dir=tmpdir,
+                layout=InstallationLayout(systemd_dir=Path(tmpdir) / "systemd"),
+            )
+            result = run_preflight(
+                plan,
+                dry_run=False,
+            )
+
+        codes = {issue.code for issue in result.issues}
+        self.assertIn("install.systemd.unavailable", codes)
+        self.assertIn("install.privileges.required", codes)
+        self.assertIn("install.python.missing", codes)
+
+    def test_generated_unit_has_hardening_and_no_secrets(self) -> None:
+        unit = generate_unit_file(
+            service=SERVICE_DEFINITIONS[0],
+            python_path="/usr/bin/python3",
+            project_dir="/app",
+            env_file="/etc/pihole-ai/pihole-ai.env",
+            user="pihole-ai",
+            group="pihole-ai",
+        )
+
+        self.assertIn("NoNewPrivileges=true", unit)
+        self.assertIn("PrivateTmp=true", unit)
+        self.assertIn("ProtectSystem=full", unit)
+        self.assertIn("ReadWritePaths=", unit)
+        self.assertIn("ReadOnlyPaths=/etc/pihole", unit)
+        self.assertNotIn("secret", unit.lower())
+
+    def test_atomic_write_refuses_unmanaged_file_and_updates_managed_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "unit.service"
+            path.write_text("unrelated", encoding="utf-8")
+
+            with self.assertRaises(ServiceError):
+                _atomic_write_managed(
+                    path=path,
+                    content="# PiHole-AI\n# Managed by PiHole-AI\nnew",
+                    mode=0o644,
+                    backup=True,
+                )
+
+            path.write_text("# PiHole-AI\n# Managed by PiHole-AI\nold", encoding="utf-8")
+            _atomic_write_managed(
+                path=path,
+                content="# PiHole-AI\n# Managed by PiHole-AI\nnew",
+                mode=0o644,
+                backup=True,
+            )
+
+            self.assertIn("new", path.read_text(encoding="utf-8"))
+            self.assertTrue((Path(tmpdir) / "unit.service.bak").exists())
+
+    def test_install_status_detects_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            systemd = Path(tmpdir) / "systemd"
+            systemd.mkdir()
+            layout = InstallationLayout(
+                config_dir=Path(tmpdir) / "etc" / "pihole-ai",
+                config_file=Path(tmpdir) / "etc" / "pihole-ai" / "pihole-ai.env",
+                data_dir=Path(tmpdir) / "data",
+                events_db=Path(tmpdir) / "data" / "events.db",
+                log_dir=Path(tmpdir) / "logs",
+                log_file=Path(tmpdir) / "logs" / "pihole-ai.log",
+                runtime_dir=Path(tmpdir) / "run",
+                systemd_dir=systemd,
+                wrapper_path=Path(tmpdir) / "bin" / "pihole-ai",
+            )
+            unit = generate_unit_file(
+                service=SERVICE_DEFINITIONS[0],
+                python_path="/usr/bin/python3",
+                project_dir="/app",
+                user="pihole-ai",
+                group="pihole-ai",
+                layout=layout,
+            )
+            (systemd / SERVICE_NAMES[0]).write_text(unit + "\n# drift", encoding="utf-8")
+
+            with patch("pihole_ai.service._run_capture", return_value="inactive"):
+                status = installation_status(
+                    layout=layout,
+                    project_dir="/app",
+                    python_path="/usr/bin/python3",
+                )
+
+        self.assertEqual(status.state, "drifted")
+        self.assertTrue(status.unit_files[SERVICE_NAMES[0]]["drifted"])
 
     def test_service_install_writes_units_and_enables_services(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch(

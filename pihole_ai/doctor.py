@@ -30,7 +30,7 @@ from pihole_ai.health import (
     check_pihole_ftl_database,
     exit_code_for_status,
 )
-from pihole_ai.service import SERVICE_NAMES, SYSTEMD_DIR
+from pihole_ai.service import installation_status
 from pihole_ai.version import get_version
 
 
@@ -245,27 +245,23 @@ def _runtime_diagnostic() -> Diagnostic:
 
 def _systemd_diagnostic() -> Diagnostic:
     systemctl = shutil.which("systemctl")
-    unit_details: dict[str, Any] = {
-        name: (SYSTEMD_DIR / name).exists()
-        for name in SERVICE_NAMES
-    }
-    installed_count = sum(1 for installed in unit_details.values() if installed)
+    status = installation_status()
 
     if systemctl is None:
         return Diagnostic(
-            name="systemd",
+            name="installation",
             status=HealthStatus.UNKNOWN.value,
             summary="systemctl is not available.",
-            details={"systemctl": None, "units": unit_details},
+            details=status.to_dict() | {"systemctl": None},
         )
 
-    if installed_count == len(SERVICE_NAMES):
+    if status.state == "installed":
         status = HealthStatus.HEALTHY
         summary = "Expected systemd units are installed."
         remediation = None
-    elif installed_count:
+    elif status.state in {"partial", "drifted", "legacy"}:
         status = HealthStatus.DEGRADED
-        summary = "Some expected systemd units are missing."
+        summary = "PiHole-AI installation needs attention."
         remediation = "Run: sudo pihole-ai install"
     else:
         status = HealthStatus.DEGRADED
@@ -273,10 +269,10 @@ def _systemd_diagnostic() -> Diagnostic:
         remediation = "Run: sudo pihole-ai install"
 
     return Diagnostic(
-        name="systemd",
+        name="installation",
         status=status.value,
         summary=summary,
-        details={"systemctl": systemctl, "units": unit_details},
+        details=installation_status().to_dict() | {"systemctl": systemctl},
         remediation=remediation,
     )
 

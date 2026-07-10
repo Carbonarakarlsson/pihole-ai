@@ -270,11 +270,61 @@ def build_parser() -> argparse.ArgumentParser:
             name,
             help=f"{name.title()} PiHole-AI systemd services.",
         )
+        if name == "install":
+            command.add_argument(
+                "install_command",
+                nargs="?",
+                choices=["status"],
+                help="Use 'status' to inspect installation state.",
+            )
         command.add_argument(
             "--dry-run",
             action="store_true",
             help="Print planned systemd actions without changing services.",
         )
+        if name in {"install", "uninstall"}:
+            command.add_argument(
+                "--json",
+                action="store_true",
+                help="Print lifecycle result as JSON.",
+            )
+        if name == "install":
+            command.add_argument(
+                "--no-enable",
+                action="store_true",
+                help="Do not enable services at boot after install.",
+            )
+            command.add_argument(
+                "--no-start",
+                action="store_true",
+                help="Do not start services after install.",
+            )
+        if name == "uninstall":
+            command.add_argument(
+                "--purge",
+                action="store_true",
+                help="Remove runtime-only files in addition to services.",
+            )
+            command.add_argument(
+                "--confirm-purge",
+                action="store_true",
+                help="Confirm destructive purge behavior.",
+            )
+
+    upgrade = subcommands.add_parser(
+        "upgrade",
+        help="Safely refresh managed PiHole-AI appliance files.",
+    )
+    upgrade.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print planned upgrade actions without changing files.",
+    )
+    upgrade.add_argument(
+        "--json",
+        action="store_true",
+        help="Print upgrade result as JSON.",
+    )
 
     logs = subcommands.add_parser(
         "logs",
@@ -820,18 +870,48 @@ def main(
             print(str(exc))
             return 1
 
-    if args.command in {"install", "uninstall"}:
-        from pihole_ai.service import ServiceError, service_install, service_uninstall
+    if args.command in {"install", "uninstall", "upgrade"}:
+        from pihole_ai.service import (
+            ServiceError,
+            print_installation_status,
+            service_install,
+            service_uninstall,
+            service_upgrade,
+        )
 
         try:
             if args.command == "install":
-                service_install(
-                    dry_run=args.dry_run,
-                )
+                if getattr(args, "install_command", None) == "status":
+                    return print_installation_status(
+                        as_json=args.json,
+                    )
+
+                install_kwargs = {"dry_run": args.dry_run}
+                if args.json:
+                    install_kwargs["as_json"] = True
+                if args.no_enable:
+                    install_kwargs["enable_services"] = False
+                if args.no_start:
+                    install_kwargs["start_services"] = False
+
+                service_install(**install_kwargs)
                 return 0
 
-            service_uninstall(
+            if args.command == "uninstall":
+                uninstall_kwargs = {"dry_run": args.dry_run}
+                if args.json:
+                    uninstall_kwargs["as_json"] = True
+                if args.purge:
+                    uninstall_kwargs["purge"] = True
+                if args.confirm_purge:
+                    uninstall_kwargs["confirm_purge"] = True
+
+                service_uninstall(**uninstall_kwargs)
+                return 0
+
+            service_upgrade(
                 dry_run=args.dry_run,
+                as_json=args.json,
             )
             return 0
 

@@ -9,8 +9,22 @@ import shutil
 import subprocess
 import sys
 import os
-from dataclasses import dataclass
+import json
+import tempfile
+import hashlib
+import sqlite3
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
+
+from core.config import ValidationMode, load_config_with_result
+from core.migrations import (
+    MigrationError,
+    UnsupportedSchemaVersion,
+    database_status,
+    migrate_database,
+)
+from pihole_ai.version import get_version
 
 
 SYSTEMD_DIR = Path("/etc/systemd/system")
@@ -21,12 +35,26 @@ RUNTIME_DATA_DIR = Path("/var/lib/pihole-ai")
 RUNTIME_LOG_DIR = Path("/var/log/pihole-ai")
 RUNTIME_DB_PATH = RUNTIME_DATA_DIR / "events.db"
 RUNTIME_LOG_PATH = RUNTIME_LOG_DIR / "pihole-ai.log"
+RUNTIME_STATE_DIR = Path("/run/pihole-ai")
+DEFAULT_SERVICE_USER = "pihole-ai"
+DEFAULT_SERVICE_GROUP = "pihole-ai"
+MANAGED_FILE_MARKER = "Managed by PiHole-AI"
+MANAGED_FILE_HEADER = "\n".join(
+    [
+        "# PiHole-AI",
+        f"# {MANAGED_FILE_MARKER}",
+        f"# Application version: {get_version()}",
+        "",
+    ]
+)
 
 SERVICE_NAMES = [
     "pihole-ai-collector.service",
     "pihole-ai-engine.service",
     "pihole-ai-dashboard.service",
 ]
+START_ORDER = SERVICE_NAMES
+STOP_ORDER = list(reversed(SERVICE_NAMES))
 
 
 @dataclass(frozen=True)
@@ -39,6 +67,140 @@ class ServiceDefinition:
     description: str
     command: list[str]
     after: str
+
+
+@dataclass(frozen=True)
+class InstallationLayout:
+    """
+    Standard appliance filesystem layout.
+    """
+
+    config_dir: Path = CONFIG_DIR
+    config_file: Path = CONFIG_FILE
+    data_dir: Path = RUNTIME_DATA_DIR
+    events_db: Path = RUNTIME_DB_PATH
+    log_dir: Path = RUNTIME_LOG_DIR
+    log_file: Path = RUNTIME_LOG_PATH
+    runtime_dir: Path = RUNTIME_STATE_DIR
+    systemd_dir: Path = SYSTEMD_DIR
+    wrapper_path: Path = WRAPPER_PATH
+
+
+@dataclass(frozen=True)
+class InstallAction:
+    """
+    One planned installer action.
+    """
+
+    action: str
+    path: str
+    summary: str
+
+
+@dataclass(frozen=True)
+class InstallPlan:
+    """
+    Inspectable installation or upgrade plan.
+    """
+
+    layout: InstallationLayout
+    project_dir: Path
+    python_path: Path
+    executable_path: Path
+    service_user: str
+    service_group: str
+    unit_paths: dict[str, Path]
+    directories: list[Path]
+    files_to_write: list[Path]
+    files_to_preserve: list[Path]
+    enable_services: bool
+    start_services: bool
+    daemon_reload: bool
+    actions: list[InstallAction] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["layout"] = {
+            key: str(value)
+            for key, value in asdict(self.layout).items()
+        }
+        payload["project_dir"] = str(self.project_dir)
+        payload["python_path"] = str(self.python_path)
+        payload["executable_path"] = str(self.executable_path)
+        payload["unit_paths"] = {
+            key: str(value)
+            for key, value in self.unit_paths.items()
+        }
+        payload["directories"] = [str(path) for path in self.directories]
+        payload["files_to_write"] = [str(path) for path in self.files_to_write]
+        payload["files_to_preserve"] = [str(path) for path in self.files_to_preserve]
+        return payload
+
+
+@dataclass(frozen=True)
+class PreflightIssue:
+    code: str
+    severity: str
+    summary: str
+    remediation: str
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PreflightResult:
+    issues: list[PreflightIssue]
+
+    @property
+    def error_count(self) -> int:
+        return sum(1 for issue in self.issues if issue.severity == "error")
+
+    @property
+    def warning_count(self) -> int:
+        return sum(1 for issue in self.issues if issue.severity == "warning")
+
+    @property
+    def ok(self) -> bool:
+        return self.error_count == 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "error_count": self.error_count,
+            "warning_count": self.warning_count,
+            "issues": [asdict(issue) for issue in self.issues],
+        }
+
+
+@dataclass(frozen=True)
+class InstallResult:
+    command: str
+    changed: bool
+    dry_run: bool
+    actions: list[str]
+    preserved_paths: list[str]
+    removed_paths: list[str] = field(default_factory=list)
+    status: str = "ok"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class InstallationStatus:
+    state: str
+    managed: bool
+    version: str
+    service_user: str
+    service_group: str
+    config_file: str
+    data_dir: str
+    events_db: str
+    unit_files: dict[str, dict[str, Any]]
+    database: dict[str, Any]
+    legacy: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 SERVICE_DEFINITIONS = [
@@ -82,12 +244,14 @@ def generate_unit_file(
     env_file: str | Path = CONFIG_FILE,
     user: str | None = None,
     group: str | None = None,
+    layout: InstallationLayout | None = None,
 ) -> str:
     """
     Generate systemd unit content for one PiHole-AI service.
     """
 
-    python = python_path or sys.executable
+    runtime_layout = layout or InstallationLayout()
+    python = str(Path(python_path or sys.executable).resolve())
     working_directory = Path(project_dir or Path.cwd()).resolve()
     environment_file = Path(env_file)
     service_user = user or _service_user_for_directory(working_directory)
@@ -102,7 +266,7 @@ def generate_unit_file(
         ]
     )
 
-    return "\n".join(
+    return MANAGED_FILE_HEADER + "\n".join(
         [
             "[Unit]",
             f"Description={service.description}",
@@ -118,6 +282,15 @@ def generate_unit_file(
             f"ExecStart={exec_start}",
             "Restart=always",
             "RestartSec=5",
+            "TimeoutStopSec=30",
+            "NoNewPrivileges=true",
+            "PrivateTmp=true",
+            "ProtectSystem=full",
+            "ProtectHome=read-only",
+            f"ReadWritePaths={runtime_layout.data_dir} {runtime_layout.log_dir} {runtime_layout.runtime_dir}",
+            "ReadOnlyPaths=/etc/pihole",
+            "RestrictSUIDSGID=true",
+            "LockPersonality=true",
             "",
             "[Install]",
             "WantedBy=multi-user.target",
@@ -132,6 +305,7 @@ def generated_units(
     env_file: str | Path = CONFIG_FILE,
     user: str | None = None,
     group: str | None = None,
+    layout: InstallationLayout | None = None,
 ) -> dict[str, str]:
     """
     Return all generated unit file contents.
@@ -145,13 +319,439 @@ def generated_units(
             env_file=env_file,
             user=user,
             group=group,
+            layout=layout,
         )
         for service in SERVICE_DEFINITIONS
     }
 
 
+def build_install_plan(
+    python_path: str | None = None,
+    project_dir: str | Path | None = None,
+    layout: InstallationLayout | None = None,
+    user: str | None = None,
+    group: str | None = None,
+    enable_services: bool = True,
+    start_services: bool = True,
+) -> InstallPlan:
+    """
+    Build an inspectable appliance installation plan.
+    """
+
+    runtime_layout = layout or InstallationLayout()
+    project = Path(project_dir or Path.cwd()).resolve()
+    python = Path(python_path or sys.executable).resolve()
+    service_user = user or _service_user_for_directory(project)
+    service_group = group or _current_service_group(service_user)
+    unit_paths = {
+        name: runtime_layout.systemd_dir / name
+        for name in SERVICE_NAMES
+    }
+    directories = [
+        runtime_layout.config_dir,
+        runtime_layout.data_dir,
+        runtime_layout.log_dir,
+        runtime_layout.runtime_dir,
+        runtime_layout.systemd_dir,
+    ]
+    files_to_write = [
+        runtime_layout.config_file,
+        runtime_layout.wrapper_path,
+        *unit_paths.values(),
+    ]
+    files_to_preserve = [
+        runtime_layout.config_file,
+        runtime_layout.events_db,
+    ]
+    actions = [
+        InstallAction("create_directory", str(path), f"Ensure {path}")
+        for path in directories
+    ] + [
+        InstallAction("write_file", str(path), f"Install {path}")
+        for path in files_to_write
+    ]
+
+    return InstallPlan(
+        layout=runtime_layout,
+        project_dir=project,
+        python_path=python,
+        executable_path=runtime_layout.wrapper_path,
+        service_user=service_user,
+        service_group=service_group,
+        unit_paths=unit_paths,
+        directories=directories,
+        files_to_write=files_to_write,
+        files_to_preserve=files_to_preserve,
+        enable_services=enable_services,
+        start_services=start_services,
+        daemon_reload=True,
+        actions=actions,
+    )
+
+
+def run_preflight(
+    plan: InstallPlan,
+    require_root: bool = True,
+    dry_run: bool = False,
+) -> PreflightResult:
+    """
+    Collect installation preflight issues without modifying the system.
+    """
+
+    issues: list[PreflightIssue] = []
+
+    if sys.platform != "linux":
+        issues.append(
+            _preflight_issue(
+                "install.platform.unsupported",
+                "error",
+                "PiHole-AI appliance install currently supports Linux.",
+                "Run appliance lifecycle commands on the Pi-hole Linux host.",
+            )
+        )
+
+    if shutil.which("systemctl") is None:
+        issues.append(
+            _preflight_issue(
+                "install.systemd.unavailable",
+                "error",
+                "systemctl was not found.",
+                "Install systemd/systemctl support or run in development mode.",
+            )
+        )
+
+    if require_root and not dry_run and _effective_uid() != 0:
+        issues.append(
+            _preflight_issue(
+                "install.privileges.required",
+                "error",
+                "Installation requires root privileges.",
+                "Re-run this command with sudo: sudo pihole-ai install",
+            )
+        )
+
+    if sys.version_info < (3, 10):
+        issues.append(
+            _preflight_issue(
+                "install.python.unsupported",
+                "error",
+                "Python version is too old.",
+                "Use Python 3.10 or newer.",
+                {"python": sys.version.split()[0]},
+            )
+        )
+
+    if not plan.python_path.exists():
+        issues.append(
+            _preflight_issue(
+                "install.python.missing",
+                "error",
+                "Configured Python executable does not exist.",
+                "Install PiHole-AI in a valid Python environment.",
+                {"python": str(plan.python_path)},
+            )
+        )
+
+    _check_service_identity(plan, issues)
+    _check_config_for_install(issues)
+    _check_database_schema(plan, issues)
+    _check_unit_conflicts(plan, issues)
+    _check_install_disk_space(plan, issues)
+
+    return PreflightResult(issues)
+
+
+def installation_status(
+    layout: InstallationLayout | None = None,
+    project_dir: str | Path | None = None,
+    python_path: str | None = None,
+) -> InstallationStatus:
+    """
+    Return read-only installation status and drift information.
+    """
+
+    plan = build_install_plan(
+        layout=layout,
+        project_dir=project_dir,
+        python_path=python_path,
+    )
+    units: dict[str, dict[str, Any]] = {}
+    managed_count = 0
+    installed_count = 0
+    drifted = False
+
+    expected_units = generated_units(
+        python_path=str(plan.python_path),
+        project_dir=plan.project_dir,
+        env_file=plan.layout.config_file,
+        user=plan.service_user,
+        group=plan.service_group,
+        layout=plan.layout,
+    )
+
+    for name, path in plan.unit_paths.items():
+        exists = path.exists()
+        managed = False
+        expected_hash = _sha256(expected_units[name])
+        installed_hash = None
+        drift = False
+
+        if exists:
+            installed_count += 1
+            content = path.read_text(encoding="utf-8")
+            managed = _is_managed_content(content)
+            installed_hash = _sha256(content)
+            drift = managed and installed_hash != expected_hash
+            managed_count += 1 if managed else 0
+            drifted = drifted or drift
+
+        units[name] = {
+            "path": str(path),
+            "exists": exists,
+            "managed": managed,
+            "drifted": drift,
+            "expected_hash": expected_hash,
+            "installed_hash": installed_hash,
+            "active": _run_capture(["systemctl", "is-active", name]) if exists else "missing",
+            "enabled": _run_capture(["systemctl", "is-enabled", name]) if exists else "missing",
+        }
+
+    database: dict[str, Any]
+
+    try:
+        database = asdict(database_status(plan.layout.events_db))
+    except Exception as exc:
+        database = {"error": exc.__class__.__name__}
+
+    legacy = _legacy_status(plan.project_dir, plan.unit_paths)
+
+    if installed_count == 0:
+        state = "legacy" if legacy["detected"] else "not_installed"
+    elif drifted:
+        state = "drifted"
+    elif installed_count < len(SERVICE_NAMES) or managed_count < installed_count:
+        state = "partial"
+    else:
+        state = "installed"
+
+    if "error" in database:
+        state = "incompatible"
+
+    return InstallationStatus(
+        state=state,
+        managed=managed_count == installed_count and installed_count > 0,
+        version=get_version(),
+        service_user=plan.service_user,
+        service_group=plan.service_group,
+        config_file=str(plan.layout.config_file),
+        data_dir=str(plan.layout.data_dir),
+        events_db=str(plan.layout.events_db),
+        unit_files=units,
+        database=database,
+        legacy=legacy,
+    )
+
+
+def print_installation_status(
+    as_json: bool = False,
+) -> int:
+    """
+    Print read-only appliance installation status.
+    """
+
+    status = installation_status()
+
+    if as_json:
+        print(json.dumps(status.to_dict(), sort_keys=True))
+    else:
+        print(f"PiHole-AI install status: {status.state}")
+        print(f"config_file: {status.config_file}")
+        print(f"data_dir: {status.data_dir}")
+        print(f"events_db: {status.events_db}")
+        print(f"service_user: {status.service_user}")
+        print(f"service_group: {status.service_group}")
+        for name, unit in status.unit_files.items():
+            drift = " drifted" if unit["drifted"] else ""
+            print(
+                f"- {name}: exists={unit['exists']} managed={unit['managed']}{drift}"
+            )
+
+    return 0 if status.state in {"installed", "not_installed", "legacy"} else 1
+
+
+def _preflight_issue(
+    code: str,
+    severity: str,
+    summary: str,
+    remediation: str,
+    details: dict[str, Any] | None = None,
+) -> PreflightIssue:
+    return PreflightIssue(
+        code=code,
+        severity=severity,
+        summary=summary,
+        remediation=remediation,
+        details=details or {},
+    )
+
+
+def _check_service_identity(
+    plan: InstallPlan,
+    issues: list[PreflightIssue],
+) -> None:
+    try:
+        import pwd
+
+        pwd.getpwnam(plan.service_user)
+    except Exception:
+        issues.append(
+            _preflight_issue(
+                "install.user.missing",
+                "warning",
+                f"Service user '{plan.service_user}' does not exist.",
+                "Create the service user or install using an existing --user.",
+            )
+        )
+
+
+def _check_config_for_install(
+    issues: list[PreflightIssue],
+) -> None:
+    _config, result = load_config_with_result(mode=ValidationMode.INSTALL)
+
+    for issue in result.issues:
+        issues.append(
+            _preflight_issue(
+                issue.code,
+                issue.severity,
+                issue.summary,
+                issue.remediation,
+                issue.details or {},
+            )
+        )
+
+
+def _check_database_schema(
+    plan: InstallPlan,
+    issues: list[PreflightIssue],
+) -> None:
+    try:
+        database_status(plan.layout.events_db)
+    except UnsupportedSchemaVersion:
+        issues.append(
+            _preflight_issue(
+                "install.database.unsupported_schema",
+                "error",
+                "Events database schema is newer than this PiHole-AI version.",
+                "Upgrade PiHole-AI before installing or upgrading services.",
+            )
+        )
+    except MigrationError:
+        issues.append(
+            _preflight_issue(
+                "install.database.incompatible",
+                "error",
+                "Events database schema is incompatible.",
+                "Run: pihole-ai db status",
+            )
+        )
+    except OSError:
+        issues.append(
+            _preflight_issue(
+                "install.database.inaccessible",
+                "error",
+                "Events database path could not be inspected.",
+                "Check EVENTS_DB_PATH parent permissions.",
+            )
+        )
+    except sqlite3.Error:
+        issues.append(
+            _preflight_issue(
+                "install.database.sqlite_error",
+                "error",
+                "Events database status could not be read.",
+                "Run: pihole-ai db status",
+            )
+        )
+
+
+def _check_unit_conflicts(
+    plan: InstallPlan,
+    issues: list[PreflightIssue],
+) -> None:
+    for name, path in plan.unit_paths.items():
+        if path.exists() and not _is_managed_content(path.read_text(encoding="utf-8")):
+            issues.append(
+                _preflight_issue(
+                    "install.unit.conflict",
+                    "error",
+                    f"{name} exists but is not managed by PiHole-AI.",
+                    "Move or remove the conflicting unit file before installing.",
+                    {"path": str(path)},
+                )
+            )
+
+
+def _check_install_disk_space(
+    plan: InstallPlan,
+    issues: list[PreflightIssue],
+) -> None:
+    try:
+        usage = shutil.disk_usage(plan.layout.data_dir.parent)
+    except OSError:
+        return
+
+    if usage.free < 100 * 1024 * 1024:
+        issues.append(
+            _preflight_issue(
+                "install.disk_space.low",
+                "warning",
+                "Less than 100 MB is available for PiHole-AI data.",
+                "Free disk space before installing.",
+                {"free_bytes": usage.free},
+            )
+        )
+
+
+def _legacy_status(
+    project_dir: Path,
+    unit_paths: dict[str, Path],
+) -> dict[str, Any]:
+    project_env = project_dir / ".env"
+    project_db = project_dir / "data" / "events.db"
+    units_reference_venv = False
+    units_run_as_dev_user = False
+
+    for path in unit_paths.values():
+        if not path.exists():
+            continue
+        content = path.read_text(encoding="utf-8")
+        units_reference_venv = units_reference_venv or ".venv" in content
+        units_run_as_dev_user = units_run_as_dev_user or f"User={_current_service_user()}" in content
+
+    detected = project_env.exists() or project_db.exists() or units_reference_venv
+
+    return {
+        "detected": detected,
+        "project_dir": str(project_dir),
+        "project_env": str(project_env) if project_env.exists() else None,
+        "project_database": str(project_db) if project_db.exists() else None,
+        "services_reference_venv": units_reference_venv,
+        "services_run_as_development_user": units_run_as_dev_user,
+        "remediation": (
+            "Legacy source-checkout layout detected. Preserve it until a future "
+            "migration command moves data into appliance paths."
+            if detected
+            else None
+        ),
+    }
+
+
 def service_install(
     dry_run: bool = False,
+    as_json: bool = False,
+    enable_services: bool = True,
+    start_services: bool = True,
     systemd_dir: str | Path = SYSTEMD_DIR,
     python_path: str | None = None,
     project_dir: str | Path | None = None,
@@ -163,28 +763,49 @@ def service_install(
     env_file: str | Path | None = None,
     runtime_db_path: str | Path | None = None,
     runtime_log_path: str | Path | None = None,
-) -> None:
+) -> InstallResult:
     """
     Install PiHole-AI systemd services.
     """
 
-    target = Path(systemd_dir)
-    project = Path(project_dir or Path.cwd()).resolve()
-    config_path = Path(config_dir)
-    data_path = Path(data_dir)
-    log_path = Path(log_dir)
-    environment_file = Path(env_file or config_path / "pihole-ai.env")
-    database_path = Path(runtime_db_path or data_path / "events.db")
-    log_file = Path(runtime_log_path or log_path / "pihole-ai.log")
-    service_user = _service_user_for_directory(project)
-    service_group = _current_service_group(service_user)
-    units = generated_units(
+    layout = InstallationLayout(
+        config_dir=Path(config_dir),
+        config_file=Path(env_file or Path(config_dir) / "pihole-ai.env"),
+        data_dir=Path(data_dir),
+        events_db=Path(runtime_db_path or Path(data_dir) / "events.db"),
+        log_dir=Path(log_dir),
+        log_file=Path(runtime_log_path or Path(log_dir) / "pihole-ai.log"),
+        runtime_dir=RUNTIME_STATE_DIR,
+        systemd_dir=Path(systemd_dir),
+        wrapper_path=Path(wrapper_path),
+    )
+    plan = build_install_plan(
         python_path=python_path,
+        project_dir=project_dir,
+        layout=layout,
+        enable_services=enable_services,
+        start_services=start_services,
+    )
+    target = plan.layout.systemd_dir
+    project = plan.project_dir
+    config_path = plan.layout.config_dir
+    data_path = plan.layout.data_dir
+    log_path = plan.layout.log_dir
+    environment_file = plan.layout.config_file
+    database_path = plan.layout.events_db
+    log_file = plan.layout.log_file
+    service_user = plan.service_user
+    service_group = plan.service_group
+    units = generated_units(
+        python_path=str(plan.python_path),
         project_dir=project,
         env_file=environment_file,
         user=service_user,
         group=service_group,
+        layout=layout,
     )
+    actions: list[str] = []
+    preserved: list[str] = []
 
     print("Installing PiHole-AI systemd service files.")
     _require_root(
@@ -210,6 +831,7 @@ def service_install(
             parents=True,
             exist_ok=True,
         )
+        actions.append(f"created {target}")
 
     for name, content in units.items():
         path = target / name
@@ -219,8 +841,14 @@ def service_install(
             print(content)
 
         else:
-            path.write_text(content, encoding="utf-8")
+            _atomic_write_managed(
+                path=path,
+                content=content,
+                mode=0o644,
+                backup=True,
+            )
             print(f"Wrote {path}.")
+            actions.append(f"wrote {path}")
 
     if create_wrapper:
         _write_launcher(
@@ -228,11 +856,31 @@ def service_install(
             project_dir=project,
             dry_run=dry_run,
         )
+        actions.append(f"wrote {wrapper_path}")
+
+    if not dry_run:
+        _initialize_database(database_path)
+        actions.append(f"migrated {database_path}")
 
     _run_systemctl(
         ["daemon-reload"],
         dry_run=dry_run,
     )
+    actions.append("systemctl daemon-reload")
+
+    if enable_services:
+        _run_systemctl(
+            ["enable", *SERVICE_NAMES],
+            dry_run=dry_run,
+        )
+        actions.append("enabled services")
+
+    if start_services:
+        _run_systemctl(
+            ["start", *START_ORDER],
+            dry_run=dry_run,
+        )
+        actions.append("started services")
 
     if dry_run:
         print("Dry-run complete. No systemd files were changed.")
@@ -240,27 +888,58 @@ def service_install(
     else:
         print("Install complete. Run 'pihole-ai enable' and 'pihole-ai start' next.")
 
+    result = InstallResult(
+        command="install",
+        changed=not dry_run,
+        dry_run=dry_run,
+        actions=actions,
+        preserved_paths=preserved,
+    )
+
+    if as_json:
+        print(json.dumps(result.to_dict(), sort_keys=True))
+
+    return result
+
 
 def service_uninstall(
     dry_run: bool = False,
+    as_json: bool = False,
+    purge: bool = False,
+    confirm_purge: bool = False,
     systemd_dir: str | Path = SYSTEMD_DIR,
     project_dir: str | Path | None = None,
     wrapper_path: str | Path = WRAPPER_PATH,
-) -> None:
+) -> InstallResult:
     """
     Stop, disable, and remove PiHole-AI systemd services.
     """
 
     print("Uninstalling PiHole-AI systemd service files.")
+
+    if purge and not confirm_purge:
+        raise ServiceError(
+            "Purge requires explicit confirmation.\n"
+            "Run: sudo /usr/local/bin/pihole-ai uninstall --purge --confirm-purge"
+        )
+
     _require_root(
         dry_run=dry_run,
         sudo_command=f"sudo {WRAPPER_PATH} uninstall",
     )
+    actions: list[str] = []
+    removed: list[str] = []
+    preserved = [
+        str(CONFIG_FILE),
+        str(RUNTIME_DB_PATH),
+        str(RUNTIME_DATA_DIR),
+    ]
 
     _run_systemctl(
         ["disable", "--now", *SERVICE_NAMES],
         dry_run=dry_run,
     )
+    actions.append("disabled and stopped services")
 
     for name in SERVICE_NAMES:
         path = Path(systemd_dir) / name
@@ -271,6 +950,7 @@ def service_uninstall(
         elif path.exists():
             path.unlink()
             print(f"Removed {path}.")
+            removed.append(str(path))
 
     _remove_launcher(
         path=Path(wrapper_path),
@@ -282,6 +962,133 @@ def service_uninstall(
         ["daemon-reload"],
         dry_run=dry_run,
     )
+    actions.append("systemctl daemon-reload")
+
+    if purge:
+        for path in (RUNTIME_LOG_DIR,):
+            if dry_run:
+                print(f"Would purge {path}.")
+            elif path.exists():
+                shutil.rmtree(path)
+                removed.append(str(path))
+
+    print("Preserved configuration and data by default.")
+
+    result = InstallResult(
+        command="uninstall",
+        changed=not dry_run,
+        dry_run=dry_run,
+        actions=actions,
+        preserved_paths=preserved,
+        removed_paths=removed,
+    )
+
+    if as_json:
+        print(json.dumps(result.to_dict(), sort_keys=True))
+
+    return result
+
+
+def service_upgrade(
+    dry_run: bool = False,
+    as_json: bool = False,
+    systemd_dir: str | Path = SYSTEMD_DIR,
+    python_path: str | None = None,
+    project_dir: str | Path | None = None,
+) -> InstallResult:
+    """
+    Safely refresh managed units and apply pending DB migrations.
+    """
+
+    plan = build_install_plan(
+        python_path=python_path,
+        project_dir=project_dir,
+        layout=InstallationLayout(systemd_dir=Path(systemd_dir)),
+        enable_services=False,
+        start_services=False,
+    )
+    print("Upgrading PiHole-AI appliance files.")
+    _require_root(
+        dry_run=dry_run,
+        sudo_command=f"sudo {WRAPPER_PATH} upgrade",
+    )
+    actions: list[str] = []
+    preserved: list[str] = [str(plan.layout.config_file), str(plan.layout.events_db)]
+    previous_states = {
+        name: _service_state(name, dry_run=dry_run)
+        for name in SERVICE_NAMES
+    }
+    backups: dict[Path, str] = {}
+
+    try:
+        if not dry_run:
+            database_status(plan.layout.events_db)
+
+        units = generated_units(
+            python_path=str(plan.python_path),
+            project_dir=plan.project_dir,
+            env_file=plan.layout.config_file,
+            user=plan.service_user,
+            group=plan.service_group,
+            layout=plan.layout,
+        )
+
+        for name, content in units.items():
+            path = plan.unit_paths[name]
+
+            if dry_run:
+                print(f"Would update {path}.")
+                continue
+
+            if path.exists():
+                backups[path] = path.read_text(encoding="utf-8")
+
+            _atomic_write_managed(
+                path=path,
+                content=content,
+                mode=0o644,
+                backup=True,
+            )
+            actions.append(f"updated {path}")
+
+        if not dry_run:
+            _initialize_database(plan.layout.events_db)
+            actions.append(f"migrated {plan.layout.events_db}")
+
+        _run_systemctl(["daemon-reload"], dry_run=dry_run)
+        actions.append("systemctl daemon-reload")
+
+        for name, state in previous_states.items():
+            if state.get("enabled") == "enabled":
+                _run_systemctl(["enable", name], dry_run=dry_run)
+            if state.get("active") == "active":
+                _run_systemctl(["start", name], dry_run=dry_run)
+
+    except Exception:
+        for path, content in backups.items():
+            try:
+                _atomic_write_managed(
+                    path=path,
+                    content=content,
+                    mode=0o644,
+                    backup=False,
+                )
+            except Exception:
+                pass
+        raise
+
+    result = InstallResult(
+        command="upgrade",
+        changed=not dry_run,
+        dry_run=dry_run,
+        actions=actions,
+        preserved_paths=preserved,
+    )
+
+    if as_json:
+        print(json.dumps(result.to_dict(), sort_keys=True))
+
+    return result
 
 
 def service_enable(
@@ -346,10 +1153,17 @@ def service_action(
         sudo_command=f"sudo {WRAPPER_PATH} {action}",
     )
 
-    _run_systemctl(
-        [action, *SERVICE_NAMES],
-        dry_run=dry_run,
-    )
+    if action == "start":
+        for name in START_ORDER:
+            _run_systemctl([action, name], dry_run=dry_run)
+    elif action == "stop":
+        for name in STOP_ORDER:
+            _run_systemctl([action, name], dry_run=dry_run)
+    else:
+        _run_systemctl(
+            [action, *SERVICE_NAMES],
+            dry_run=dry_run,
+        )
 
 
 def service_status(
@@ -487,13 +1301,19 @@ def _run_capture(
     Run a status command and return stdout or a useful fallback.
     """
 
-    completed = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    output = completed.stdout.strip() or completed.stderr.strip()
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        output = completed.stdout.strip() or completed.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return "timeout"
+    except FileNotFoundError:
+        return "missing"
 
     if output:
         return output
@@ -577,9 +1397,11 @@ def _ensure_runtime_env(
         parents=True,
         exist_ok=True,
     )
-    env_file.write_text(
-        content,
-        encoding="utf-8",
+    _atomic_write_managed(
+        path=env_file,
+        content=MANAGED_FILE_HEADER + content,
+        mode=0o640,
+        backup=False,
     )
     print(f"Wrote {env_file}.")
 
@@ -654,6 +1476,89 @@ def _upsert_env_line(
     return updated
 
 
+def _atomic_write_managed(
+    path: Path,
+    content: str,
+    mode: int,
+    backup: bool,
+) -> None:
+    """
+    Atomically write a managed file and protect unrelated existing files.
+    """
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    if path.exists():
+        existing = path.read_text(encoding="utf-8")
+
+        if not _is_managed_content(existing):
+            raise ServiceError(
+                f"Refusing to overwrite unmanaged file: {path}"
+            )
+
+        if existing == content:
+            return
+
+        if backup:
+            backup_path = path.with_suffix(path.suffix + ".bak")
+            _atomic_replace(
+                path=backup_path,
+                content=existing,
+                mode=mode,
+            )
+
+    _atomic_replace(
+        path=path,
+        content=content,
+        mode=mode,
+    )
+
+
+def _atomic_replace(
+    path: Path,
+    content: str,
+    mode: int,
+) -> None:
+    """
+    Write content to a temp file in the destination directory and replace.
+    """
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        dir=str(path.parent),
+        text=True,
+    )
+    tmp_path = Path(tmp_name)
+
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def _is_managed_content(
+    content: str,
+) -> bool:
+    return "PiHole-AI" in content and MANAGED_FILE_MARKER in content
+
+
+def _sha256(
+    content: str,
+) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
 def _migrate_project_database(
     project_dir: Path,
     runtime_db_path: Path,
@@ -693,6 +1598,22 @@ def _migrate_project_database(
     )
     print(f"{message}.")
     print(f"Kept old project database at {old_db}.")
+
+
+def _initialize_database(
+    database_path: Path,
+) -> None:
+    """
+    Initialize or migrate the events database with clear failure behavior.
+    """
+
+    try:
+        migrate_database(database_path)
+    except sqlite3.DatabaseError:
+        print(
+            "Skipped database migration because existing file is not a valid "
+            f"SQLite database: {database_path}."
+        )
 
 
 def _chown_runtime_paths(
@@ -763,10 +1684,25 @@ def _run_command(
         ) from exc
 
     except subprocess.CalledProcessError as exc:
+        stderr = getattr(exc, "stderr", "") or ""
+        stdout = getattr(exc, "stdout", "") or ""
+        detail = stderr or stdout
+        hint = ""
+
+        if "authentication" in detail.lower() or "permission" in detail.lower():
+            hint = "\nThis looks like a permissions/authentication failure. Re-run with sudo."
+
         raise ServiceError(
             "Command failed: "
             f"{printable}\n"
             f"Exit code: {exc.returncode}"
+            f"{hint}"
+        ) from exc
+
+    except subprocess.TimeoutExpired as exc:
+        raise ServiceError(
+            "Command timed out: "
+            f"{printable}"
         ) from exc
 
 
@@ -781,13 +1717,20 @@ def _require_root(
     if dry_run:
         return
 
-    get_euid = getattr(os, "geteuid", None)
-
-    if get_euid is not None and get_euid() != 0:
+    if _effective_uid() != 0:
         raise ServiceError(
             "This command needs sudo.\n"
             f"Run: {sudo_command}"
         )
+
+
+def _effective_uid() -> int:
+    get_euid = getattr(os, "geteuid", None)
+
+    if get_euid is None:
+        return 0
+
+    return int(get_euid())
 
 
 def launcher_target(
@@ -813,7 +1756,7 @@ def launcher_content(
     return "\n".join(
         [
             "#!/bin/sh",
-            "# Managed by PiHole-AI",
+            MANAGED_FILE_HEADER.rstrip(),
             f"# Project: {project}",
             f"# Target: {target}",
             f"exec {shlex.quote(str(target))} \"$@\"",
@@ -838,11 +1781,12 @@ def _write_launcher(
         print(content)
         return
 
-    path.write_text(
-        content,
-        encoding="utf-8",
+    _atomic_write_managed(
+        path=path,
+        content=content,
+        mode=0o755,
+        backup=True,
     )
-    path.chmod(0o755)
     print(f"Wrote {path}.")
 
 
@@ -887,7 +1831,7 @@ def _launcher_matches_project(
     target = launcher_target(project)
 
     return (
-        "# Managed by PiHole-AI" in content
+        MANAGED_FILE_MARKER in content
         and f"# Project: {project}" in content
         and f"# Target: {target}" in content
     )

@@ -517,6 +517,7 @@ Preview generated unit files and systemctl commands:
 
 ```bash
 pihole-ai install --dry-run
+pihole-ai upgrade --dry-run
 pihole-ai enable --dry-run
 pihole-ai start --dry-run
 pihole-ai status --dry-run
@@ -524,10 +525,19 @@ pihole-ai logs --dry-run
 pihole-ai logs --lines 120 --dry-run
 ```
 
+Inspect installation state without root:
+
+```bash
+pihole-ai install status
+pihole-ai install status --json
+```
+
 Install service files and the global `/usr/local/bin/pihole-ai` launcher:
 
 ```bash
 sudo pihole-ai install
+sudo pihole-ai install --no-start
+sudo pihole-ai install --no-enable
 ```
 
 Install creates `/etc/pihole-ai`, `/var/lib/pihole-ai`, and `/var/log/pihole-ai`.
@@ -535,6 +545,22 @@ If `/etc/pihole-ai/pihole-ai.env` does not exist, it is created from
 `.env.example` plus the runtime database and log paths. If `data/events.db`
 exists and `/var/lib/pihole-ai/events.db` does not, install copies the database
 there and leaves the old project copy untouched.
+
+Install and upgrade write managed files atomically and refuse to overwrite
+unrelated unit files. Existing administrator configuration is preserved during
+upgrade. Managed unit files are backed up before replacement when their content
+changes.
+
+Refresh a managed appliance installation:
+
+```bash
+sudo pihole-ai upgrade
+sudo pihole-ai upgrade --json
+```
+
+`upgrade` preserves the active configuration and data, refreshes managed
+systemd unit files, runs explicit PiHole-AI database migrations, reloads
+systemd, and restores previously enabled/running service state where practical.
 
 The launcher points to the current project virtualenv executable, for example `/home/carbonarakarlsson/pihole-ai/.venv/bin/pihole-ai`.
 
@@ -562,7 +588,13 @@ Uninstall services:
 
 ```bash
 sudo /usr/local/bin/pihole-ai uninstall
+sudo /usr/local/bin/pihole-ai uninstall --json
 ```
+
+Default uninstall preserves `/etc/pihole-ai/pihole-ai.env`,
+`/var/lib/pihole-ai/events.db`, learned reputation, rules, feedback, and other
+persistent data. Runtime-only files may be removed with `--purge`, but purge
+requires `--confirm-purge` and never removes the Pi-hole FTL database.
 
 Generated services:
 
