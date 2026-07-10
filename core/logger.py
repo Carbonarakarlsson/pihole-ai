@@ -44,8 +44,6 @@ LOG_FORMAT = (
 
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-LOG_FILE = Path(settings.log_file)
-
 MAX_LOG_SIZE = 5 * 1024 * 1024  # 5 MB
 BACKUP_COUNT = 5
 
@@ -89,10 +87,11 @@ def configure_logging() -> None:
     root_logger.addHandler(console_handler)
 
     try:
-        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        log_file = Path(settings.log_file)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
 
         file_handler = RotatingFileHandler(
-            filename=LOG_FILE,
+            filename=log_file,
             maxBytes=MAX_LOG_SIZE,
             backupCount=BACKUP_COUNT,
             encoding="utf-8",
@@ -104,7 +103,7 @@ def configure_logging() -> None:
     except OSError:
         root_logger.debug(
             "File logging disabled; cannot write %s",
-            LOG_FILE,
+            settings.log_file,
         )
 
     for noisy_logger in ("httpx", "httpcore", "ollama"):
@@ -130,7 +129,5 @@ def get_logger(name: str) -> logging.Logger:
     -------
     logging.Logger
     """
-
-    configure_logging()
 
     return logging.getLogger(name)

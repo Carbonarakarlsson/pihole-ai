@@ -276,6 +276,10 @@ python -m ui.dashboard
 
 Endpoints:
 
+- `GET /login`
+- `POST /login`
+- `POST /logout`
+- `GET /live`
 - `GET /`
 - `GET /api/stats`
 - `GET /api/events`
@@ -294,6 +298,9 @@ Endpoints:
 - `GET /data`
 
 `/data` is kept as a compatibility route.
+`/live` is intentionally public and returns only `{"status":"alive"}`.
+All dashboard pages and detailed JSON APIs require authentication when
+dashboard auth is enabled. All state-changing dashboard requests require CSRF.
 
 Useful query parameters:
 
@@ -309,6 +316,38 @@ Useful query parameters:
 - `ollama`: `1`, supported by `/api/health` to include Ollama status
 
 The dashboard can promote action audit entries into manual `allow` or `block` rules and remove active rules.
+
+Dashboard authentication is local-appliance only:
+
+```bash
+pihole-ai dashboard auth status
+pihole-ai dashboard auth status --json
+pihole-ai dashboard auth set-password
+pihole-ai dashboard auth set-password --password-stdin
+pihole-ai dashboard auth enable
+pihole-ai dashboard auth disable --confirm-disable-auth
+```
+
+Authentication is enabled by default for appliance mode. There is no default
+administrator password. After install, set the first password with:
+
+```bash
+sudo pihole-ai dashboard auth set-password
+sudo pihole-ai restart
+```
+
+To reset a forgotten password, run the same `set-password` command from the
+terminal. Password hashes are stored with Werkzeug's password hashing helpers;
+plaintext passwords are never stored or printed. The dashboard secret key is
+generated during install or password setup and is not shown by `config show`,
+doctor, setup, health, or JSON status output.
+
+Authentication may be disabled only for loopback-only development. Disabling it
+on `0.0.0.0` or another non-loopback bind is rejected by configuration
+validation. Sessions use signed Flask cookies, `HttpOnly`, `SameSite=Lax`, an
+explicit timeout, and CSRF tokens for writes. Reverse-proxy trust is disabled by
+default; enable it only behind a trusted local HTTPS reverse proxy. Do not expose
+the dashboard directly to the public internet.
 
 ## Configuration
 
@@ -340,6 +379,12 @@ PIHOLE_AI_DASHBOARD_OVERVIEW_POLL_INTERVAL_MS=5000
 PIHOLE_AI_DASHBOARD_METRICS_POLL_INTERVAL_MS=15000
 PIHOLE_AI_DASHBOARD_TABLES_POLL_INTERVAL_MS=10000
 PIHOLE_AI_DASHBOARD_SLOW_POLL_INTERVAL_MS=30000
+PIHOLE_AI_DASHBOARD_AUTH_ENABLED=true
+PIHOLE_AI_DASHBOARD_USERNAME=admin
+PIHOLE_AI_DASHBOARD_PASSWORD_HASH=
+PIHOLE_AI_DASHBOARD_SECRET_KEY=
+PIHOLE_AI_DASHBOARD_SESSION_LIFETIME_MINUTES=480
+PIHOLE_AI_DASHBOARD_TRUST_PROXY=false
 DEV_ACCESS_LOGS=false
 LOG_PATH=/var/log/pihole-ai/pihole-ai.log
 LOG_LEVEL=INFO
@@ -457,6 +502,7 @@ Required readiness checks:
 
 - compatible managed or recognized installation
 - valid runtime configuration
+- dashboard authentication configured when exposed
 - readable Pi-hole FTL database
 - writable/readable PiHole-AI events database
 - current supported schema
@@ -484,6 +530,7 @@ resume after fixing a blocked step:
 ```bash
 pihole-ai setup status
 sudo pihole-ai install
+sudo pihole-ai dashboard auth set-password
 sudo pihole-ai start
 pihole-ai setup status
 ```
@@ -567,6 +614,52 @@ Standard Linux runtime layout:
 /var/log/pihole-ai/pihole-ai.log
 /usr/local/bin/pihole-ai
 ```
+
+## v0.4 Release-Candidate Verification
+
+Local verification commands:
+
+```bash
+python -m unittest discover -s tests
+python -W error::ResourceWarning -m unittest discover -s tests
+python -m build
+python -m twine check dist/*
+python scripts/package_audit.py dist/*
+python scripts/smoke_wheel.py dist/*.whl
+```
+
+`build` and `twine` are development tools available through the `dev` optional
+dependency group:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+Supported v0.4 installation mode is the Linux appliance layout:
+
+```text
+/etc/pihole-ai/pihole-ai.env
+/var/lib/pihole-ai/events.db
+/var/log/pihole-ai/pihole-ai.log
+/usr/local/bin/pihole-ai
+```
+
+Initial dashboard authentication has no default password. Bootstrap it with:
+
+```bash
+sudo pihole-ai dashboard auth set-password
+sudo pihole-ai restart
+```
+
+Ollama is optional. If unavailable or disabled, deterministic classifiers still
+run and AI status is reported as degraded/skipped. SQLite migrations are applied
+only to the PiHole-AI events database; Pi-hole FTL data is read-only. Lifecycle
+rollback restores service/unit state where practical, but database migrations
+are not downgraded.
+
+Before final v0.4, validate on a real Raspberry Pi/Pi-hole host. Do not expose
+the dashboard directly to the public internet; use a trusted local reverse proxy
+with HTTPS for remote LAN access.
 
 Path helpers:
 

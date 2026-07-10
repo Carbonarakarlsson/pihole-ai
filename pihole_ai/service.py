@@ -17,6 +17,8 @@ import fcntl
 import grp
 import pwd
 import stat
+import secrets
+from importlib import resources
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -1762,21 +1764,8 @@ def _runtime_env_content(
     if example.exists():
         lines = example.read_text(encoding="utf-8").splitlines()
     else:
-        lines = [
-            "PIHOLE_AI_COLLECT_BATCH_SIZE=200",
-            "PIHOLE_AI_COLLECT_INTERVAL=2",
-            "PIHOLE_AI_ENGINE_BATCH_SIZE=500",
-            "PIHOLE_AI_ENGINE_INTERVAL=5",
-            "PIHOLE_AI_ACTION_MODE=dry-run",
-            "AI_ENABLED=true",
-            "AI_MAX_CALLS_PER_MINUTE=2",
-            "AI_COOLDOWN_SECONDS=60",
-            "AI_TIMEOUT_SECONDS=20",
-            "PIHOLE_AI_OLLAMA_URL=http://127.0.0.1:11434",
-            "PIHOLE_AI_OLLAMA_MODEL=llama3.2:1b",
-            "PIHOLE_AI_DASHBOARD_PORT=8080",
-            "LOG_LEVEL=INFO",
-        ]
+        packaged = resources.files("pihole_ai.defaults").joinpath("pihole-ai.env")
+        lines = packaged.read_text(encoding="utf-8").splitlines()
 
     normalized = _upsert_env_line(
         lines=lines,
@@ -1788,6 +1777,19 @@ def _runtime_env_content(
         key="LOG_PATH",
         value=str(runtime_log_path),
     )
+    for key, value in {
+        "PIHOLE_AI_DASHBOARD_AUTH_ENABLED": "true",
+        "PIHOLE_AI_DASHBOARD_USERNAME": "admin",
+        "PIHOLE_AI_DASHBOARD_PASSWORD_HASH": "",
+        "PIHOLE_AI_DASHBOARD_SECRET_KEY": secrets.token_urlsafe(48),
+        "PIHOLE_AI_DASHBOARD_SESSION_LIFETIME_MINUTES": "480",
+        "PIHOLE_AI_DASHBOARD_TRUST_PROXY": "false",
+    }.items():
+        normalized = _upsert_env_line(
+            lines=normalized,
+            key=key,
+            value=value,
+        )
 
     return "\n".join(normalized).rstrip() + "\n"
 

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import argparse
 
+from pihole_ai.version import get_version
+
 
 def build_parser() -> argparse.ArgumentParser:
     """
@@ -15,6 +17,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pihole-ai",
         description="Run PiHole-AI services and maintenance tasks.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {get_version()}",
     )
     subcommands = parser.add_subparsers(
         dest="command",
@@ -68,6 +75,56 @@ def build_parser() -> argparse.ArgumentParser:
         default=8080,
         help="Dashboard port.",
     )
+    dashboard_commands = dashboard.add_subparsers(
+        dest="dashboard_command",
+    )
+    dashboard_auth = dashboard_commands.add_parser(
+        "auth",
+        help="Manage dashboard authentication.",
+    )
+    dashboard_auth_commands = dashboard_auth.add_subparsers(
+        dest="dashboard_auth_command",
+        required=True,
+    )
+    dashboard_auth_status = dashboard_auth_commands.add_parser(
+        "status",
+        help="Show dashboard authentication status.",
+    )
+    dashboard_auth_status.add_argument(
+        "--json",
+        action="store_true",
+        help="Print status as JSON.",
+    )
+    dashboard_auth_set_password = dashboard_auth_commands.add_parser(
+        "set-password",
+        help="Set the dashboard administrator password.",
+    )
+    dashboard_auth_set_password.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="Read the new password from stdin.",
+    )
+    dashboard_auth_set_password.add_argument(
+        "--json",
+        action="store_true",
+        help="Print result as JSON.",
+    )
+    for auth_command in ("enable", "disable"):
+        auth_toggle = dashboard_auth_commands.add_parser(
+            auth_command,
+            help=f"{auth_command.title()} dashboard authentication.",
+        )
+        auth_toggle.add_argument(
+            "--json",
+            action="store_true",
+            help="Print result as JSON.",
+        )
+        if auth_command == "disable":
+            auth_toggle.add_argument(
+                "--confirm-disable-auth",
+                action="store_true",
+                help="Confirm disabling dashboard authentication.",
+            )
     status = subcommands.add_parser(
         "status",
         help="Print runtime status.",
@@ -620,6 +677,10 @@ def main(
 
     args = build_parser().parse_args(argv)
 
+    from core.logger import configure_logging
+
+    configure_logging()
+
     if args.command in {"collect", "collector"}:
         from collector.scan import main as collector_main
 
@@ -650,6 +711,37 @@ def main(
         return 0
 
     if args.command == "dashboard":
+        if args.dashboard_command == "auth":
+            from pihole_ai.dashboard_auth import (
+                DashboardAuthError,
+                print_auth_status,
+                set_auth_enabled,
+                set_password,
+            )
+
+            try:
+                if args.dashboard_auth_command == "status":
+                    return print_auth_status(as_json=args.json)
+                if args.dashboard_auth_command == "set-password":
+                    return set_password(
+                        password_stdin=args.password_stdin,
+                        as_json=args.json,
+                    )
+                if args.dashboard_auth_command == "enable":
+                    return set_auth_enabled(
+                        enabled=True,
+                        as_json=args.json,
+                    )
+                if args.dashboard_auth_command == "disable":
+                    return set_auth_enabled(
+                        enabled=False,
+                        confirm_disable_auth=args.confirm_disable_auth,
+                        as_json=args.json,
+                    )
+            except DashboardAuthError as exc:
+                print(str(exc))
+                return 1
+
         from ui.dashboard import main as dashboard_main
 
         dashboard_main(
@@ -936,6 +1028,11 @@ def main(
             return 1
 
     if args.command in {"install", "uninstall", "upgrade"}:
+        import io
+        import json
+        import sys
+        from contextlib import redirect_stdout
+
         from pihole_ai.service import (
             ServiceError,
             print_installation_status,
@@ -943,6 +1040,15 @@ def main(
             service_uninstall,
             service_upgrade,
         )
+
+        def run_json_service_command(command):
+            captured = io.StringIO()
+            with redirect_stdout(captured):
+                result = command()
+            human_output = captured.getvalue()
+            if human_output:
+                print(human_output, end="", file=sys.stderr)
+            print(json.dumps(result.to_dict(), sort_keys=True))
 
         try:
             if args.command == "install":
@@ -952,32 +1058,42 @@ def main(
                     )
 
                 install_kwargs = {"dry_run": args.dry_run}
-                if args.json:
-                    install_kwargs["as_json"] = True
                 if args.no_enable:
                     install_kwargs["enable_services"] = False
                 if args.no_start:
                     install_kwargs["start_services"] = False
 
-                service_install(**install_kwargs)
+                if args.json:
+                    run_json_service_command(lambda: service_install(**install_kwargs))
+                else:
+                    service_install(**install_kwargs)
                 return 0
 
             if args.command == "uninstall":
                 uninstall_kwargs = {"dry_run": args.dry_run}
-                if args.json:
-                    uninstall_kwargs["as_json"] = True
                 if args.purge:
                     uninstall_kwargs["purge"] = True
                 if args.confirm_purge:
                     uninstall_kwargs["confirm_purge"] = True
 
-                service_uninstall(**uninstall_kwargs)
+                if args.json:
+                    run_json_service_command(lambda: service_uninstall(**uninstall_kwargs))
+                else:
+                    service_uninstall(**uninstall_kwargs)
                 return 0
 
-            service_upgrade(
-                dry_run=args.dry_run,
-                as_json=args.json,
-            )
+            if args.json:
+                run_json_service_command(
+                    lambda: service_upgrade(
+                        dry_run=args.dry_run,
+                        as_json=False,
+                    )
+                )
+            else:
+                service_upgrade(
+                    dry_run=args.dry_run,
+                    as_json=False,
+                )
             return 0
 
         except ServiceError as exc:

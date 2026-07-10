@@ -30,7 +30,34 @@ from core.config import settings
 from core.migrations import migrate_database
 
 
-DATABASE_PATH = Path(settings.events_db)
+DATABASE_PATH: Path | None = None
+_initialized_database_paths: set[Path] = set()
+
+
+def _database_path() -> Path:
+    """
+    Resolve the runtime database path lazily.
+
+    Tests and embedded callers may still patch DATABASE_PATH directly; the
+    default path is read from configuration only when a connection is opened.
+    """
+
+    if DATABASE_PATH is not None:
+        return Path(DATABASE_PATH)
+    return Path(settings.events_db)
+
+
+def _ensure_database_initialized(database_path: Path) -> None:
+    """
+    Apply migrations once before opening a runtime database connection.
+    """
+
+    resolved = database_path.resolve()
+    if resolved in _initialized_database_paths:
+        return
+
+    migrate_database(database_path)
+    _initialized_database_paths.add(resolved)
 
 
 # ============================================================================
@@ -57,10 +84,12 @@ def get_connection() -> sqlite3.Connection:
     Return a configured SQLite connection.
     """
 
-    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    database_path = _database_path()
+    _ensure_database_initialized(database_path)
+    database_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(
-        DATABASE_PATH,
+        database_path,
         timeout=30,
     )
 
@@ -100,7 +129,9 @@ def init_db() -> None:
     """
     Apply pending PiHole-AI database migrations.
     """
-    migrate_database(DATABASE_PATH)
+    database_path = _database_path()
+    migrate_database(database_path)
+    _initialized_database_paths.add(database_path.resolve())
 
 
 # ============================================================================
@@ -1565,16 +1596,3 @@ def vacuum() -> None:
     with closing(get_connection()) as conn:
         conn.execute("VACUUM")
 
-
-# ============================================================================
-# Initialize Database
-# ============================================================================
-
-try:
-    init_db()
-
-except (OSError, sqlite3.Error):
-    # Appliance installs create the runtime directory before services start.
-    # Local commands may import this module before /var/lib/pihole-ai exists
-    # or is writable; explicit DB use will still surface the real error.
-    pass

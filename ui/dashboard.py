@@ -2,12 +2,30 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
+import time
+from datetime import timedelta
+from functools import wraps
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-from flask import Flask, jsonify, render_template_string, request
+from flask import (
+    Flask,
+    abort,
+    current_app,
+    g,
+    jsonify,
+    redirect,
+    render_template_string,
+    request,
+    session,
+    url_for,
+)
+from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import check_password_hash
 
-from core.config import settings
+from core.config import CONFIG_FILE, settings
 from core.db import (
     database_stats,
     decision_metrics as db_decision_metrics,
@@ -29,7 +47,44 @@ from pihole_ai.status import collect_status
 
 logger = get_logger(__name__)
 
-SETTINGS_ENV_PATH = settings.config_file
+MAX_CONTENT_LENGTH = 32 * 1024
+LOGIN_FAILURE_LIMIT = 5
+LOGIN_FAILURE_WINDOW_SECONDS = 300
+LOGIN_LOCKOUT_SECONDS = 300
+MAX_LOGIN_FAILURE_RECORDS = 512
+AUTH_SESSION_KEY = "authenticated"
+CSRF_SESSION_KEY = "csrf_token"
+LOGIN_FAILURES: dict[tuple[str, str], list[float]] = {}
+
+ROUTE_SECURITY = {
+    "GET /login": "public",
+    "POST /login": "public_state_changing_csrf",
+    "GET /live": "public_liveness",
+    "GET /": "authenticated_read",
+    "GET /api/stats": "authenticated_read",
+    "GET /api/polling": "authenticated_read",
+    "GET /api/settings": "authenticated_read",
+    "GET /api/setup": "authenticated_read",
+    "POST /api/settings": "authenticated_write_csrf",
+    "POST /api/services/<action>": "authenticated_write_csrf",
+    "GET /api/metrics/decisions": "authenticated_read",
+    "GET /api/events": "authenticated_read",
+    "GET /api/analysis": "authenticated_read",
+    "GET /api/devices": "authenticated_read",
+    "GET /api/actions": "authenticated_read",
+    "GET /api/rules": "authenticated_read",
+    "GET /api/reputations": "authenticated_read",
+    "GET /api/explain/<domain>": "authenticated_read",
+    "POST /api/feedback": "authenticated_write_csrf",
+    "POST /api/rules": "authenticated_write_csrf",
+    "DELETE /api/rules/<domain>": "authenticated_write_csrf",
+    "GET /api/status": "authenticated_read",
+    "GET /api/health": "authenticated_read",
+    "GET /data": "authenticated_read",
+    "POST /logout": "authenticated_write_csrf",
+}
+
+SETTINGS_ENV_PATH = CONFIG_FILE
 
 AI_SETTING_KEYS = {
     "ai_enabled": "AI_ENABLED",
@@ -43,6 +98,80 @@ DASHBOARD_SETTING_KEYS = {
     "dev_access_logs": "DEV_ACCESS_LOGS",
 }
 
+LOGIN_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PiHole-AI Login</title>
+<style nonce="__CSP_NONCE__">
+:root { color-scheme: dark; }
+body {
+    align-items: center;
+    background: #0f1113;
+    color: #f2f4f5;
+    display: flex;
+    font-family: Arial, sans-serif;
+    min-height: 100vh;
+    margin: 0;
+    padding: 18px;
+}
+.login {
+    background: #1a1f23;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    display: grid;
+    gap: 14px;
+    margin: auto;
+    max-width: 360px;
+    padding: 20px;
+    width: 100%;
+}
+h1 { font-size: 22px; margin: 0; }
+p { color: #aab2bb; margin: 0; }
+label { display: grid; gap: 6px; }
+input {
+    background: #161a1e;
+    border: 1px solid #2b3238;
+    border-radius: 6px;
+    color: #f2f4f5;
+    min-height: 38px;
+    padding: 8px 10px;
+}
+button {
+    background: #58c4a7;
+    border: 0;
+    border-radius: 6px;
+    color: #06110d;
+    font-weight: 700;
+    min-height: 38px;
+    padding: 8px 12px;
+}
+.error { color: #e86969; min-height: 18px; }
+</style>
+</head>
+<body>
+<form class="login" method="post" action="/login" autocomplete="on">
+    <h1>PiHole-AI</h1>
+    <p>Sign in to the companion appliance.</p>
+    <input type="hidden" name="csrf_token" value="__CSRF_TOKEN__">
+    <input type="hidden" name="next" value="__NEXT__">
+    <label>
+        Username
+        <input name="username" type="text" autocomplete="username" required>
+    </label>
+    <label>
+        Password
+        <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <div class="error">__ERROR__</div>
+    <button type="submit">Sign in</button>
+</form>
+</body>
+</html>
+"""
+
 
 HTML = """
 <!doctype html>
@@ -51,7 +180,8 @@ HTML = """
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PiHole-AI</title>
-<style>
+<meta name="csrf-token" content="__CSRF_TOKEN__">
+<style nonce="__CSP_NONCE__">
 :root {
     color-scheme: dark;
     --bg: #0f1113;
@@ -147,6 +277,21 @@ header {
     gap: 16px;
     justify-content: space-between;
     padding: 18px 22px 0;
+}
+
+.userbar {
+    align-items: center;
+    display: flex;
+    gap: 10px;
+}
+
+.logout-button {
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--text);
+    min-height: 32px;
+    padding: 5px 9px;
 }
 
 h1 {
@@ -617,7 +762,11 @@ th {
 <div class="workspace">
 <header>
     <h1 id="page-title">Overview</h1>
-    <span class="muted" id="updated">-</span>
+    <div class="userbar">
+        <span class="muted" id="updated">-</span>
+        <span class="muted" id="logged-in-user">__USERNAME__</span>
+        <button class="logout-button" id="logout" type="button">Logout</button>
+    </div>
 </header>
 <main>
     <div class="content">
@@ -830,8 +979,29 @@ th {
 </main>
 </div>
 </div>
-<script>
+<script nonce="__CSP_NONCE__">
+const csrfToken = document.querySelector("meta[name='csrf-token']")?.content ?? "";
 const text = (value) => String(value ?? "-");
+
+function csrfHeaders(extra = {}) {
+    return {
+        ...extra,
+        "X-CSRF-Token": csrfToken,
+    };
+}
+
+async function checkedFetch(url, options = {}) {
+    const response = await fetch(url, options);
+    if (response.status === 401) {
+        window.location.href = "/login";
+        throw new Error("authentication required");
+    }
+    if (response.status === 403) {
+        settingsMessage("Security token expired. Refresh the page and try again.");
+        throw new Error("csrf failed");
+    }
+    return response;
+}
 
 function clear(node) {
     if (!node) return;
@@ -1400,16 +1570,16 @@ function renderExplanation(explanation) {
 }
 
 async function explainDomain(domain) {
-    const explanation = await fetch(
+    const explanation = await checkedFetch(
         `/api/explain/${encodeURIComponent(domain)}`
     ).then((res) => res.json());
     renderExplanation(explanation);
 }
 
 async function saveRule(domain, decision) {
-    await fetch("/api/rules", {
+    await checkedFetch("/api/rules", {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
+        headers: csrfHeaders({"Content-Type": "application/json"}),
         body: JSON.stringify({
             domain,
             decision,
@@ -1423,16 +1593,17 @@ async function saveRule(domain, decision) {
 }
 
 async function removeRule(domain) {
-    await fetch(`/api/rules/${encodeURIComponent(domain)}`, {
+    await checkedFetch(`/api/rules/${encodeURIComponent(domain)}`, {
         method: "DELETE",
+        headers: csrfHeaders(),
     });
     await loadRules();
 }
 
 async function saveFeedback(domain, verdict, promote) {
-    await fetch("/api/feedback", {
+    await checkedFetch("/api/feedback", {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
+        headers: csrfHeaders({"Content-Type": "application/json"}),
         body: JSON.stringify({
             domain,
             verdict,
@@ -1465,10 +1636,10 @@ function paramsForTables() {
 
 async function loadOverview() {
     const [setup, stats, status, highRisk] = await Promise.all([
-        fetch("/api/setup").then((res) => res.json()),
-        fetch("/api/stats").then((res) => res.json()),
-        fetch("/api/status").then((res) => res.json()),
-        fetch("/api/analysis?min_risk=70&limit=12").then((res) => res.json()),
+        checkedFetch("/api/setup").then((res) => res.json()),
+        checkedFetch("/api/stats").then((res) => res.json()),
+        checkedFetch("/api/status").then((res) => res.json()),
+        checkedFetch("/api/analysis?min_risk=70&limit=12").then((res) => res.json()),
     ]);
 
     renderSetup(setup);
@@ -1482,14 +1653,14 @@ async function loadOverview() {
 }
 
 async function loadSettings() {
-    const payload = await fetch("/api/settings").then((res) => res.json());
+    const payload = await checkedFetch("/api/settings").then((res) => res.json());
     renderSettingsControls(payload);
 }
 
 async function loadMetrics() {
     const [metrics, status] = await Promise.all([
-        fetch("/api/metrics/decisions").then((res) => res.json()),
-        fetch("/api/status").then((res) => res.json()),
+        checkedFetch("/api/metrics/decisions").then((res) => res.json()),
+        checkedFetch("/api/status").then((res) => res.json()),
     ]);
     renderDecisionMetrics(metrics);
     renderIntelligence(metrics, status);
@@ -1498,8 +1669,8 @@ async function loadMetrics() {
 async function loadTables() {
     const suffix = paramsForTables();
     const [analysis, devices] = await Promise.all([
-        fetch(`/api/analysis${suffix}`).then((res) => res.json()),
-        fetch(`/api/devices${suffix}`).then((res) => res.json()),
+        checkedFetch(`/api/analysis${suffix}`).then((res) => res.json()),
+        checkedFetch(`/api/devices${suffix}`).then((res) => res.json()),
     ]);
 
     renderAnalysis(analysis);
@@ -1509,21 +1680,21 @@ async function loadTables() {
 async function loadActivity() {
     const suffix = paramsForTables();
     const [events, analysis, actions] = await Promise.all([
-        fetch(`/api/events${suffix}`).then((res) => res.json()),
-        fetch(`/api/analysis${suffix}`).then((res) => res.json()),
-        fetch(`/api/actions${suffix}`).then((res) => res.json()),
+        checkedFetch(`/api/events${suffix}`).then((res) => res.json()),
+        checkedFetch(`/api/analysis${suffix}`).then((res) => res.json()),
+        checkedFetch(`/api/actions${suffix}`).then((res) => res.json()),
     ]);
 
     renderActivity(events, analysis, actions);
 }
 
 async function loadRules() {
-    const rules = await fetch(`/api/rules${paramsForTables()}`).then((res) => res.json());
+    const rules = await checkedFetch(`/api/rules${paramsForTables()}`).then((res) => res.json());
     renderRules(rules);
 }
 
 async function loadReputations() {
-    const reputations = await fetch(`/api/reputations${paramsForTables()}`).then((res) => res.json());
+    const reputations = await checkedFetch(`/api/reputations${paramsForTables()}`).then((res) => res.json());
     renderReputations(reputations);
 }
 
@@ -1562,9 +1733,9 @@ document.getElementById("search").addEventListener("keydown", (event) => {
 document.getElementById("min-risk").addEventListener("change", loadAll);
 document.getElementById("limit").addEventListener("change", loadAll);
 document.getElementById("save-settings").addEventListener("click", async () => {
-    const response = await fetch("/api/settings", {
+    const response = await checkedFetch("/api/settings", {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
+        headers: csrfHeaders({"Content-Type": "application/json"}),
         body: JSON.stringify(settingPayload()),
     }).then((res) => res.json());
 
@@ -1574,7 +1745,7 @@ document.getElementById("save-settings").addEventListener("click", async () => {
 });
 document.getElementById("restart-required").addEventListener("click", () => serviceAction("restart"));
 document.getElementById("service-status-button").addEventListener("click", async () => {
-    const status = await fetch("/api/status").then((res) => res.json());
+    const status = await checkedFetch("/api/status").then((res) => res.json());
     settingsMessage(`Status loaded. Events: ${status.database?.events ?? 0}, processed: ${status.database?.processed ?? 0}.`);
 });
 document.querySelectorAll("[data-service-action]").forEach((item) => {
@@ -1582,8 +1753,9 @@ document.querySelectorAll("[data-service-action]").forEach((item) => {
 });
 
 async function serviceAction(action) {
-    const response = await fetch(`/api/services/${action}`, {
+    const response = await checkedFetch(`/api/services/${action}`, {
         method: "POST",
+        headers: csrfHeaders(),
     }).then((res) => res.json());
 
     if (response.ok) {
@@ -1592,6 +1764,13 @@ async function serviceAction(action) {
         settingsMessage(response.message || `Run: ${response.command}`);
     }
 }
+document.getElementById("logout").addEventListener("click", async () => {
+    await checkedFetch("/logout", {
+        method: "POST",
+        headers: csrfHeaders(),
+    });
+    window.location.href = "/login";
+});
 setInterval(loadOverview, __OVERVIEW_POLL_INTERVAL_MS__);
 setInterval(loadMetrics, __METRICS_POLL_INTERVAL_MS__);
 setInterval(() => Promise.all([loadTables(), loadActivity()]), __TABLES_POLL_INTERVAL_MS__);
@@ -2053,12 +2232,291 @@ def _needs_sudo() -> bool:
     return get_euid is not None and get_euid() != 0
 
 
+def auth_is_enabled() -> bool:
+    if current_app.config.get("PIHOLE_AI_DISABLE_AUTH_FOR_TESTS"):
+        return False
+    return bool(settings.dashboard_auth_enabled)
+
+
+def csrf_token() -> str:
+    token = session.get(CSRF_SESSION_KEY)
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session[CSRF_SESSION_KEY] = token
+    return str(token)
+
+
+def rotate_csrf() -> str:
+    token = secrets.token_urlsafe(32)
+    session[CSRF_SESSION_KEY] = token
+    return token
+
+
+def is_authenticated() -> bool:
+    return bool(session.get(AUTH_SESSION_KEY))
+
+
+def is_api_request() -> bool:
+    return request.path.startswith("/api/") or request.accept_mimetypes.best == "application/json"
+
+
+def local_redirect_target(value: str | None) -> str:
+    if not value:
+        return url_for("home")
+    parts = urlsplit(value)
+    if parts.scheme or parts.netloc or not value.startswith("/"):
+        return url_for("home")
+    if value.startswith("//"):
+        return url_for("home")
+    return value
+
+
+def remote_identity() -> str:
+    return request.remote_addr or "unknown"
+
+
+def login_key(username: str) -> tuple[str, str]:
+    return (remote_identity(), username.strip().lower())
+
+
+def login_is_throttled(username: str, now: float | None = None) -> bool:
+    current = now if now is not None else time.time()
+    key = login_key(username)
+    attempts = [
+        stamp
+        for stamp in LOGIN_FAILURES.get(key, [])
+        if current - stamp <= LOGIN_FAILURE_WINDOW_SECONDS + LOGIN_LOCKOUT_SECONDS
+    ]
+    LOGIN_FAILURES[key] = attempts
+    recent = [
+        stamp
+        for stamp in attempts
+        if current - stamp <= LOGIN_FAILURE_WINDOW_SECONDS
+    ]
+    return len(recent) >= LOGIN_FAILURE_LIMIT
+
+
+def record_login_failure(username: str, now: float | None = None) -> None:
+    current = now if now is not None else time.time()
+    _prune_login_failures(current)
+    key = login_key(username)
+    LOGIN_FAILURES.setdefault(key, []).append(current)
+
+
+def clear_login_failures(username: str) -> None:
+    LOGIN_FAILURES.pop(login_key(username), None)
+
+
+def _prune_login_failures(current: float) -> None:
+    expired_before = current - LOGIN_FAILURE_WINDOW_SECONDS - LOGIN_LOCKOUT_SECONDS
+    for key in list(LOGIN_FAILURES):
+        values = [
+            stamp
+            for stamp in LOGIN_FAILURES[key]
+            if stamp >= expired_before
+        ]
+        if values:
+            LOGIN_FAILURES[key] = values
+        else:
+            LOGIN_FAILURES.pop(key, None)
+    while len(LOGIN_FAILURES) > MAX_LOGIN_FAILURE_RECORDS:
+        oldest_key = min(
+            LOGIN_FAILURES,
+            key=lambda item: LOGIN_FAILURES[item][0] if LOGIN_FAILURES[item] else 0,
+        )
+        LOGIN_FAILURES.pop(oldest_key, None)
+
+
+def require_csrf() -> bool:
+    submitted = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
+    expected = session.get(CSRF_SESSION_KEY)
+    return bool(submitted and expected and secrets.compare_digest(str(submitted), str(expected)))
+
+
+def json_error(status: int, code: str, message: str):
+    response = jsonify({"error": code, "message": message})
+    response.status_code = status
+    return response
+
+
+def render_error_page(status: int, message: str):
+    return (
+        render_template_string(
+            "<!doctype html><title>PiHole-AI</title><h1>PiHole-AI</h1><p>{{ message }}</p>",
+            message=message,
+        ),
+        status,
+    )
+
+
+def _render_login_failure(message: str) -> str:
+    html = LOGIN_HTML
+    replacements = {
+        "__CSP_NONCE__": getattr(g, "csp_nonce", ""),
+        "__CSRF_TOKEN__": csrf_token(),
+        "__NEXT__": local_redirect_target(request.form.get("next")),
+        "__ERROR__": message,
+    }
+    for placeholder, value in replacements.items():
+        html = html.replace(placeholder, str(value))
+    return render_template_string(html)
+
+
 def create_app() -> Flask:
     """
     Create the Flask dashboard application.
     """
 
     app = Flask(__name__)
+    app.secret_key = settings.dashboard_secret_key or secrets.token_urlsafe(48)
+    app.config.update(
+        MAX_CONTENT_LENGTH=MAX_CONTENT_LENGTH,
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=False,
+        PERMANENT_SESSION_LIFETIME=timedelta(
+            minutes=max(1, settings.dashboard_session_lifetime_minutes)
+        ),
+        SESSION_REFRESH_EACH_REQUEST=True,
+    )
+
+    if settings.dashboard_trust_proxy:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+    @app.before_request
+    def security_gate():
+        g.csp_nonce = secrets.token_urlsafe(16)
+        if request.is_secure:
+            current_app.config["SESSION_COOKIE_SECURE"] = True
+
+        if request.endpoint in {"login", "login_submit", "live", "static"}:
+            return None
+
+        if not auth_is_enabled():
+            return None
+
+        if not is_authenticated():
+            if is_api_request():
+                return json_error(401, "authentication_required", "Authentication required.")
+            return redirect(url_for("login", next=request.full_path.rstrip("?")))
+
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not require_csrf():
+            if is_api_request():
+                return json_error(403, "csrf_failed", "Security token expired. Refresh and try again.")
+            abort(403)
+
+        return None
+
+    @app.after_request
+    def security_headers(response):
+        nonce = getattr(g, "csp_nonce", "")
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            f"script-src 'self' 'nonce-{nonce}'; "
+            f"style-src 'self' 'nonce-{nonce}'; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        if request.path != "/live":
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.errorhandler(400)
+    @app.errorhandler(401)
+    @app.errorhandler(403)
+    @app.errorhandler(404)
+    @app.errorhandler(405)
+    @app.errorhandler(413)
+    @app.errorhandler(429)
+    @app.errorhandler(500)
+    def safe_error(error):
+        status = getattr(error, "code", 500)
+        messages = {
+            400: "Bad request.",
+            401: "Authentication required.",
+            403: "Request not permitted.",
+            404: "Not found.",
+            405: "Method not allowed.",
+            413: "Request too large.",
+            429: "Too many requests.",
+            500: "Internal error.",
+        }
+        code = {
+            400: "bad_request",
+            401: "authentication_required",
+            403: "forbidden",
+            404: "not_found",
+            405: "method_not_allowed",
+            413: "request_too_large",
+            429: "too_many_requests",
+            500: "internal_error",
+        }.get(status, "error")
+        if is_api_request():
+            return json_error(status, code, messages.get(status, "Error."))
+        return render_error_page(status, messages.get(status, "Error."))
+
+    @app.get("/live")
+    def live():
+        return jsonify({"status": "alive"})
+
+    @app.get("/login")
+    def login():
+        if auth_is_enabled() and is_authenticated():
+            return redirect(local_redirect_target(request.args.get("next")))
+        html = LOGIN_HTML
+        replacements = {
+            "__CSP_NONCE__": getattr(g, "csp_nonce", ""),
+            "__CSRF_TOKEN__": csrf_token(),
+            "__NEXT__": local_redirect_target(request.args.get("next")),
+            "__ERROR__": "",
+        }
+        for placeholder, value in replacements.items():
+            html = html.replace(placeholder, str(value))
+        return render_template_string(html)
+
+    @app.post("/login")
+    def login_submit():
+        if auth_is_enabled() and not require_csrf():
+            abort(403)
+
+        username = str(request.form.get("username", ""))[:128]
+        password = str(request.form.get("password", ""))
+        failure = "Invalid username or password."
+        if login_is_throttled(username):
+            return _render_login_failure(failure), 429
+
+        ok = (
+            username == settings.dashboard_username
+            and bool(settings.dashboard_password_hash.strip())
+            and check_password_hash(settings.dashboard_password_hash, password)
+        )
+        if not ok:
+            record_login_failure(username)
+            return _render_login_failure(failure), 401
+
+        session.clear()
+        session.permanent = True
+        session[AUTH_SESSION_KEY] = True
+        session["username"] = settings.dashboard_username
+        session["login_at"] = int(time.time())
+        rotate_csrf()
+        clear_login_failures(username)
+        return redirect(local_redirect_target(request.form.get("next")))
+
+    @app.post("/logout")
+    def logout():
+        session.clear()
+        rotate_csrf()
+        if is_api_request():
+            return jsonify({"ok": True})
+        return redirect(url_for("login"))
 
     @app.get("/")
     def home():
@@ -2068,6 +2526,9 @@ def create_app() -> Flask:
             "__METRICS_POLL_INTERVAL_MS__": settings.dashboard_metrics_poll_interval_ms,
             "__TABLES_POLL_INTERVAL_MS__": settings.dashboard_tables_poll_interval_ms,
             "__SLOW_POLL_INTERVAL_MS__": settings.dashboard_slow_poll_interval_ms,
+            "__CSP_NONCE__": getattr(g, "csp_nonce", ""),
+            "__CSRF_TOKEN__": csrf_token(),
+            "__USERNAME__": session.get("username", settings.dashboard_username),
         }
 
         for placeholder, value in replacements.items():
@@ -2334,6 +2795,7 @@ def create_app() -> Flask:
                 report_to_dict,
                 run_health_checks,
             )
+            from pihole_ai.version import get_version
 
             report = run_health_checks()
 
@@ -2343,7 +2805,7 @@ def create_app() -> Flask:
                 {
                     "overall_status": "unknown",
                     "checks": [],
-                    "version": "0.4",
+                    "version": get_version(),
                     "error": exc.__class__.__name__,
                 }
             ), 500
@@ -2362,7 +2824,29 @@ def create_app() -> Flask:
     return app
 
 
-app = create_app()
+class LazyDashboardApp:
+    """
+    Lazy WSGI proxy preserving ui.dashboard:app without constructing Flask at import.
+    """
+
+    _app: Flask | None = None
+
+    def _get_app(self) -> Flask:
+        if self._app is None:
+            self._app = create_app()
+        return self._app
+
+    def __call__(self, environ: Any, start_response: Any) -> Any:
+        return self._get_app()(environ, start_response)
+
+    def run(self, *args: Any, **kwargs: Any) -> Any:
+        return self._get_app().run(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._get_app(), name)
+
+
+app = LazyDashboardApp()
 
 
 def main(

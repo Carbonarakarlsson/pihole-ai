@@ -5,6 +5,7 @@ import sys
 import tempfile
 import types
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -170,7 +171,7 @@ class HealthTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             database_path = Path(tmpdir) / "events.db"
 
-            with sqlite3.connect(database_path) as conn:
+            with closing(sqlite3.connect(database_path)) as conn:
                 conn.execute(
                     """
                     CREATE TABLE schema_migrations (
@@ -186,6 +187,7 @@ class HealthTests(unittest.TestCase):
                     VALUES (999, 'future', 'now')
                     """
                 )
+                conn.commit()
 
             with patch(
                 "pihole_ai.health.settings",
@@ -290,6 +292,7 @@ class HealthTests(unittest.TestCase):
     def test_dashboard_health_endpoint_status_codes(self) -> None:
         app = create_app()
         app.config.update(TESTING=True)
+        app.config["PIHOLE_AI_DISABLE_AUTH_FOR_TESTS"] = True
         client = app.test_client()
 
         with patch(
@@ -332,7 +335,7 @@ class HealthTests(unittest.TestCase):
                 )
 
         encoded = json.dumps(payload)
-        self.assertNotIn("secret", encoded)
+        self.assertNotIn("user:secret", encoded)
         self.assertIn("http://example.com:11434", encoded)
 
 

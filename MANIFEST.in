@@ -1,0 +1,12 @@
+include README.md LICENSE .env.example
+recursive-include pihole_ai/defaults *.env
+recursive-exclude * __pycache__ *.py[cod]
+recursive-exclude .git *
+recursive-exclude .pytest_cache *
+recursive-exclude .venv *
+recursive-exclude venv *
+recursive-exclude data *.db *.sqlite *.sqlite3 *.log
+recursive-exclude logs *
+recursive-exclude backup *.db *.sqlite *.sqlite3
+exclude .env
+exclude dns_memory.db domains.db

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pihole-ai"
-version = "0.3.0"
+version = "0.4.0rc1"
 description = "AI-assisted Pi-hole monitoring and threat analysis"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -19,11 +19,20 @@ dependencies = [
     "ollama>=0.6.2",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "build>=1.2.0",
+    "twine>=5.0.0",
+]
+
 [project.scripts]
 pihole-ai = "pihole_ai.cli:main"
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.setuptools.package-data]
+pihole_ai = ["defaults/*.env"]
 
 [tool.setuptools.packages.find]
 include = [
