@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core import db
+from core.migrations import IncompatibleSchema
 
 
 class DatabaseTests(unittest.TestCase):
@@ -50,7 +51,14 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn("domain_rules", tables)
         self.assertIn("domain_reputation", tables)
         self.assertIn("threat_intel", tables)
+        self.assertIn("schema_migrations", tables)
         self.assertIn("confidence", columns)
+
+        migration = db.query_one(
+            "SELECT version, name FROM schema_migrations ORDER BY version DESC LIMIT 1"
+        )
+        self.assertIsNotNone(migration)
+        self.assertEqual(migration["version"], 1)
 
     def test_insert_event_updates_domain_memory(self) -> None:
         db.insert_event(
@@ -449,7 +457,7 @@ class DatabaseTests(unittest.TestCase):
 
 
 class DatabaseMigrationTests(unittest.TestCase):
-    def test_init_db_adds_confidence_to_legacy_analysis_table(self) -> None:
+    def test_init_db_rejects_malformed_legacy_analysis_table(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             database_path = Path(tmpdir) / "legacy.db"
 
@@ -469,14 +477,8 @@ class DatabaseMigrationTests(unittest.TestCase):
                     )
 
             with patch.object(db, "DATABASE_PATH", database_path):
-                db.init_db()
-
-                columns = {
-                    row["name"]
-                    for row in db.query_all("PRAGMA table_info(analysis)")
-                }
-
-        self.assertIn("confidence", columns)
+                with self.assertRaises(IncompatibleSchema):
+                    db.init_db()
 
 
 if __name__ == "__main__":

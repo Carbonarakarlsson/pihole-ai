@@ -1,5 +1,6 @@
 import io
 import json
+import sqlite3
 import sys
 import tempfile
 import types
@@ -15,6 +16,7 @@ sys.modules.setdefault(
     ),
 )
 
+from core import migrations
 from pihole_ai import cli
 from pihole_ai.health import (
     DISK_DEGRADED_BYTES,
@@ -89,6 +91,18 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(report.overall_status, HealthStatus.HEALTHY.value)
         self.assertEqual(len(report.checks), 6)
 
+    def test_health_report_uses_package_version_metadata(self) -> None:
+        with patch("pihole_ai.health.check_configuration", return_value=health_check("configuration")), \
+             patch("pihole_ai.health.check_events_database", return_value=health_check("events_database")), \
+             patch("pihole_ai.health.check_pihole_ftl_database", return_value=health_check("pihole_ftl_database")), \
+             patch("pihole_ai.health.check_ollama", return_value=health_check("ollama")), \
+             patch("pihole_ai.health.check_collector_progress", return_value=health_check("collector_progress")), \
+             patch("pihole_ai.health.check_disk_space", return_value=health_check("disk_space")), \
+             patch("pihole_ai.health.get_version", return_value="9.9-test"):
+            report = run_health_checks()
+
+        self.assertEqual(report.version, "9.9-test")
+
     def test_ollama_unavailable_is_degraded(self) -> None:
         class FakeClient:
             def health(self):
@@ -105,14 +119,85 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(check.status, HealthStatus.DEGRADED.value)
 
     def test_events_database_unavailable_is_unhealthy(self) -> None:
-        with patch(
-            "core.db.get_connection",
-            side_effect=OSError("no db"),
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "pihole_ai.health.settings",
+            FakeSettings(
+                events_db=str(Path(tmpdir) / "missing.db"),
+                pihole_db=str(Path(tmpdir) / "pihole.db"),
+            ),
         ):
             check = check_events_database()
 
         self.assertEqual(check.status, HealthStatus.UNHEALTHY.value)
-        self.assertEqual(check.details["error"], "OSError")
+        self.assertNotIn("error", check.details)
+
+    def test_events_database_reports_current_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "events.db"
+            migrations.migrate_database(database_path)
+
+            with patch(
+                "pihole_ai.health.settings",
+                FakeSettings(
+                    events_db=str(database_path),
+                    pihole_db=str(Path(tmpdir) / "pihole.db"),
+                ),
+            ):
+                check = check_events_database()
+
+        self.assertEqual(check.status, HealthStatus.HEALTHY.value)
+        self.assertEqual(check.details["current_schema_version"], 1)
+        self.assertEqual(check.details["pending_migration_count"], 0)
+
+    def test_events_database_with_pending_migration_is_degraded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "events.db"
+            database_path.touch()
+
+            with patch(
+                "pihole_ai.health.settings",
+                FakeSettings(
+                    events_db=str(database_path),
+                    pihole_db=str(Path(tmpdir) / "pihole.db"),
+                ),
+            ):
+                check = check_events_database()
+
+        self.assertEqual(check.status, HealthStatus.DEGRADED.value)
+        self.assertGreater(check.details["pending_migration_count"], 0)
+
+    def test_events_database_future_schema_is_unhealthy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "events.db"
+
+            with sqlite3.connect(database_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE schema_migrations (
+                        version INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        applied_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO schema_migrations (version, name, applied_at)
+                    VALUES (999, 'future', 'now')
+                    """
+                )
+
+            with patch(
+                "pihole_ai.health.settings",
+                FakeSettings(
+                    events_db=str(database_path),
+                    pihole_db=str(Path(tmpdir) / "pihole.db"),
+                ),
+            ):
+                check = check_events_database()
+
+        self.assertEqual(check.status, HealthStatus.UNHEALTHY.value)
+        self.assertEqual(check.details["error"], "UnsupportedSchemaVersion")
 
     def test_pihole_database_missing_is_unhealthy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

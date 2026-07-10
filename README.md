@@ -6,7 +6,7 @@ PiHole-AI reads Pi-hole query events, stores them in a local SQLite database, cl
 
 ## Current Status
 
-The project is in an active v0.3 hardening phase.
+The project is in an active v0.4 appliance hardening phase.
 
 Working today:
 
@@ -105,12 +105,36 @@ Tables:
 - `domain_rules`
 - `domain_reputation`
 - `threat_intel`
+- `schema_migrations`
 
 The collector stores the last processed Pi-hole query ID in `app_state` as:
 
 ```text
 collector.last_query_id
 ```
+
+PiHole-AI uses ordered SQLite schema migrations. `schema_migrations`
+records the applied versions, and the current baseline schema is version `1`.
+Migrations are transactional and apply only to the PiHole-AI events database;
+the Pi-hole FTL database is read as an input source and is never migrated.
+
+Inspect schema state:
+
+```bash
+pihole-ai db status
+pihole-ai db status --json
+```
+
+Apply pending migrations:
+
+```bash
+pihole-ai db migrate
+pihole-ai db migrate --json
+```
+
+Health checks report the current schema version, latest supported version, and
+pending migration count. A database created by a newer PiHole-AI release is
+reported as incompatible instead of being modified.
 
 ## Analysis Cache
 
@@ -310,6 +334,10 @@ PIHOLE_AI_OLLAMA_URL=http://127.0.0.1:11434
 PIHOLE_AI_OLLAMA_MODEL=llama3.2:1b
 PIHOLE_AI_DASHBOARD_PORT=8080
 PIHOLE_AI_DASHBOARD_POLL_INTERVAL_MS=10000
+PIHOLE_AI_DASHBOARD_OVERVIEW_POLL_INTERVAL_MS=5000
+PIHOLE_AI_DASHBOARD_METRICS_POLL_INTERVAL_MS=15000
+PIHOLE_AI_DASHBOARD_TABLES_POLL_INTERVAL_MS=10000
+PIHOLE_AI_DASHBOARD_SLOW_POLL_INTERVAL_MS=30000
 DEV_ACCESS_LOGS=false
 LOG_PATH=/var/log/pihole-ai/pihole-ai.log
 LOG_LEVEL=INFO

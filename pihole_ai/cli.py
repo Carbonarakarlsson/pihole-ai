@@ -191,6 +191,33 @@ def build_parser() -> argparse.ArgumentParser:
             help="Print planned files and commands without changing systemd.",
         )
 
+    db = subcommands.add_parser(
+        "db",
+        help="Inspect or migrate the PiHole-AI events database.",
+    )
+    db_commands = db.add_subparsers(
+        dest="db_command",
+        required=True,
+    )
+    db_status = db_commands.add_parser(
+        "status",
+        help="Print database schema status.",
+    )
+    db_status.add_argument(
+        "--json",
+        action="store_true",
+        help="Print status as JSON.",
+    )
+    db_migrate = db_commands.add_parser(
+        "migrate",
+        help="Apply pending database migrations.",
+    )
+    db_migrate.add_argument(
+        "--json",
+        action="store_true",
+        help="Print migration result as JSON.",
+    )
+
     for name in ("install", "uninstall", "enable", "disable", "start", "stop", "restart"):
         command = subcommands.add_parser(
             name,
@@ -511,13 +538,14 @@ def main(
         except Exception as exc:
             if args.json:
                 import json
+                from pihole_ai.version import get_version
 
                 print(
                     json.dumps(
                         {
                             "overall_status": "unknown",
                             "checks": [],
-                            "version": "0.4",
+                            "version": get_version(),
                             "error": exc.__class__.__name__,
                         },
                         sort_keys=True,
@@ -534,6 +562,143 @@ def main(
             print_report(report)
 
         return exit_code_for_status(report.overall_status)
+
+    if args.command == "db":
+        import json
+        from dataclasses import asdict
+
+        from core.config import settings
+        from core.migrations import (
+            IncompatibleSchema,
+            MigrationError,
+            UnsupportedSchemaVersion,
+            database_status,
+            migrate_database,
+        )
+
+        if args.db_command == "status":
+            try:
+                status = database_status(settings.events_db)
+
+            except (IncompatibleSchema, UnsupportedSchemaVersion) as exc:
+                if args.json:
+                    print(
+                        json.dumps(
+                            {
+                                "compatible": False,
+                                "database_path": str(settings.events_db),
+                                "error": exc.__class__.__name__,
+                            },
+                            sort_keys=True,
+                        )
+                    )
+                else:
+                    print(f"Database schema is not compatible: {exc}")
+
+                return 2
+
+            except OSError as exc:
+                if args.json:
+                    print(
+                        json.dumps(
+                            {
+                                "database_path": str(settings.events_db),
+                                "error": exc.__class__.__name__,
+                            },
+                            sort_keys=True,
+                        )
+                    )
+                else:
+                    print(f"Database could not be accessed: {exc}")
+
+                return 3
+
+            if args.json:
+                print(json.dumps(asdict(status), sort_keys=True))
+            else:
+                print(f"database_path: {status.database_path}")
+                print(f"current_schema_version: {status.current_schema_version}")
+                print(
+                    "latest_supported_schema_version: "
+                    f"{status.latest_supported_schema_version}"
+                )
+                print(f"pending_migration_count: {status.pending_migration_count}")
+                print(f"database_file_size: {status.database_file_size}")
+                print(f"compatible: {str(status.compatible).lower()}")
+
+            return 0
+
+        if args.db_command == "migrate":
+            try:
+                result = migrate_database(settings.events_db)
+
+            except (IncompatibleSchema, UnsupportedSchemaVersion) as exc:
+                if args.json:
+                    print(
+                        json.dumps(
+                            {
+                                "database_path": str(settings.events_db),
+                                "error": exc.__class__.__name__,
+                            },
+                            sort_keys=True,
+                        )
+                    )
+                else:
+                    print(f"Database schema is not compatible: {exc}")
+
+                return 2
+
+            except OSError as exc:
+                if args.json:
+                    print(
+                        json.dumps(
+                            {
+                                "database_path": str(settings.events_db),
+                                "error": exc.__class__.__name__,
+                            },
+                            sort_keys=True,
+                        )
+                    )
+                else:
+                    print(f"Database could not be accessed: {exc}")
+
+                return 3
+
+            except MigrationError as exc:
+                if args.json:
+                    print(
+                        json.dumps(
+                            {
+                                "database_path": str(settings.events_db),
+                                "error": exc.__class__.__name__,
+                            },
+                            sort_keys=True,
+                        )
+                    )
+                else:
+                    print(f"Database migration failed: {exc}")
+
+                return 1
+
+            if args.json:
+                print(json.dumps(asdict(result), sort_keys=True))
+            elif result.changed:
+                applied = ", ".join(
+                    f"{migration.version}:{migration.name}"
+                    for migration in result.applied_migrations
+                )
+                print(
+                    "Applied database migrations: "
+                    f"{applied} "
+                    f"({result.version_before} -> {result.version_after})."
+                )
+            else:
+                print(
+                    "Database schema is current "
+                    f"(version {result.version_after})."
+                )
+
+            return 0
 
     if args.command == "explain":
         from pihole_ai.explain import print_explanation

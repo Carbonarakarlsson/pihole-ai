@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 import time
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
@@ -15,11 +17,12 @@ from urllib.parse import urlsplit, urlunsplit
 
 from core.config import settings
 from core.logger import get_logger
+from core.migrations import UnsupportedSchemaVersion, database_status
+from pihole_ai.version import get_version
 
 
 logger = get_logger(__name__)
 
-VERSION = "0.4"
 DISK_DEGRADED_BYTES = 1 * 1024 * 1024 * 1024
 DISK_UNHEALTHY_BYTES = 250 * 1024 * 1024
 
@@ -75,7 +78,7 @@ def run_health_checks() -> HealthReport:
     return HealthReport(
         overall_status=overall_status(checks),
         checks=checks,
-        version=VERSION,
+        version=get_version(),
         checked_at=checked_at,
     )
 
@@ -186,20 +189,35 @@ def check_configuration() -> HealthCheck:
 
 def check_events_database() -> HealthCheck:
     started_at = time.perf_counter()
+    path = Path(settings.events_db)
 
-    try:
-        from core import db
-
-        with db.get_connection() as conn:
-            conn.execute("SELECT 1").fetchone()
-            schema_version = conn.execute("PRAGMA user_version").fetchone()[0]
-
-    except Exception as exc:
-        logger.warning("Events database health check failed: %s", exc)
+    if not path.exists():
         return _check(
             name="events_database",
             status=HealthStatus.UNHEALTHY,
-            summary="Events database is unavailable.",
+            summary="Events database is missing.",
+            details={"path": str(path)},
+            started_at=started_at,
+        )
+
+    try:
+        uri = f"file:{path}?mode=rw"
+        with closing(sqlite3.connect(uri, timeout=30, uri=True)) as conn:
+            conn.execute("SELECT 1").fetchone()
+
+        db_status = database_status(path)
+
+    except Exception as exc:
+        logger.warning("Events database health check failed: %s", exc)
+        summary = "Events database is unavailable."
+
+        if isinstance(exc, UnsupportedSchemaVersion):
+            summary = "Events database schema is newer than supported."
+
+        return _check(
+            name="events_database",
+            status=HealthStatus.UNHEALTHY,
+            summary=summary,
             details={
                 "path": str(settings.events_db),
                 "error": _safe_error(exc),
@@ -207,13 +225,22 @@ def check_events_database() -> HealthCheck:
             started_at=started_at,
         )
 
+    if db_status.pending_migration_count > 0:
+        status = HealthStatus.DEGRADED
+        summary = "Events database has pending migrations."
+    else:
+        status = HealthStatus.HEALTHY
+        summary = "Events database schema is current."
+
     return _check(
         name="events_database",
-        status=HealthStatus.HEALTHY,
-        summary="Events database opened.",
+        status=status,
+        summary=summary,
         details={
-            "path": str(settings.events_db),
-            "schema_version": schema_version,
+            "path": db_status.database_path,
+            "current_schema_version": db_status.current_schema_version,
+            "latest_supported_schema_version": db_status.latest_supported_schema_version,
+            "pending_migration_count": db_status.pending_migration_count,
         },
         started_at=started_at,
     )
