@@ -87,6 +87,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print service status commands without running them.",
     )
+    health = subcommands.add_parser(
+        "health",
+        help="Run unified PiHole-AI health checks.",
+    )
+    health.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable health JSON.",
+    )
 
     explain = subcommands.add_parser(
         "explain",
@@ -487,6 +496,44 @@ def main(
             dry_run=args.dry_run,
         )
         return 0
+
+    if args.command == "health":
+        from pihole_ai.health import (
+            exit_code_for_status,
+            print_report,
+            report_to_json,
+            run_health_checks,
+        )
+
+        try:
+            report = run_health_checks()
+
+        except Exception as exc:
+            if args.json:
+                import json
+
+                print(
+                    json.dumps(
+                        {
+                            "overall_status": "unknown",
+                            "checks": [],
+                            "version": "0.4",
+                            "error": exc.__class__.__name__,
+                        },
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(f"PiHole-AI health: unknown ({exc.__class__.__name__})")
+
+            return 3
+
+        if args.json:
+            print(report_to_json(report))
+        else:
+            print_report(report)
+
+        return exit_code_for_status(report.overall_status)
 
     if args.command == "explain":
         from pihole_ai.explain import print_explanation

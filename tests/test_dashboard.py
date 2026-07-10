@@ -1,5 +1,7 @@
 import logging
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -65,6 +67,115 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), metrics)
         get_metrics.assert_called_once_with()
+
+    def test_polling_endpoint_returns_dashboard_intervals(self) -> None:
+        with patch(
+            "ui.dashboard.settings",
+            SimpleNamespace(
+                dashboard_overview_poll_interval_ms=5000,
+                dashboard_metrics_poll_interval_ms=15000,
+                dashboard_tables_poll_interval_ms=10000,
+                dashboard_slow_poll_interval_ms=30000,
+            ),
+        ):
+            response = self.client.get("/api/polling")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "overview_ms": 5000,
+                "metrics_ms": 15000,
+                "tables_ms": 10000,
+                "rules_reputation_ms": 30000,
+            },
+        )
+
+    def test_settings_api_returns_current_ai_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / "pihole-ai.env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "AI_ENABLED=false",
+                        "AI_MAX_CALLS_PER_MINUTE=4",
+                        "AI_COOLDOWN_SECONDS=90",
+                        "AI_TIMEOUT_SECONDS=11",
+                        "PIHOLE_AI_DASHBOARD_OVERVIEW_POLL_INTERVAL_MS=7000",
+                        "DEV_ACCESS_LOGS=true",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch("ui.dashboard.SETTINGS_ENV_PATH", env_path):
+                response = self.client.get("/api/settings")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertFalse(payload["ai"]["enabled"])
+        self.assertEqual(payload["ai"]["max_calls_per_minute"], 4)
+        self.assertEqual(payload["ai"]["cooldown_seconds"], 90)
+        self.assertEqual(payload["ai"]["timeout_seconds"], 11)
+        self.assertEqual(payload["dashboard"]["refresh_interval_ms"], 7000)
+        self.assertTrue(payload["dashboard"]["dev_access_logs"])
+
+    def test_settings_api_updates_env_file_and_preserves_unknown_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / "pihole-ai.env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "# keep this comment",
+                        "UNKNOWN_SETTING=still-here",
+                        "AI_ENABLED=false",
+                        "AI_MAX_CALLS_PER_MINUTE=2",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch("ui.dashboard.SETTINGS_ENV_PATH", env_path):
+                response = self.client.post(
+                    "/api/settings",
+                    json={
+                        "ai": {
+                            "enabled": True,
+                            "max_calls_per_minute": 5,
+                            "cooldown_seconds": 45,
+                            "timeout_seconds": 12,
+                        },
+                        "dashboard": {
+                            "refresh_interval_ms": 8000,
+                            "dev_access_logs": True,
+                        },
+                    },
+                )
+
+            content = env_path.read_text(encoding="utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["restart_required"])
+        self.assertIn("# keep this comment", content)
+        self.assertIn("UNKNOWN_SETTING=still-here", content)
+        self.assertIn("AI_ENABLED=true", content)
+        self.assertIn("AI_MAX_CALLS_PER_MINUTE=5", content)
+        self.assertIn("AI_COOLDOWN_SECONDS=45", content)
+        self.assertIn("AI_TIMEOUT_SECONDS=12", content)
+        self.assertIn("PIHOLE_AI_DASHBOARD_OVERVIEW_POLL_INTERVAL_MS=8000", content)
+        self.assertIn("DEV_ACCESS_LOGS=true", content)
+
+    def test_service_action_returns_sudo_required_message_when_not_permitted(self) -> None:
+        with patch("ui.dashboard.os.geteuid", return_value=1000):
+            response = self.client.post("/api/services/restart")
+
+        self.assertEqual(response.status_code, 403)
+        payload = response.get_json()
+        self.assertEqual(payload["error"], "sudo_required")
+        self.assertEqual(payload["command"], "sudo pihole-ai restart")
+        self.assertIn("sudo pihole-ai restart", payload["message"])
 
     def test_events_endpoint_returns_recent_events(self) -> None:
         rows = [
@@ -351,7 +462,7 @@ class DashboardTests(unittest.TestCase):
         )
         remove_rule.assert_called_once_with("example.com")
 
-    def test_health_endpoint_returns_ok_status(self) -> None:
+    def test_status_endpoint_returns_runtime_status(self) -> None:
         status = {
             "database": {
                 "events": 0,
@@ -365,7 +476,7 @@ class DashboardTests(unittest.TestCase):
         }
 
         with patch("ui.dashboard.collect_status", return_value=status) as collect_status:
-            response = self.client.get("/api/health")
+            response = self.client.get("/api/status")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), status)
@@ -373,7 +484,7 @@ class DashboardTests(unittest.TestCase):
             include_ollama=False,
         )
 
-    def test_health_endpoint_can_include_ollama_status(self) -> None:
+    def test_status_endpoint_can_include_ollama_status(self) -> None:
         status = {
             "database": {},
             "collector": {},
@@ -383,7 +494,7 @@ class DashboardTests(unittest.TestCase):
         }
 
         with patch("ui.dashboard.collect_status", return_value=status) as collect_status:
-            response = self.client.get("/api/health?ollama=1")
+            response = self.client.get("/api/status?ollama=1")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), status)
@@ -392,13 +503,62 @@ class DashboardTests(unittest.TestCase):
         )
 
     def test_home_endpoint_serves_dashboard(self) -> None:
-        response = self.client.get("/")
+        with patch(
+            "ui.dashboard.settings",
+            SimpleNamespace(
+                dashboard_overview_poll_interval_ms=5000,
+                dashboard_metrics_poll_interval_ms=15000,
+                dashboard_tables_poll_interval_ms=10000,
+                dashboard_slow_poll_interval_ms=30000,
+            ),
+        ):
+            response = self.client.get("/")
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"PiHole-AI", response.data)
+        for label in (
+            b"Overview",
+            b"Activity",
+            b"Domains",
+            b"Devices",
+            b"Intelligence",
+            b"Rules",
+            b"Settings",
+        ):
+            self.assertIn(label, response.data)
+        self.assertIn(b"Companion appliance", response.data)
+        self.assertIn(b"Network Summary", response.data)
+        self.assertIn(b"Recent High-Risk Domains", response.data)
+        self.assertIn(b"Activity Timeline", response.data)
+        self.assertIn(b"AI Controls", response.data)
+        self.assertIn(b"Classifier Contribution", response.data)
+        self.assertIn(b"Service control", response.data)
+        self.assertIn(b"Start engine", response.data)
+        self.assertIn(b"Stop engine", response.data)
+        self.assertIn(b"Restart all services", response.data)
+        self.assertIn(b"setting-ai-enabled", response.data)
+        self.assertIn(b"setting-ai-max-calls", response.data)
+        self.assertIn(b"setting-ai-cooldown", response.data)
+        self.assertIn(b"setting-ai-timeout", response.data)
+        self.assertIn(b"setting-refresh", response.data)
+        self.assertIn(b"setting-dev-logs", response.data)
         self.assertIn(b"/api/metrics/decisions", response.data)
+        self.assertIn(b"/api/settings", response.data)
+        self.assertIn(b"/api/services/", response.data)
         self.assertIn(b"/api/feedback", response.data)
-        self.assertIn(b"setInterval(load, 10000)", response.data)
+        self.assertIn(b'id="rules"', response.data)
+        self.assertIn(b'id="reputations"', response.data)
+        self.assertIn(b'id="explain"', response.data)
+        self.assertIn(b"Safe", response.data)
+        self.assertIn(b"False positive", response.data)
+        self.assertIn(b"No rules yet", response.data)
+        self.assertIn(b"No reputation data yet", response.data)
+        self.assertIn(b"No threat intel imported yet", response.data)
+        self.assertIn(b"setInterval(loadOverview, 5000)", response.data)
+        self.assertIn(b"setInterval(loadMetrics, 15000)", response.data)
+        self.assertIn(b"loadTables(), loadActivity()", response.data)
+        self.assertIn(b"10000", response.data)
+        self.assertNotIn(b"__POLL_INTERVAL_MS__", response.data)
 
     def test_dashboard_main_disables_werkzeug_access_logs_by_default(self) -> None:
         werkzeug_logger = logging.getLogger("werkzeug")
