@@ -155,6 +155,12 @@ class Settings:
     dashboard_tables_poll_interval_ms: int
     dashboard_slow_poll_interval_ms: int
     dev_access_logs: bool
+    dashboard_auth_enabled: bool
+    dashboard_username: str
+    dashboard_password_hash: str
+    dashboard_secret_key: str
+    dashboard_session_lifetime_minutes: int
+    dashboard_trust_proxy: bool
     cache_ttl: int
     keep_latest_events: int
 
@@ -252,6 +258,12 @@ class Settings:
                 "tables_poll_interval_ms": self.dashboard_tables_poll_interval_ms,
                 "slow_poll_interval_ms": self.dashboard_slow_poll_interval_ms,
                 "dev_access_logs": self.dev_access_logs,
+                "auth_enabled": self.dashboard_auth_enabled,
+                "username": self.dashboard_username,
+                "credentials_configured": bool(self.dashboard_password_hash.strip()),
+                "secret_key_configured": bool(self.dashboard_secret_key.strip()),
+                "session_lifetime_minutes": self.dashboard_session_lifetime_minutes,
+                "trust_proxy": self.dashboard_trust_proxy,
             },
             "logging": {
                 "level": self.log_level,
@@ -281,12 +293,22 @@ def read_env_file(
     Read simple KEY=VALUE pairs from an env file.
     """
 
-    if not path.exists():
+    try:
+        exists = path.exists()
+    except OSError:
+        return {}
+
+    if not exists:
         return {}
 
     values: dict[str, str] = {}
 
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+
+    for raw_line in lines:
         line = raw_line.strip()
 
         if not line or line.startswith("#") or "=" not in line:
@@ -368,6 +390,7 @@ def validate_config(
     _validate_events_db(config, normalized_mode, issues)
     _validate_logs(config, normalized_mode, issues)
     _validate_dashboard(config, issues)
+    _validate_dashboard_auth(config, normalized_mode, issues)
     _validate_ollama(config, issues)
     _validate_numeric(config, issues)
     _validate_path_conflicts(config, issues)
@@ -485,6 +508,9 @@ def _parse_config(
         "ollama_model": raw_value("PIHOLE_AI_OLLAMA_MODEL", default="llama3.2:1b"),
         "log_level": raw_value("PIHOLE_AI_LOG_LEVEL", "LOG_LEVEL", default="INFO").upper(),
         "dashboard_host": raw_value("PIHOLE_AI_DASHBOARD_HOST", default="0.0.0.0"),
+        "dashboard_username": raw_value("PIHOLE_AI_DASHBOARD_USERNAME", default="admin"),
+        "dashboard_password_hash": raw_value("PIHOLE_AI_DASHBOARD_PASSWORD_HASH", default=""),
+        "dashboard_secret_key": raw_value("PIHOLE_AI_DASHBOARD_SECRET_KEY", default=""),
     }
 
     int_fields = {
@@ -508,6 +534,7 @@ def _parse_config(
         "dashboard_metrics_poll_interval_ms": ("PIHOLE_AI_DASHBOARD_METRICS_POLL_INTERVAL_MS", "15000"),
         "dashboard_tables_poll_interval_ms": ("PIHOLE_AI_DASHBOARD_TABLES_POLL_INTERVAL_MS", "10000"),
         "dashboard_slow_poll_interval_ms": ("PIHOLE_AI_DASHBOARD_SLOW_POLL_INTERVAL_MS", "30000"),
+        "dashboard_session_lifetime_minutes": ("PIHOLE_AI_DASHBOARD_SESSION_LIFETIME_MINUTES", "480"),
         "cache_ttl": ("PIHOLE_AI_CACHE_TTL", "86400"),
         "keep_latest_events": ("PIHOLE_AI_KEEP_LATEST_EVENTS", "100000"),
     }
@@ -532,6 +559,16 @@ def _parse_config(
     parsed["dev_access_logs"] = _parse_bool(
         setting="DEV_ACCESS_LOGS",
         value=raw_value("DEV_ACCESS_LOGS", default="false"),
+        issues=issues,
+    )
+    parsed["dashboard_auth_enabled"] = _parse_bool(
+        setting="PIHOLE_AI_DASHBOARD_AUTH_ENABLED",
+        value=raw_value("PIHOLE_AI_DASHBOARD_AUTH_ENABLED", default="true"),
+        issues=issues,
+    )
+    parsed["dashboard_trust_proxy"] = _parse_bool(
+        setting="PIHOLE_AI_DASHBOARD_TRUST_PROXY",
+        value=raw_value("PIHOLE_AI_DASHBOARD_TRUST_PROXY", default="false"),
         issues=issues,
     )
 
@@ -688,7 +725,14 @@ def _validate_events_db(
             )
         )
 
-    if config.events_db.exists() and config.events_db.is_dir():
+    try:
+        events_db_exists = config.events_db.exists()
+        events_db_is_dir = config.events_db.is_dir() if events_db_exists else False
+    except OSError:
+        events_db_exists = False
+        events_db_is_dir = False
+
+    if events_db_exists and events_db_is_dir:
         issues.append(
             _issue(
                 "config.events_db.is_directory",
@@ -752,7 +796,14 @@ def _validate_logs(
 ) -> None:
     parent = config.log_file.parent
 
-    if config.log_file.exists() and config.log_file.is_dir():
+    try:
+        log_file_exists = config.log_file.exists()
+        log_file_is_dir = config.log_file.is_dir() if log_file_exists else False
+    except OSError:
+        log_file_exists = False
+        log_file_is_dir = False
+
+    if log_file_exists and log_file_is_dir:
         issues.append(
             _issue(
                 "config.log_file.is_directory",
@@ -836,6 +887,122 @@ def _validate_dashboard(
         )
 
 
+def _validate_dashboard_auth(
+    config: Settings,
+    mode: ValidationMode,
+    issues: list[ConfigurationIssue],
+) -> None:
+    exposed = config.dashboard_host not in {"127.0.0.1", "::1", "localhost"}
+
+    if not config.dashboard_username.strip():
+        issues.append(
+            _issue(
+                "config.dashboard.username_missing",
+                ValidationSeverity.ERROR,
+                "PIHOLE_AI_DASHBOARD_USERNAME",
+                "Dashboard username must not be empty.",
+                "Set PIHOLE_AI_DASHBOARD_USERNAME, usually to admin.",
+            )
+        )
+
+    if not (1 <= config.dashboard_session_lifetime_minutes <= 1440):
+        issues.append(
+            _issue(
+                "config.dashboard.session_lifetime_invalid",
+                ValidationSeverity.ERROR,
+                "PIHOLE_AI_DASHBOARD_SESSION_LIFETIME_MINUTES",
+                "Dashboard session lifetime must be between 1 and 1440 minutes.",
+                "Set PIHOLE_AI_DASHBOARD_SESSION_LIFETIME_MINUTES to a value from 1 through 1440.",
+            )
+        )
+
+    if not config.dashboard_auth_enabled:
+        if exposed:
+            issues.append(
+                _issue(
+                    "config.dashboard.auth_disabled_exposed",
+                    ValidationSeverity.ERROR,
+                    "PIHOLE_AI_DASHBOARD_AUTH_ENABLED",
+                    "Dashboard authentication cannot be disabled on a non-loopback bind.",
+                    "Enable authentication or bind the dashboard to 127.0.0.1.",
+                )
+            )
+        else:
+            issues.append(
+                _issue(
+                    "config.dashboard.auth_disabled_loopback",
+                    ValidationSeverity.WARNING,
+                    "PIHOLE_AI_DASHBOARD_AUTH_ENABLED",
+                    "Dashboard authentication is disabled for loopback-only development.",
+                    "Keep this only for local development.",
+                )
+            )
+        return
+
+    secret_severity = (
+        ValidationSeverity.WARNING
+        if mode == ValidationMode.INSTALL
+        else ValidationSeverity.ERROR
+    )
+    if not _configured_secret(config.dashboard_secret_key):
+        issues.append(
+            _issue(
+                "config.dashboard.secret_key_missing",
+                secret_severity,
+                "PIHOLE_AI_DASHBOARD_SECRET_KEY",
+                "Dashboard secret key is missing.",
+                "Run: pihole-ai dashboard auth set-password",
+            )
+        )
+
+    password_severity = (
+        ValidationSeverity.WARNING
+        if mode == ValidationMode.INSTALL
+        else ValidationSeverity.ERROR
+    )
+    if not _configured_password_hash(config.dashboard_password_hash):
+        issues.append(
+            _issue(
+                "config.dashboard.password_hash_missing",
+                password_severity,
+                "PIHOLE_AI_DASHBOARD_PASSWORD_HASH",
+                "Dashboard administrator password is not configured.",
+                "Run: pihole-ai dashboard auth set-password",
+            )
+        )
+
+    if config.dashboard_trust_proxy and config.dashboard_host in {"0.0.0.0", "::"}:
+        issues.append(
+            _issue(
+                "config.dashboard.proxy_trust_unsafe",
+                ValidationSeverity.WARNING,
+                "PIHOLE_AI_DASHBOARD_TRUST_PROXY",
+                "Proxy trust is enabled for an exposed dashboard bind.",
+                "Only enable proxy trust behind a trusted local reverse proxy.",
+            )
+        )
+
+
+def _configured_password_hash(value: str) -> bool:
+    normalized = value.strip().lower()
+    return bool(normalized) and normalized not in {
+        "changeme",
+        "change-me",
+        "placeholder",
+        "unset",
+    }
+
+
+def _configured_secret(value: str) -> bool:
+    normalized = value.strip().lower()
+    return len(value.strip()) >= 32 and normalized not in {
+        "changeme",
+        "change-me",
+        "placeholder",
+        "unset",
+    }
+
+
 def _validate_ollama(
     config: Settings,
     issues: list[ConfigurationIssue],
@@ -898,6 +1065,7 @@ def _validate_numeric(
         "PIHOLE_AI_DASHBOARD_METRICS_POLL_INTERVAL_MS": config.dashboard_metrics_poll_interval_ms,
         "PIHOLE_AI_DASHBOARD_TABLES_POLL_INTERVAL_MS": config.dashboard_tables_poll_interval_ms,
         "PIHOLE_AI_DASHBOARD_SLOW_POLL_INTERVAL_MS": config.dashboard_slow_poll_interval_ms,
+        "PIHOLE_AI_DASHBOARD_SESSION_LIFETIME_MINUTES": config.dashboard_session_lifetime_minutes,
         "PIHOLE_AI_KEEP_LATEST_EVENTS": config.keep_latest_events,
     }
 

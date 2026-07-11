@@ -33,6 +33,8 @@ class ConfigTests(unittest.TestCase):
             "EVENTS_DB_PATH": str(data_dir / "events.db"),
             "LOG_PATH": str(log_dir / "pihole-ai.log"),
             "PIHOLE_AI_DASHBOARD_HOST": "127.0.0.1",
+            "PIHOLE_AI_DASHBOARD_PASSWORD_HASH": "scrypt:32768:8:1$salt$hash",
+            "PIHOLE_AI_DASHBOARD_SECRET_KEY": "x" * 48,
         }
 
     def test_load_env_file_sets_log_level_without_overriding_existing_env(self) -> None:
@@ -253,7 +255,7 @@ class ConfigTests(unittest.TestCase):
             "config.ollama.credentials_in_url",
             {issue.code for issue in result.issues},
         )
-        self.assertNotIn("secret", encoded)
+        self.assertNotIn("user:secret", encoded)
 
     def test_empty_ollama_model_when_ai_enabled_is_error(self) -> None:
         result = validate_config(
@@ -276,6 +278,8 @@ class ConfigTests(unittest.TestCase):
             Settings(
                 env={
                     "PIHOLE_AI_DASHBOARD_HOST": "0.0.0.0",
+                    "PIHOLE_AI_DASHBOARD_PASSWORD_HASH": "scrypt:32768:8:1$salt$hash",
+                    "PIHOLE_AI_DASHBOARD_SECRET_KEY": "x" * 48,
                 },
             ),
             mode=ValidationMode.SYNTAX,
@@ -285,6 +289,81 @@ class ConfigTests(unittest.TestCase):
             "config.dashboard.non_loopback_bind",
             {issue.code for issue in result.issues},
         )
+
+    def test_dashboard_auth_defaults_require_credentials(self) -> None:
+        result = validate_config(
+            Settings(
+                env={
+                    "PIHOLE_AI_DASHBOARD_HOST": "127.0.0.1",
+                },
+            ),
+            mode=ValidationMode.RUNTIME,
+        )
+        codes = {issue.code for issue in result.issues}
+
+        self.assertIn("config.dashboard.password_hash_missing", codes)
+        self.assertIn("config.dashboard.secret_key_missing", codes)
+
+    def test_auth_disabled_exposed_is_error(self) -> None:
+        result = validate_config(
+            Settings(
+                env={
+                    "PIHOLE_AI_DASHBOARD_HOST": "0.0.0.0",
+                    "PIHOLE_AI_DASHBOARD_AUTH_ENABLED": "false",
+                },
+            ),
+            mode=ValidationMode.SYNTAX,
+        )
+
+        self.assertIn(
+            "config.dashboard.auth_disabled_exposed",
+            {issue.code for issue in result.issues},
+        )
+
+    def test_auth_disabled_loopback_is_warning(self) -> None:
+        result = validate_config(
+            Settings(
+                env={
+                    "PIHOLE_AI_DASHBOARD_HOST": "127.0.0.1",
+                    "PIHOLE_AI_DASHBOARD_AUTH_ENABLED": "false",
+                },
+            ),
+            mode=ValidationMode.SYNTAX,
+        )
+
+        self.assertIn(
+            "config.dashboard.auth_disabled_loopback",
+            {issue.code for issue in result.issues},
+        )
+        self.assertEqual(result.error_count, 0)
+
+    def test_invalid_session_lifetime_is_error(self) -> None:
+        result = validate_config(
+            Settings(
+                env={
+                    "PIHOLE_AI_DASHBOARD_SESSION_LIFETIME_MINUTES": "0",
+                },
+            ),
+            mode=ValidationMode.SYNTAX,
+        )
+
+        self.assertIn(
+            "config.dashboard.session_lifetime_invalid",
+            {issue.code for issue in result.issues},
+        )
+
+    def test_safe_config_omits_dashboard_secrets(self) -> None:
+        config = Settings(
+            env={
+                "PIHOLE_AI_DASHBOARD_PASSWORD_HASH": "scrypt:32768:8:1$salt$hash",
+                "PIHOLE_AI_DASHBOARD_SECRET_KEY": "super-secret-value-that-is-long-enough",
+            }
+        )
+        encoded = json.dumps(config.to_safe_dict())
+
+        self.assertNotIn("super-secret", encoded)
+        self.assertNotIn("scrypt:", encoded)
+        self.assertTrue(config.to_safe_dict()["dashboard"]["credentials_configured"])
 
     def test_all_validation_issues_are_collected(self) -> None:
         result = validate_config(

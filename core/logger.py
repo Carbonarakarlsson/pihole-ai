@@ -72,7 +72,14 @@ def configure_logging() -> None:
     )
 
     root_logger = logging.getLogger()
-    root_logger.setLevel(settings.log_level)
+    try:
+        log_level = settings.log_level
+        log_file = Path(settings.log_file)
+    except OSError:
+        log_level = "INFO"
+        log_file = None
+
+    root_logger.setLevel(log_level)
 
     # Remove existing handlers
     root_logger.handlers.clear()
@@ -87,7 +94,8 @@ def configure_logging() -> None:
     root_logger.addHandler(console_handler)
 
     try:
-        log_file = Path(settings.log_file)
+        if log_file is None:
+            raise OSError("log path unavailable")
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
         file_handler = RotatingFileHandler(
@@ -103,7 +111,7 @@ def configure_logging() -> None:
     except OSError:
         root_logger.debug(
             "File logging disabled; cannot write %s",
-            settings.log_file,
+            log_file or "configured log path",
         )
 
     for noisy_logger in ("httpx", "httpcore", "ollama"):

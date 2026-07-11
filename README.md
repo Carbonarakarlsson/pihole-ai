@@ -688,12 +688,23 @@ pihole-ai install status
 pihole-ai install status --json
 ```
 
-Install service files and the global `/usr/local/bin/pihole-ai` launcher:
+Install the wheel into a stable appliance virtual environment first. The
+installer validates that its selected interpreter can import `pihole_ai` before
+writing unit files:
 
 ```bash
-sudo pihole-ai install
-sudo pihole-ai install --no-start
-sudo pihole-ai install --no-enable
+sudo python3 -m venv /opt/pihole-ai/venv
+sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-0.4.0rc1-py3-none-any.whl
+sudo /opt/pihole-ai/venv/bin/pihole-ai install --dry-run
+```
+
+Install service files and the global `/usr/local/bin/pihole-ai` launcher from
+that validated environment:
+
+```bash
+sudo /opt/pihole-ai/venv/bin/pihole-ai install
+sudo /opt/pihole-ai/venv/bin/pihole-ai install --no-start
+sudo /opt/pihole-ai/venv/bin/pihole-ai install --no-enable
 ```
 
 Install creates `/etc/pihole-ai`, `/var/lib/pihole-ai`, and `/var/log/pihole-ai`.
@@ -707,6 +718,9 @@ If a blocking issue is found, no files are written, no database migration runs,
 and no mutating `systemctl` command is invoked. Install, upgrade, uninstall,
 enable, disable, start, stop, and restart also take an OS-backed lifecycle lock
 at `/run/pihole-ai/lifecycle.lock` so concurrent appliance changes fail cleanly.
+If the selected interpreter cannot import PiHole-AI, preflight reports
+`install.executable.package_not_importable`; install the built wheel into
+`/opt/pihole-ai/venv` and rerun install from that environment.
 
 Production appliance units run as the dedicated `pihole-ai:pihole-ai` identity.
 During privileged install, the installer creates that system group and user when
@@ -731,7 +745,11 @@ sudo pihole-ai upgrade --json
 systemd unit files, runs explicit PiHole-AI database migrations, reloads
 systemd, and restores previously enabled/running service state where practical.
 
-The launcher points to the current project virtualenv executable, for example `/home/carbonarakarlsson/pihole-ai/.venv/bin/pihole-ai`.
+The launcher and systemd units use the same validated appliance environment,
+for example `/opt/pihole-ai/venv/bin/pihole-ai` and
+`/opt/pihole-ai/venv/bin/python`. Source checkouts and developer `.venv`
+paths are rejected for appliance mode unless explicit development mode is
+enabled with `PIHOLE_AI_DEVELOPMENT_MODE=true`.
 
 Enable automatic startup at boot:
 
@@ -776,20 +794,21 @@ pihole-ai-dashboard.service
 Generated unit commands:
 
 ```text
-python -m pihole_ai.cli collect
-python -m pihole_ai.cli run-engine
-python -m pihole_ai.cli dashboard --host 0.0.0.0 --port 8080
+/opt/pihole-ai/venv/bin/python -m pihole_ai.cli collect
+/opt/pihole-ai/venv/bin/python -m pihole_ai.cli run-engine
+/opt/pihole-ai/venv/bin/python -m pihole_ai.cli dashboard --host 0.0.0.0 --port 8080
 ```
 
 Example install flow on a Pi-hole host:
 
 ```bash
-sudo mkdir -p /opt/pihole-ai
-sudo cp -R . /opt/pihole-ai
-cd /opt/pihole-ai
-python -m venv .venv
-.venv/bin/python -m pip install -e .
-cp .env.example .env
+python -m build --no-isolation
+sudo python3 -m venv /opt/pihole-ai/venv
+sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-0.4.0rc1-py3-none-any.whl
+sudo /opt/pihole-ai/venv/bin/pihole-ai install --no-start
+sudo /usr/local/bin/pihole-ai dashboard auth set-password
+sudo /usr/local/bin/pihole-ai enable
+sudo /usr/local/bin/pihole-ai start
 ```
 
 ## Tests

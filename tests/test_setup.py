@@ -332,7 +332,17 @@ class SetupConfigWriterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "pihole-ai.env"
             path.write_text(
-                "# keep\nUNKNOWN=yes\nAI_ENABLED=true\n",
+                "\n".join(
+                    [
+                        "# keep",
+                        "UNKNOWN=yes",
+                        "AI_ENABLED=true",
+                        "PIHOLE_AI_DASHBOARD_AUTH_ENABLED=true",
+                        "PIHOLE_AI_DASHBOARD_PASSWORD_HASH=scrypt:32768:8:1$salt$hash",
+                        f"PIHOLE_AI_DASHBOARD_SECRET_KEY={'x' * 48}",
+                    ]
+                )
+                + "\n",
                 encoding="utf-8",
             )
             os.chmod(path, 0o640)

@@ -60,6 +60,7 @@ def run_doctor() -> DoctorReport:
 
     diagnostics = [
         _configuration_diagnostic(),
+        _dashboard_auth_diagnostic(),
         _database_diagnostic(),
         _health_diagnostic("events_database", check_events_database),
         _health_diagnostic("pihole_ftl_database", check_pihole_ftl_database),
@@ -211,6 +212,62 @@ def _database_diagnostic() -> Diagnostic:
             if status.pending_migration_count
             else None
         ),
+    )
+
+
+def _dashboard_auth_diagnostic() -> Diagnostic:
+    config, result = load_config_with_result(
+        mode=ValidationMode.RUNTIME,
+    )
+    if config is None:
+        return Diagnostic(
+            name="dashboard_auth",
+            status=HealthStatus.UNHEALTHY.value,
+            summary="Dashboard authentication configuration could not be parsed.",
+            details={"configured": False},
+            remediation="Run: pihole-ai config check",
+        )
+
+    dashboard_issues = [
+        issue
+        for issue in result.issues
+        if issue.code.startswith("config.dashboard.")
+    ]
+    status = HealthStatus.HEALTHY.value
+    remediation = None
+    if any(issue.severity == ValidationSeverity.ERROR.value for issue in dashboard_issues):
+        status = HealthStatus.UNHEALTHY.value
+        remediation = "Run: pihole-ai dashboard auth set-password"
+    elif dashboard_issues:
+        status = HealthStatus.DEGRADED.value
+        remediation = "Review: pihole-ai config check"
+
+    return Diagnostic(
+        name="dashboard_auth",
+        status=status,
+        summary=(
+            "Dashboard authentication needs attention."
+            if status != HealthStatus.HEALTHY.value
+            else "Dashboard authentication is configured."
+        ),
+        details={
+            "enabled": config.dashboard_auth_enabled,
+            "username": config.dashboard_username,
+            "credentials_configured": bool(config.dashboard_password_hash.strip()),
+            "secret_key_configured": bool(config.dashboard_secret_key.strip()),
+            "dashboard_bind_exposed": config.dashboard_host
+            not in {"127.0.0.1", "::1", "localhost"},
+            "trust_proxy": config.dashboard_trust_proxy,
+            "issues": [
+                {
+                    "code": issue.code,
+                    "severity": issue.severity,
+                    "summary": issue.summary,
+                }
+                for issue in dashboard_issues
+            ],
+        },
+        remediation=remediation,
     )
 
 

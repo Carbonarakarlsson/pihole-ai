@@ -13,9 +13,12 @@ from pihole_ai.service import (
     SERVICE_NAMES,
     SERVICE_DEFINITIONS,
     ServiceError,
+    SimpleCompletedProcess,
     _atomic_write_managed,
     build_install_plan,
+    discover_executable_target,
     generate_unit_file,
+    generated_units,
     installation_status,
     launcher_content,
     launcher_target,
@@ -33,6 +36,16 @@ from pihole_ai.service import (
 
 
 class ServiceTests(unittest.TestCase):
+    def _valid_python_check(self, interpreter, args, capture=False):
+        if capture:
+            return SimpleCompletedProcess(returncode=0, stdout="pihole-ai 0.4.0rc1\n")
+        return True
+
+    def _invalid_python_check(self, interpreter, args, capture=False):
+        if capture:
+            return SimpleCompletedProcess(returncode=1, stdout="")
+        return False
+
     def test_generate_unit_file_uses_python_and_project_directory(self) -> None:
         unit = generate_unit_file(
             service=SERVICE_DEFINITIONS[0],
@@ -94,6 +107,23 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse(plan.enable_services)
         self.assertIn("pihole-ai-collector.service", plan.unit_paths)
         self.assertIn(layout.config_file, plan.files_to_write)
+        self.assertEqual(plan.executable_path, Path("/usr/bin/pihole-ai"))
+
+    def test_install_plan_defaults_to_runtime_working_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            layout = InstallationLayout(
+                data_dir=Path(tmpdir) / "var" / "lib" / "pihole-ai",
+            )
+            plan = build_install_plan(
+                python_path="/opt/pihole-ai/venv/bin/python",
+                layout=layout,
+            )
+
+        self.assertEqual(plan.project_dir, Path(tmpdir) / "var" / "lib" / "pihole-ai")
+        self.assertEqual(
+            plan.executable_path,
+            Path("/opt/pihole-ai/venv/bin/pihole-ai"),
+        )
 
     def test_install_plan_defaults_to_dedicated_appliance_identity(self) -> None:
         plan = build_install_plan(
@@ -103,6 +133,162 @@ class ServiceTests(unittest.TestCase):
 
         self.assertEqual(plan.service_user, "pihole-ai")
         self.assertEqual(plan.service_group, "pihole-ai")
+
+    def test_system_python_without_package_is_rejected(self) -> None:
+        with patch("pihole_ai.service._run_python_check", side_effect=self._invalid_python_check):
+            target = discover_executable_target(python_path="/usr/bin/python3")
+
+        self.assertFalse(target.package_importable)
+        self.assertEqual(target.source, "explicit")
+
+    def test_console_script_with_invalid_interpreter_is_rejected(self) -> None:
+        def exists(self):
+            return str(self) == "/missing/python"
+
+        with patch("pihole_ai.service.Path.exists", exists), \
+             patch("pihole_ai.service.shutil.which", return_value="/opt/pihole-ai/venv/bin/pihole-ai"), \
+             patch("pihole_ai.service.sys.executable", "/missing/python"), \
+             patch("pihole_ai.service._run_python_check", side_effect=self._invalid_python_check):
+            target = discover_executable_target()
+
+        self.assertFalse(target.package_importable)
+        self.assertIn(target.source, {"current_console_script", "current_interpreter"})
+
+    def test_preflight_blocks_non_importable_python_before_mutation(self) -> None:
+        with patch("pihole_ai.service._run_python_check", side_effect=self._invalid_python_check), \
+             patch("pihole_ai.service.shutil.which", return_value="/usr/bin/systemctl"), \
+             patch("pihole_ai.service._check_service_identity"), \
+             patch("pihole_ai.service._check_config_for_install"), \
+             patch("pihole_ai.service._check_pihole_db_access"), \
+             patch("pihole_ai.service._check_database_schema"), \
+             patch("pihole_ai.service._check_unit_conflicts"), \
+             patch("pihole_ai.service._check_install_disk_space"):
+            plan = build_install_plan(python_path="/usr/bin/python3")
+            result = run_preflight(plan, dry_run=True)
+
+        self.assertTrue(any(
+            issue.code == "install.executable.package_not_importable"
+            for issue in result.issues
+        ))
+
+    def test_dry_run_reports_executable_block_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "pihole_ai.service._run_python_check",
+            side_effect=self._invalid_python_check,
+        ), patch("pihole_ai.service.subprocess.run") as run, patch(
+            "sys.stdout",
+            io.StringIO(),
+        ) as stdout:
+            service_install(
+                dry_run=True,
+                systemd_dir=Path(tmpdir) / "systemd",
+                python_path="/usr/bin/python3",
+                wrapper_path=Path(tmpdir) / "bin" / "pihole-ai",
+                config_dir=Path(tmpdir) / "etc" / "pihole-ai",
+                data_dir=Path(tmpdir) / "var" / "lib" / "pihole-ai",
+                log_dir=Path(tmpdir) / "var" / "log" / "pihole-ai",
+            )
+
+        self.assertIn("install.executable.package_not_importable", stdout.getvalue())
+        run.assert_not_called()
+
+    def test_system_python_with_importable_package_is_accepted(self) -> None:
+        with patch("pihole_ai.service._run_python_check", side_effect=self._valid_python_check):
+            target = discover_executable_target(python_path="/usr/bin/python3")
+
+        self.assertTrue(target.package_importable)
+        self.assertTrue(target.stable)
+        self.assertEqual(target.interpreter_path, Path("/usr/bin/python3"))
+
+    def test_dedicated_appliance_venv_is_accepted_when_importable(self) -> None:
+        def exists(self):
+            return str(self) == "/opt/pihole-ai/venv/bin/python"
+
+        with patch("pihole_ai.service.Path.exists", exists), \
+             patch("pihole_ai.service._run_python_check", side_effect=self._valid_python_check), \
+             patch("pihole_ai.service.shutil.which", return_value=None), \
+             patch("pihole_ai.service.sys.executable", "/missing/python"):
+            target = discover_executable_target()
+
+        self.assertEqual(target.source, "dedicated_appliance_venv")
+        self.assertEqual(target.interpreter_path, Path("/opt/pihole-ai/venv/bin/python"))
+        self.assertTrue(target.package_importable)
+
+    def test_project_venv_rejected_for_appliance_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch("pihole_ai.service._run_python_check", side_effect=self._valid_python_check):
+            python = Path(tmpdir) / ".venv" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.touch()
+            target = discover_executable_target(
+                python_path=python,
+                project_dir=tmpdir,
+            )
+
+        self.assertTrue(target.package_importable)
+        self.assertFalse(target.stable)
+        self.assertTrue(target.references_developer_venv)
+
+    def test_project_venv_allowed_only_in_development_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch("pihole_ai.service._run_python_check", side_effect=self._valid_python_check):
+            python = Path(tmpdir) / ".venv" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.touch()
+            target = discover_executable_target(
+                python_path=python,
+                project_dir=tmpdir,
+                development_mode=True,
+            )
+
+        self.assertTrue(target.package_importable)
+        self.assertTrue(target.stable)
+
+    def test_generated_units_and_launcher_use_validated_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch("pihole_ai.service._run_python_check", side_effect=self._valid_python_check):
+            layout = InstallationLayout(
+                systemd_dir=Path(tmpdir) / "systemd",
+                wrapper_path=Path(tmpdir) / "bin" / "pihole-ai",
+            )
+            plan = build_install_plan(
+                python_path="/opt/pihole-ai/venv/bin/python",
+                layout=layout,
+            )
+            units = generated_units(
+                python_path=str(plan.python_path),
+                project_dir=plan.project_dir,
+                layout=layout,
+            )
+            launcher = launcher_content(
+                plan.project_dir,
+                executable_path=plan.executable_path,
+            )
+
+        for unit in units.values():
+            self.assertIn(
+                "ExecStart=/opt/pihole-ai/venv/bin/python -m pihole_ai.cli",
+                unit,
+            )
+        self.assertIn("# Target: /opt/pihole-ai/venv/bin/pihole-ai", launcher)
+
+    def test_install_status_reports_executable_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "pihole_ai.service._run_python_check",
+            side_effect=self._invalid_python_check,
+        ), patch("pihole_ai.service._run_capture", return_value="missing"):
+            layout = InstallationLayout(
+                systemd_dir=Path(tmpdir) / "systemd",
+                data_dir=Path(tmpdir) / "var" / "lib" / "pihole-ai",
+                events_db=Path(tmpdir) / "var" / "lib" / "pihole-ai" / "events.db",
+            )
+            status = installation_status(
+                layout=layout,
+                python_path="/usr/bin/python3",
+            )
+
+        self.assertIn("executable", status.to_dict())
+        self.assertFalse(status.executable["package_importable"])
 
     def test_preflight_collects_multiple_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch(
@@ -200,7 +386,9 @@ class ServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir, patch(
             "pihole_ai.service.run_preflight",
             return_value=blocking_result,
-        ), patch("pihole_ai.service.subprocess.run") as run, patch(
+        ), patch("pihole_ai.service._run_python_check", side_effect=self._valid_python_check), patch(
+            "pihole_ai.service.subprocess.run"
+        ) as run, patch(
             "sys.stdout",
             io.StringIO(),
         ):
@@ -410,6 +598,56 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("Would write", stdout.getvalue())
         self.assertIn("Would run: systemctl daemon-reload", stdout.getvalue())
 
+    def test_dry_run_runtime_env_permission_error_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_file = Path(tmpdir) / "etc" / "pihole-ai" / "pihole-ai.env"
+            original_exists = Path.exists
+
+            def exists(path):
+                if path == env_file:
+                    raise PermissionError("permission denied")
+                return original_exists(path)
+
+            with patch("pathlib.Path.exists", exists), patch(
+                "sys.stdout",
+                io.StringIO(),
+            ) as stdout:
+                service_module._ensure_runtime_env(
+                    project_dir=Path(tmpdir),
+                    env_file=env_file,
+                    runtime_db_path=Path(tmpdir) / "events.db",
+                    runtime_log_path=Path(tmpdir) / "pihole-ai.log",
+                    dry_run=True,
+                )
+
+            self.assertFalse(env_file.exists())
+            self.assertIn("Cannot inspect", stdout.getvalue())
+            self.assertIn("Would leave", stdout.getvalue())
+
+    def test_dry_run_database_migration_permission_error_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_dir = Path(tmpdir) / "project"
+            old_db = project_dir / "data" / "events.db"
+            original_exists = Path.exists
+
+            def exists(path):
+                if path == old_db:
+                    raise PermissionError("permission denied")
+                return original_exists(path)
+
+            with patch("pathlib.Path.exists", exists), patch(
+                "sys.stdout",
+                io.StringIO(),
+            ) as stdout:
+                service_module._migrate_project_database(
+                    project_dir=project_dir,
+                    runtime_db_path=Path(tmpdir) / "runtime" / "events.db",
+                    dry_run=True,
+                )
+
+            self.assertIn("Cannot inspect", stdout.getvalue())
+            self.assertIn("Would skip project database migration check", stdout.getvalue())
+
     def test_service_enable_and_disable_dispatch_systemctl(self) -> None:
         with patch("pihole_ai.service.subprocess.run") as run, patch(
             "pihole_ai.service.os.geteuid",
@@ -548,6 +786,24 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("# Target: /app/.venv/bin/pihole-ai", content)
         self.assertIn("exec /app/.venv/bin/pihole-ai \"$@\"", content)
 
+    def test_launcher_content_can_point_to_installed_cli_executable(self) -> None:
+        self.assertEqual(
+            launcher_target(
+                "/var/lib/pihole-ai",
+                executable_path="/opt/pihole-ai/venv/bin/pihole-ai",
+            ),
+            Path("/opt/pihole-ai/venv/bin/pihole-ai"),
+        )
+        content = launcher_content(
+            "/var/lib/pihole-ai",
+            executable_path="/opt/pihole-ai/venv/bin/pihole-ai",
+        )
+
+        self.assertIn("# Managed by PiHole-AI", content)
+        self.assertIn("# Project: /var/lib/pihole-ai", content)
+        self.assertIn("# Target: /opt/pihole-ai/venv/bin/pihole-ai", content)
+        self.assertIn("exec /opt/pihole-ai/venv/bin/pihole-ai \"$@\"", content)
+
     def test_service_install_creates_launcher_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch(
             "pihole_ai.service.subprocess.run",
@@ -573,9 +829,31 @@ class ServiceTests(unittest.TestCase):
 
             self.assertTrue(wrapper.exists())
             self.assertIn(
-                "exec /app/.venv/bin/pihole-ai",
+                "exec /venv/bin/pihole-ai",
                 wrapper.read_text(encoding="utf-8"),
             )
+
+    def test_service_install_dry_run_uses_runtime_directory_for_wheel_install(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "pihole_ai.service.subprocess.run",
+        ), patch("sys.stdout", io.StringIO()) as stdout:
+            service_install(
+                dry_run=True,
+                systemd_dir=Path(tmpdir) / "systemd",
+                python_path="/opt/pihole-ai/venv/bin/python",
+                wrapper_path=Path(tmpdir) / "bin" / "pihole-ai",
+                config_dir=Path(tmpdir) / "etc" / "pihole-ai",
+                data_dir=Path(tmpdir) / "var" / "lib" / "pihole-ai",
+                log_dir=Path(tmpdir) / "var" / "log" / "pihole-ai",
+            )
+
+        output = stdout.getvalue()
+        self.assertIn(
+            f"WorkingDirectory={Path(tmpdir) / 'var' / 'lib' / 'pihole-ai'}",
+            output,
+        )
+        self.assertIn("# Target: /opt/pihole-ai/venv/bin/pihole-ai", output)
+        self.assertNotIn(f"WorkingDirectory={Path.cwd()}", output)
 
     def test_service_uninstall_keeps_non_matching_launcher(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch(

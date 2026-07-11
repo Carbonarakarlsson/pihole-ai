@@ -114,6 +114,7 @@ class InstallPlan:
     project_dir: Path
     python_path: Path
     executable_path: Path
+    executable_target: "ExecutableTarget"
     service_user: str
     service_group: str
     unit_paths: dict[str, Path]
@@ -134,6 +135,7 @@ class InstallPlan:
         payload["project_dir"] = str(self.project_dir)
         payload["python_path"] = str(self.python_path)
         payload["executable_path"] = str(self.executable_path)
+        payload["executable_target"] = self.executable_target.to_dict()
         payload["unit_paths"] = {
             key: str(value)
             for key, value in self.unit_paths.items()
@@ -211,9 +213,38 @@ class InstallationStatus:
     unit_files: dict[str, dict[str, Any]]
     database: dict[str, Any]
     legacy: dict[str, Any]
+    executable: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ExecutableTarget:
+    executable_path: Path
+    invocation: list[str]
+    interpreter_path: Path
+    package_importable: bool
+    version: str | None
+    source: str
+    stable: bool
+    reason: str
+    references_checkout: bool = False
+    references_developer_venv: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "executable_path": str(self.executable_path),
+            "invocation": self.invocation,
+            "interpreter_path": str(self.interpreter_path),
+            "package_importable": self.package_importable,
+            "version": self.version,
+            "source": self.source,
+            "stable": self.stable,
+            "reason": self.reason,
+            "references_checkout": self.references_checkout,
+            "references_developer_venv": self.references_developer_venv,
+        }
 
 
 SERVICE_DEFINITIONS = [
@@ -264,8 +295,8 @@ def generate_unit_file(
     """
 
     runtime_layout = layout or InstallationLayout()
-    python = str(Path(python_path or sys.executable).resolve())
-    working_directory = Path(project_dir or Path.cwd()).resolve()
+    python = str(_absolute_path(python_path or sys.executable))
+    working_directory = _absolute_path(project_dir or runtime_layout.data_dir)
     environment_file = Path(env_file)
     service_user = user or DEFAULT_SERVICE_USER
     service_group = group or DEFAULT_SERVICE_GROUP
@@ -354,6 +385,213 @@ def generated_units(
     }
 
 
+def discover_executable_target(
+    python_path: str | Path | None = None,
+    project_dir: str | Path | None = None,
+    development_mode: bool = False,
+) -> ExecutableTarget:
+    """
+    Select and validate the Python environment used by appliance services.
+    """
+
+    explicit = os.getenv("PIHOLE_AI_APPLIANCE_PYTHON") or os.getenv(
+        "PIHOLE_AI_PYTHON"
+    )
+    if python_path is not None or explicit:
+        return _validate_interpreter(
+            Path(python_path or explicit),
+            source="explicit",
+            project_dir=project_dir,
+            development_mode=development_mode,
+        )
+
+    console = shutil.which("pihole-ai")
+    if console:
+        current = _validate_interpreter(
+            Path(sys.executable),
+            source="current_console_script",
+            project_dir=project_dir,
+            development_mode=development_mode,
+            executable_path=Path(console),
+        )
+        if current.package_importable and current.stable:
+            return current
+
+    current = _validate_interpreter(
+        Path(sys.executable),
+        source="current_interpreter",
+        project_dir=project_dir,
+        development_mode=development_mode,
+    )
+    if current.package_importable and current.stable:
+        return current
+
+    dedicated = _validate_interpreter(
+        Path("/opt/pihole-ai/venv/bin/python"),
+        source="dedicated_appliance_venv",
+        project_dir=project_dir,
+        development_mode=development_mode,
+    )
+    if dedicated.package_importable and dedicated.stable:
+        return dedicated
+
+    if development_mode:
+        development = _validate_interpreter(
+            Path(project_dir or Path.cwd()) / ".venv" / "bin" / "python",
+            source="development_checkout_venv",
+            project_dir=project_dir,
+            development_mode=True,
+        )
+        if development.package_importable:
+            return development
+
+    for candidate in (current, dedicated):
+        if not candidate.package_importable:
+            return candidate
+
+    return current
+
+
+def _validate_interpreter(
+    interpreter_path: Path,
+    source: str,
+    project_dir: str | Path | None = None,
+    development_mode: bool = False,
+    executable_path: Path | None = None,
+) -> ExecutableTarget:
+    interpreter = _absolute_path(interpreter_path)
+    executable = _absolute_path(executable_path or interpreter.with_name("pihole-ai"))
+    references_checkout = _path_references_checkout(interpreter, project_dir) or _path_references_checkout(
+        executable,
+        project_dir,
+    )
+    references_developer_venv = _path_references_developer_venv(interpreter) or _path_references_developer_venv(
+        executable
+    )
+    stable = (
+        interpreter.is_absolute()
+        and executable.is_absolute()
+        and (development_mode or not references_checkout)
+        and (development_mode or not references_developer_venv)
+    )
+    invocation = [str(interpreter), "-m", "pihole_ai.cli"]
+
+    if not interpreter.exists():
+        return ExecutableTarget(
+            executable_path=executable,
+            invocation=invocation,
+            interpreter_path=interpreter,
+            package_importable=False,
+            version=None,
+            source=source,
+            stable=stable,
+            reason="interpreter does not exist",
+            references_checkout=references_checkout,
+            references_developer_venv=references_developer_venv,
+        )
+
+    importable = _run_python_check(
+        interpreter,
+        ["-c", "import pihole_ai, pihole_ai.cli"],
+    )
+    version = None
+    version_ok = False
+    if importable:
+        completed = _run_python_check(
+            interpreter,
+            ["-m", "pihole_ai.cli", "--version"],
+            capture=True,
+        )
+        version_ok = completed.returncode == 0
+        version = completed.stdout.strip() if version_ok else None
+
+    reason = "ok"
+    if not importable:
+        reason = "pihole_ai is not importable from interpreter"
+    elif not version_ok:
+        reason = "pihole-ai --version failed from interpreter"
+    elif not stable:
+        reason = "path is not stable for appliance mode"
+
+    return ExecutableTarget(
+        executable_path=executable,
+        invocation=invocation,
+        interpreter_path=interpreter,
+        package_importable=bool(importable and version_ok),
+        version=version,
+        source=source,
+        stable=stable,
+        reason=reason,
+        references_checkout=references_checkout,
+        references_developer_venv=references_developer_venv,
+    )
+
+
+def _run_python_check(
+    interpreter: Path,
+    args: list[str],
+    capture: bool = False,
+) -> Any:
+    try:
+        completed = subprocess.run(
+            [str(interpreter), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd="/",
+            env=_validation_environment(),
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        if capture:
+            return SimpleCompletedProcess(returncode=1, stdout="")
+        return False
+
+    if capture:
+        return completed
+    return completed.returncode == 0
+
+
+def _validation_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    return env
+
+
+@dataclass(frozen=True)
+class SimpleCompletedProcess:
+    returncode: int
+    stdout: str
+
+
+def _path_references_checkout(
+    path: Path,
+    project_dir: str | Path | None = None,
+) -> bool:
+    candidates = [_absolute_path(Path(project_dir))] if project_dir is not None else []
+    candidates.append(_absolute_path(Path.cwd()))
+    return any(_is_relative_to(path, candidate) for candidate in candidates)
+
+
+def _path_references_developer_venv(path: Path) -> bool:
+    return ".venv" in path.parts
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _absolute_path(path: str | Path) -> Path:
+    candidate = Path(path).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    return Path.cwd() / candidate
+
+
 def build_install_plan(
     python_path: str | None = None,
     project_dir: str | Path | None = None,
@@ -362,14 +600,29 @@ def build_install_plan(
     group: str | None = None,
     enable_services: bool = True,
     start_services: bool = True,
+    development_mode: bool = False,
+    validate_executable: bool = True,
 ) -> InstallPlan:
     """
     Build an inspectable appliance installation plan.
     """
 
     runtime_layout = layout or InstallationLayout()
-    project = Path(project_dir or Path.cwd()).resolve()
-    python = Path(python_path or sys.executable).resolve()
+    development_mode = development_mode or _development_mode_enabled()
+    project = Path(project_dir or runtime_layout.data_dir).resolve()
+    if validate_executable:
+        executable_target = discover_executable_target(
+            python_path=python_path,
+            project_dir=project,
+            development_mode=development_mode,
+        )
+    else:
+        executable_target = _unvalidated_executable_target(
+            Path(python_path or sys.executable),
+            source="metadata_only",
+        )
+    python = executable_target.interpreter_path
+    executable = executable_target.executable_path
     service_user = user or DEFAULT_SERVICE_USER
     service_group = group or DEFAULT_SERVICE_GROUP
     unit_paths = {
@@ -404,7 +657,8 @@ def build_install_plan(
         layout=runtime_layout,
         project_dir=project,
         python_path=python,
-        executable_path=runtime_layout.wrapper_path,
+        executable_path=executable,
+        executable_target=executable_target,
         service_user=service_user,
         service_group=service_group,
         unit_paths=unit_paths,
@@ -415,6 +669,26 @@ def build_install_plan(
         start_services=start_services,
         daemon_reload=True,
         actions=actions,
+    )
+
+
+def _unvalidated_executable_target(
+    python_path: Path,
+    source: str,
+) -> ExecutableTarget:
+    interpreter = _absolute_path(python_path)
+    executable = interpreter.with_name("pihole-ai")
+    return ExecutableTarget(
+        executable_path=executable,
+        invocation=[str(interpreter), "-m", "pihole_ai.cli"],
+        interpreter_path=interpreter,
+        package_importable=False,
+        version=None,
+        source=source,
+        stable=False,
+        reason="not validated",
+        references_checkout=_path_references_checkout(interpreter),
+        references_developer_venv=_path_references_developer_venv(interpreter),
     )
 
 
@@ -470,6 +744,8 @@ def run_preflight(
             )
         )
 
+    _check_executable_target(plan, issues)
+
     if not plan.python_path.exists():
         issues.append(
             _preflight_issue(
@@ -489,6 +765,52 @@ def run_preflight(
     _check_install_disk_space(plan, issues)
 
     return PreflightResult(issues)
+
+
+def _development_mode_enabled() -> bool:
+    return os.getenv("PIHOLE_AI_DEVELOPMENT_MODE", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _check_executable_target(
+    plan: InstallPlan,
+    issues: list[PreflightIssue],
+) -> None:
+    target = plan.executable_target
+
+    if target.package_importable and target.stable:
+        return
+
+    if not target.package_importable:
+        summary = "Selected PiHole-AI executable cannot import the installed package."
+    else:
+        summary = "Selected PiHole-AI executable is not stable for appliance mode."
+
+    issues.append(
+        _preflight_issue(
+            "install.executable.package_not_importable",
+            "error",
+            summary,
+            (
+                "Install the built wheel into a stable appliance environment, for example: "
+                "sudo python3 -m venv /opt/pihole-ai/venv && "
+                "sudo /opt/pihole-ai/venv/bin/pip install <wheel>, then rerun: "
+                "sudo pihole-ai install"
+            ),
+            {
+                "source": target.source,
+                "package_importable": target.package_importable,
+                "stable": target.stable,
+                "reason": target.reason,
+                "references_checkout": target.references_checkout,
+                "references_developer_venv": target.references_developer_venv,
+            },
+        )
+    )
 
 
 def installation_status(
@@ -520,7 +842,10 @@ def installation_status(
     )
 
     for name, path in plan.unit_paths.items():
-        exists = path.exists()
+        try:
+            exists = path.exists()
+        except OSError:
+            exists = False
         managed = False
         expected_hash = _sha256(expected_units[name])
         installed_hash = None
@@ -528,12 +853,16 @@ def installation_status(
 
         if exists:
             installed_count += 1
-            content = path.read_text(encoding="utf-8")
-            managed = _is_managed_content(content)
-            installed_hash = _sha256(content)
-            drift = managed and installed_hash != expected_hash
-            managed_count += 1 if managed else 0
-            drifted = drifted or drift
+            try:
+                content = path.read_text(encoding="utf-8")
+            except OSError:
+                content = ""
+            if content:
+                managed = _is_managed_content(content)
+                installed_hash = _sha256(content)
+                drift = managed and installed_hash != expected_hash
+                managed_count += 1 if managed else 0
+                drifted = drifted or drift
 
         units[name] = {
             "path": str(path),
@@ -579,6 +908,7 @@ def installation_status(
         unit_files=units,
         database=database,
         legacy=legacy,
+        executable=plan.executable_target.to_dict(),
     )
 
 
@@ -600,6 +930,10 @@ def print_installation_status(
         print(f"events_db: {status.events_db}")
         print(f"service_user: {status.service_user}")
         print(f"service_group: {status.service_group}")
+        print(f"executable_interpreter: {status.executable['interpreter_path']}")
+        print(f"executable_importable: {status.executable['package_importable']}")
+        print(f"executable_stable: {status.executable['stable']}")
+        print(f"executable_source: {status.executable['source']}")
         for name, unit in status.unit_files.items():
             drift = " drifted" if unit["drifted"] else ""
             print(
@@ -649,7 +983,19 @@ def _check_service_identity(
 def _check_config_for_install(
     issues: list[PreflightIssue],
 ) -> None:
-    _config, result = load_config_with_result(mode=ValidationMode.INSTALL)
+    try:
+        _config, result = load_config_with_result(mode=ValidationMode.INSTALL)
+    except OSError as exc:
+        issues.append(
+            _preflight_issue(
+                "install.config.inaccessible",
+                "error",
+                "PiHole-AI configuration could not be read.",
+                "Check /etc/pihole-ai/pihole-ai.env ownership and permissions.",
+                {"error": exc.__class__.__name__},
+            )
+        )
+        return
 
     for issue in result.issues:
         code = issue.code
@@ -721,7 +1067,10 @@ def _check_pihole_db_access(
     plan: InstallPlan,
     issues: list[PreflightIssue],
 ) -> None:
-    config, _result = load_config_with_result(mode=ValidationMode.SYNTAX)
+    try:
+        config, _result = load_config_with_result(mode=ValidationMode.SYNTAX)
+    except OSError:
+        return
 
     if config is None or not config.pihole_db.exists():
         return
@@ -779,7 +1128,10 @@ def _check_pihole_db_access(
 
 
 def _pihole_read_group() -> str | None:
-    config, _result = load_config_with_result(mode=ValidationMode.SYNTAX)
+    try:
+        config, _result = load_config_with_result(mode=ValidationMode.SYNTAX)
+    except OSError:
+        return None
 
     if config is None or not config.pihole_db.exists():
         return None
@@ -884,6 +1236,12 @@ def _enforce_preflight(
         require_root=True,
         dry_run=dry_run,
     )
+
+    if result.blocking_count and dry_run:
+        _print_preflight_failures(
+            operation=operation,
+            result=result,
+        )
 
     if result.blocking_count and not dry_run:
         _print_preflight_failures(
@@ -1052,20 +1410,31 @@ def _legacy_status(
     units_reference_venv = False
     units_run_as_dev_user = False
 
+    def exists(path: Path) -> bool:
+        try:
+            return path.exists()
+        except OSError:
+            return False
+
     for path in unit_paths.values():
-        if not path.exists():
+        if not exists(path):
             continue
-        content = path.read_text(encoding="utf-8")
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
         units_reference_venv = units_reference_venv or ".venv" in content
         units_run_as_dev_user = units_run_as_dev_user or f"User={_current_service_user()}" in content
 
-    detected = project_env.exists() or project_db.exists() or units_reference_venv
+    project_env_exists = exists(project_env)
+    project_db_exists = exists(project_db)
+    detected = project_env_exists or project_db_exists or units_reference_venv
 
     return {
         "detected": detected,
         "project_dir": str(project_dir),
-        "project_env": str(project_env) if project_env.exists() else None,
-        "project_database": str(project_db) if project_db.exists() else None,
+        "project_env": str(project_env) if project_env_exists else None,
+        "project_database": str(project_db) if project_db_exists else None,
         "services_reference_venv": units_reference_venv,
         "services_run_as_development_user": units_run_as_dev_user,
         "remediation": (
@@ -1197,6 +1566,7 @@ def service_install(
             _write_launcher(
                 path=Path(wrapper_path),
                 project_dir=project,
+                executable_path=plan.executable_path,
                 dry_run=dry_run,
             )
             actions.append(f"wrote {wrapper_path}")
@@ -1274,6 +1644,7 @@ def service_uninstall(
         ),
         enable_services=False,
         start_services=False,
+        validate_executable=False,
     )
     _enforce_preflight(plan, "uninstall", dry_run)
     actions: list[str] = []
@@ -1304,7 +1675,8 @@ def service_uninstall(
 
         _remove_launcher(
             path=Path(wrapper_path),
-            project_dir=project_dir or Path.cwd(),
+            project_dir=plan.project_dir,
+            executable_path=plan.executable_path,
             dry_run=dry_run,
         )
 
@@ -1445,7 +1817,11 @@ def service_enable(
 
     print("Enabling PiHole-AI services at boot.")
     _enforce_service_control_preflight("enable", dry_run)
-    plan = build_install_plan(enable_services=False, start_services=False)
+    plan = build_install_plan(
+        enable_services=False,
+        start_services=False,
+        validate_executable=False,
+    )
 
     with lifecycle_lock("enable", layout=plan.layout, dry_run=dry_run):
         _run_systemctl(
@@ -1463,7 +1839,11 @@ def service_disable(
 
     print("Disabling PiHole-AI services at boot.")
     _enforce_service_control_preflight("disable", dry_run)
-    plan = build_install_plan(enable_services=False, start_services=False)
+    plan = build_install_plan(
+        enable_services=False,
+        start_services=False,
+        validate_executable=False,
+    )
 
     with lifecycle_lock("disable", layout=plan.layout, dry_run=dry_run):
         _run_systemctl(
@@ -1492,7 +1872,11 @@ def service_action(
     }
     print(f"{labels[action]} PiHole-AI services.")
     _enforce_service_control_preflight(action, dry_run)
-    plan = build_install_plan(enable_services=False, start_services=False)
+    plan = build_install_plan(
+        enable_services=False,
+        start_services=False,
+        validate_executable=False,
+    )
 
     with lifecycle_lock(action, layout=plan.layout, dry_run=dry_run):
         if action == "start":
@@ -1722,7 +2106,18 @@ def _ensure_runtime_env(
     Create the runtime environment file once.
     """
 
-    if env_file.exists():
+    try:
+        env_file_exists = env_file.exists()
+    except OSError as exc:
+        if dry_run:
+            print(f"Cannot inspect {env_file}: {exc}")
+            print(f"Would leave {env_file} unchanged if it already exists.")
+            return
+        raise ServiceError(
+            f"Cannot inspect {env_file}: {exc}"
+        ) from exc
+
+    if env_file_exists:
         print(f"Kept existing {env_file}.")
         return
 
@@ -1914,10 +2309,32 @@ def _migrate_project_database(
 
     old_db = project_dir / "data" / "events.db"
 
-    if not old_db.exists():
+    try:
+        old_db_exists = old_db.exists()
+    except OSError as exc:
+        if dry_run:
+            print(f"Cannot inspect {old_db}: {exc}")
+            print("Would skip project database migration check.")
+            return
+        raise ServiceError(
+            f"Cannot inspect existing project database {old_db}: {exc}"
+        ) from exc
+
+    if not old_db_exists:
         return
 
-    if runtime_db_path.exists():
+    try:
+        runtime_db_exists = runtime_db_path.exists()
+    except OSError as exc:
+        if dry_run:
+            print(f"Cannot inspect {runtime_db_path}: {exc}")
+            print("Would leave runtime database unchanged if it already exists.")
+            return
+        raise ServiceError(
+            f"Cannot inspect runtime database {runtime_db_path}: {exc}"
+        ) from exc
+
+    if runtime_db_exists:
         return
 
     message = (
@@ -2097,23 +2514,28 @@ def _effective_uid() -> int:
 
 def launcher_target(
     project_dir: str | Path | None = None,
+    executable_path: str | Path | None = None,
 ) -> Path:
     """
-    Return the venv pihole-ai executable for a project directory.
+    Return the installed pihole-ai executable.
     """
 
-    return Path(project_dir or Path.cwd()).resolve() / ".venv" / "bin" / "pihole-ai"
+    if executable_path is not None:
+        return _absolute_path(executable_path)
+
+    return _absolute_path(project_dir or Path.cwd()) / ".venv" / "bin" / "pihole-ai"
 
 
 def launcher_content(
     project_dir: str | Path | None = None,
+    executable_path: str | Path | None = None,
 ) -> str:
     """
     Return managed /usr/local/bin launcher content.
     """
 
-    project = Path(project_dir or Path.cwd()).resolve()
-    target = launcher_target(project)
+    project = _absolute_path(project_dir or Path.cwd())
+    target = launcher_target(project, executable_path=executable_path)
 
     return "\n".join(
         [
@@ -2130,13 +2552,17 @@ def launcher_content(
 def _write_launcher(
     path: Path,
     project_dir: str | Path,
+    executable_path: str | Path,
     dry_run: bool,
 ) -> None:
     """
     Write the global PiHole-AI launcher into /usr/local/bin.
     """
 
-    content = launcher_content(project_dir)
+    content = launcher_content(
+        project_dir,
+        executable_path=executable_path,
+    )
 
     if dry_run:
         print(f"Would write {path}:")
@@ -2155,6 +2581,7 @@ def _write_launcher(
 def _remove_launcher(
     path: Path,
     project_dir: str | Path,
+    executable_path: str | Path,
     dry_run: bool,
 ) -> None:
     """
@@ -2173,6 +2600,7 @@ def _remove_launcher(
     if _launcher_matches_project(
         content=content,
         project_dir=project_dir,
+        executable_path=executable_path,
     ):
         path.unlink()
         print(f"Removed {path}.")
@@ -2184,18 +2612,26 @@ def _remove_launcher(
 def _launcher_matches_project(
     content: str,
     project_dir: str | Path,
+    executable_path: str | Path | None = None,
 ) -> bool:
     """
     Return True if launcher content was generated for this project.
     """
 
-    project = Path(project_dir).resolve()
-    target = launcher_target(project)
+    project = _absolute_path(project_dir)
+    target = launcher_target(
+        project,
+        executable_path=executable_path,
+    )
+    legacy_target = launcher_target(project)
 
     return (
         MANAGED_FILE_MARKER in content
         and f"# Project: {project}" in content
-        and f"# Target: {target}" in content
+        and (
+            f"# Target: {target}" in content
+            or f"# Target: {legacy_target}" in content
+        )
     )
 
 

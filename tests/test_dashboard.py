@@ -12,6 +12,7 @@ class DashboardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.app = create_app()
         self.app.config.update(TESTING=True)
+        self.app.config["PIHOLE_AI_DISABLE_AUTH_FOR_TESTS"] = True
         self.client = self.app.test_client()
 
     def test_stats_endpoint_returns_database_stats(self) -> None:
@@ -76,6 +77,7 @@ class DashboardTests(unittest.TestCase):
                 dashboard_metrics_poll_interval_ms=15000,
                 dashboard_tables_poll_interval_ms=10000,
                 dashboard_slow_poll_interval_ms=30000,
+                dashboard_username="admin",
             ),
         ):
             response = self.client.get("/api/polling")
@@ -528,6 +530,7 @@ class DashboardTests(unittest.TestCase):
                 dashboard_metrics_poll_interval_ms=15000,
                 dashboard_tables_poll_interval_ms=10000,
                 dashboard_slow_poll_interval_ms=30000,
+                dashboard_username="admin",
             ),
         ):
             response = self.client.get("/")
