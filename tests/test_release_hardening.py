@@ -28,7 +28,7 @@ PRIMARY_IMPORTS = [
 
 class ReleaseHardeningTests(unittest.TestCase):
     def test_pyproject_version_is_authoritative_in_checkout(self):
-        self.assertEqual(get_version(), "0.4.0rc1")
+        self.assertEqual(get_version(), "0.4.0rc2")
 
     def test_cli_version_outputs_metadata_version(self):
         with patch("sys.stdout") as stdout:
@@ -37,7 +37,7 @@ class ReleaseHardeningTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 0)
         written = "".join(call.args[0] for call in stdout.write.call_args_list)
-        self.assertIn("0.4.0rc1", written)
+        self.assertIn("0.4.0rc2", written)
 
     def test_primary_imports_do_not_mutate_runtime_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -91,8 +91,8 @@ class ReleaseHardeningTests(unittest.TestCase):
 
     def test_documented_json_commands_emit_json_when_mocked(self):
         commands = [
-            (["health", "--json"], {"overall_status": "healthy", "checks": [], "version": "0.4.0rc1", "checked_at": 1}),
-            (["doctor", "--json"], {"overall_status": "healthy", "diagnostics": [], "version": "0.4.0rc1"}),
+            (["health", "--json"], {"overall_status": "healthy", "checks": [], "version": "0.4.0rc2", "checked_at": 1}),
+            (["doctor", "--json"], {"overall_status": "healthy", "diagnostics": [], "version": "0.4.0rc2"}),
         ]
 
         for argv, payload in commands:
@@ -100,12 +100,12 @@ class ReleaseHardeningTests(unittest.TestCase):
                 if argv[0] == "health":
                     from pihole_ai.health import HealthReport
 
-                    with patch("pihole_ai.health.run_health_checks", return_value=HealthReport("healthy", [], "0.4.0rc1", 1)):
+                    with patch("pihole_ai.health.run_health_checks", return_value=HealthReport("healthy", [], "0.4.0rc2", 1)):
                         exit_code = cli.main(argv)
                 else:
                     from pihole_ai.doctor import DoctorReport
 
-                    with patch("pihole_ai.doctor.run_doctor", return_value=DoctorReport("healthy", [], "0.4.0rc1")):
+                    with patch("pihole_ai.doctor.run_doctor", return_value=DoctorReport("healthy", [], "0.4.0rc2")):
                         exit_code = cli.main(argv)
                 written = "".join(call.args[0] for call in stdout.write.call_args_list)
                 decoded = json.loads(written)

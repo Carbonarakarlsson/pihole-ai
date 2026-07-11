@@ -17,8 +17,8 @@ from pathlib import Path
 COMMANDS = [
     (["pihole-ai", "--version"], {0}),
     (["pihole-ai", "--help"], {0}),
-    (["pihole-ai", "config", "show", "--json"], {0}),
-    (["pihole-ai", "config", "check", "--mode", "syntax", "--json"], {0, 1}),
+    (["pihole-ai", "config", "show", "--json"], {0, 3}),
+    (["pihole-ai", "config", "check", "--mode", "syntax", "--json"], {0, 1, 3}),
     (["pihole-ai", "install", "--dry-run", "--json"], {0}),
     (["pihole-ai", "setup", "status", "--json", "--skip-ollama-check"], {0, 2}),
 ]

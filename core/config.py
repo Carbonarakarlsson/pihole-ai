@@ -46,6 +46,39 @@ class ConfigurationParseError(ConfigurationError):
         )
 
 
+class ProtectedConfigurationAccessError(ConfigurationError):
+    """
+    Appliance configuration exists but is not readable by this process.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        cause: OSError,
+    ) -> None:
+        self.path = path
+        self.cause = cause
+        super().__init__(
+            "Appliance configuration is protected. "
+            "Re-run with sudo: sudo pihole-ai"
+        )
+
+    def issue(
+        self,
+    ) -> "ConfigurationIssue":
+        return _issue(
+            code="config.appliance.permission_denied",
+            severity=ValidationSeverity.ERROR,
+            setting="PIHOLE_AI_CONFIG",
+            summary="Appliance configuration is protected.",
+            remediation="Re-run with sudo: sudo pihole-ai",
+            details={
+                "path": str(self.path),
+                "error": self.cause.__class__.__name__,
+            },
+        )
+
+
 class ValidationSeverity(str, Enum):
     INFO = "info"
     WARNING = "warning"
@@ -295,7 +328,9 @@ def read_env_file(
 
     try:
         exists = path.exists()
-    except OSError:
+    except OSError as exc:
+        if path == CONFIG_FILE:
+            raise ProtectedConfigurationAccessError(path, exc) from exc
         return {}
 
     if not exists:
@@ -305,7 +340,9 @@ def read_env_file(
 
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
+    except OSError as exc:
+        if path == CONFIG_FILE:
+            raise ProtectedConfigurationAccessError(path, exc) from exc
         return {}
 
     for raw_line in lines:
@@ -361,6 +398,12 @@ def load_config_with_result(
             env=env,
             env_files=env_files,
             validate=False,
+        )
+
+    except ProtectedConfigurationAccessError as exc:
+        return None, ConfigurationValidationResult(
+            mode=normalized_mode.value,
+            issues=[exc.issue()],
         )
 
     except ConfigurationParseError as exc:
@@ -583,7 +626,17 @@ def _effective_env(
     paths = env_files if env_files is not None else [CONFIG_FILE, PROJECT_ROOT / ".env"]
 
     for path in paths:
-        values.update(read_env_file(path))
+        try:
+            values.update(read_env_file(path))
+        except ProtectedConfigurationAccessError:
+            project_env = PROJECT_ROOT / ".env"
+            if (
+                path == CONFIG_FILE
+                and project_env in paths
+                and project_env.exists()
+            ):
+                continue
+            raise
 
     values.update(dict(env if env is not None else os.environ))
 

@@ -121,6 +121,12 @@ SUPPORTED_CONFIG_KEYS = {
     "PIHOLE_AI_OLLAMA_MODEL",
     "PIHOLE_AI_DASHBOARD_HOST",
     "PIHOLE_AI_DASHBOARD_PORT",
+    "PIHOLE_AI_DASHBOARD_AUTH_ENABLED",
+    "PIHOLE_AI_DASHBOARD_USERNAME",
+    "PIHOLE_AI_DASHBOARD_PASSWORD_HASH",
+    "PIHOLE_AI_DASHBOARD_SECRET_KEY",
+    "PIHOLE_AI_DASHBOARD_SESSION_LIFETIME_MINUTES",
+    "PIHOLE_AI_DASHBOARD_TRUST_PROXY",
     "PIHOLE_AI_PIHOLE_DB",
     "EVENTS_DB_PATH",
     "LOG_PATH",
@@ -309,9 +315,14 @@ def inspect_pihole_database_candidate(
     service_group: str = DEFAULT_SERVICE_GROUP,
 ) -> PiholeDatabaseCandidate:
     candidate = Path(path)
-    exists = candidate.exists()
-    regular = candidate.is_file() if exists else False
-    readable = os.access(candidate, os.R_OK) if exists else False
+    try:
+        exists = candidate.exists()
+        regular = candidate.is_file() if exists else False
+        readable = os.access(candidate, os.R_OK) if exists else False
+    except OSError:
+        exists = False
+        regular = False
+        readable = False
     service_access = False
 
     if exists:
@@ -698,6 +709,18 @@ def _database_schema_step(config: Any) -> SetupStep:
             "Events database schema is incompatible.",
             "Run: pihole-ai db status",
             SetupAction("run_doctor", "Run diagnostics"),
+        )
+
+    except Exception as exc:
+        return SetupStep(
+            "database_schema",
+            "Database schema",
+            "blocked",
+            True,
+            "Database schema could not be inspected.",
+            "Run: sudo pihole-ai setup status",
+            SetupAction("run_doctor", "Run diagnostics"),
+            {"error": exc.__class__.__name__},
         )
 
     if status.pending_migration_count:

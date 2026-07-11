@@ -1573,6 +1573,12 @@ def service_install(
 
         if not dry_run:
             _initialize_database(database_path)
+            _repair_database_ownership(
+                database_path=database_path,
+                user=service_user,
+                group=service_group,
+                dry_run=dry_run,
+            )
             actions.append(f"migrated {database_path}")
 
         _run_systemctl(
@@ -1773,6 +1779,12 @@ def service_upgrade(
 
             if not dry_run:
                 _initialize_database(plan.layout.events_db)
+                _repair_database_ownership(
+                    database_path=plan.layout.events_db,
+                    user=plan.service_user,
+                    group=plan.service_group,
+                    dry_run=dry_run,
+                )
                 actions.append(f"migrated {plan.layout.events_db}")
 
             _run_systemctl(["daemon-reload"], dry_run=dry_run)
@@ -2374,6 +2386,41 @@ def _initialize_database(
         print(
             "Skipped database migration because existing file is not a valid "
             f"SQLite database: {database_path}."
+        )
+
+
+def _repair_database_ownership(
+    database_path: Path,
+    user: str,
+    group: str,
+    dry_run: bool,
+) -> None:
+    """
+    Ensure runtime SQLite files remain writable by the service identity.
+    """
+
+    candidates = [
+        database_path,
+        Path(f"{database_path}-wal"),
+        Path(f"{database_path}-shm"),
+    ]
+    target = f"{user}:{group}"
+
+    for path in candidates:
+        try:
+            exists = path.exists()
+        except OSError:
+            exists = False
+
+        if not exists:
+            continue
+
+        if not dry_run:
+            os.chmod(path, 0o660)
+
+        _run_command(
+            ["chown", target, str(path)],
+            dry_run=dry_run,
         )
 
 

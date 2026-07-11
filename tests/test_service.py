@@ -38,7 +38,7 @@ from pihole_ai.service import (
 class ServiceTests(unittest.TestCase):
     def _valid_python_check(self, interpreter, args, capture=False):
         if capture:
-            return SimpleCompletedProcess(returncode=0, stdout="pihole-ai 0.4.0rc1\n")
+            return SimpleCompletedProcess(returncode=0, stdout="pihole-ai 0.4.0rc2\n")
         return True
 
     def _invalid_python_check(self, interpreter, args, capture=False):
@@ -1075,6 +1075,32 @@ class ServiceTests(unittest.TestCase):
             )
 
         self.assertIn("Stopped log tail.", stdout.getvalue())
+
+    def test_database_ownership_repair_targets_sqlite_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "pihole_ai.service._run_command",
+        ) as run:
+            database_path = Path(tmpdir) / "events.db"
+            wal_path = Path(f"{database_path}-wal")
+            shm_path = Path(f"{database_path}-shm")
+            for path in (database_path, wal_path, shm_path):
+                path.write_text("", encoding="utf-8")
+
+            service_module._repair_database_ownership(
+                database_path=database_path,
+                user="pihole-ai",
+                group="pihole-ai",
+                dry_run=False,
+            )
+
+            run.assert_has_calls(
+                [
+                    call(["chown", "pihole-ai:pihole-ai", str(database_path)], dry_run=False),
+                    call(["chown", "pihole-ai:pihole-ai", str(wal_path)], dry_run=False),
+                    call(["chown", "pihole-ai:pihole-ai", str(shm_path)], dry_run=False),
+                ]
+            )
+            self.assertEqual(database_path.stat().st_mode & 0o777, 0o660)
 
 
 if __name__ == "__main__":

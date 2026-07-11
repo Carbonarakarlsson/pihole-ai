@@ -16,6 +16,7 @@ from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 from core.config import (
+    ProtectedConfigurationAccessError,
     ValidationSeverity,
     load_config_with_result,
     settings,
@@ -93,6 +94,23 @@ def _safe_check(
 ) -> HealthCheck:
     try:
         return check()
+
+    except ProtectedConfigurationAccessError as exc:
+        return _check(
+            name=name,
+            status=(
+                HealthStatus.UNHEALTHY
+                if name in REQUIRED_CHECKS
+                else HealthStatus.UNKNOWN
+            ),
+            summary="Appliance configuration is protected.",
+            details={
+                "error": "ProtectedConfigurationAccessError",
+                "path": str(exc.path),
+                "remediation": f"sudo pihole-ai health",
+            },
+            started_at=None,
+        )
 
     except Exception as exc:
         logger.warning(
@@ -232,8 +250,9 @@ def check_events_database() -> HealthCheck:
         )
 
     try:
-        uri = f"file:{path}?mode=rw"
+        uri = f"file:{path}?mode=ro"
         with closing(sqlite3.connect(uri, timeout=30, uri=True)) as conn:
+            conn.execute("PRAGMA query_only = ON")
             conn.execute("SELECT 1").fetchone()
 
         db_status = database_status(path)
@@ -316,6 +335,15 @@ def check_pihole_ftl_database() -> HealthCheck:
 def check_ollama() -> HealthCheck:
     started_at = time.perf_counter()
 
+    if not settings.ai_enabled:
+        return _check(
+            name="ollama",
+            status=HealthStatus.UNKNOWN,
+            summary="Ollama check skipped because AI is disabled.",
+            details={"enabled": False},
+            started_at=started_at,
+        )
+
     try:
         from engine.ollama_client import OllamaClient
 
@@ -361,9 +389,12 @@ def check_collector_progress() -> HealthCheck:
     started_at = time.perf_counter()
 
     try:
-        from core.db import get_state
+        from core.db import get_state_readonly
 
-        last_query_id = get_state("collector.last_query_id")
+        last_query_id = get_state_readonly(
+            "collector.last_query_id",
+            database_path=settings.events_db,
+        )
 
     except Exception as exc:
         logger.warning("Collector progress health check failed: %s", exc)

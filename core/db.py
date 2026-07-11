@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from core.config import settings
-from core.migrations import migrate_database
+from core.migrations import migrate_database, open_database_readonly
 
 
 DATABASE_PATH: Path | None = None
@@ -186,6 +186,21 @@ def query_one(
 
         cursor = conn.execute(sql, parameters)
 
+        return cursor.fetchone()
+
+
+def query_one_readonly(
+    sql: str,
+    parameters: tuple[Any, ...] = (),
+    database_path: str | Path | None = None,
+) -> sqlite3.Row | None:
+    """
+    Execute a SELECT query against an existing database without mutation.
+    """
+
+    path = Path(database_path) if database_path is not None else _database_path()
+    with closing(open_database_readonly(path)) as conn:
+        cursor = conn.execute(sql, parameters)
         return cursor.fetchone()
 
 
@@ -1192,6 +1207,34 @@ def get_state(
     return row["value"]
 
 
+def get_state_readonly(
+    key: str,
+    default: str | None = None,
+    database_path: str | Path | None = None,
+) -> str | None:
+    """
+    Return a persisted application state value without opening a writable DB.
+    """
+
+    try:
+        row = query_one_readonly(
+            """
+            SELECT value
+            FROM app_state
+            WHERE key = ?
+            """,
+            (key,),
+            database_path=database_path,
+        )
+    except (sqlite3.DatabaseError, FileNotFoundError, OSError):
+        return default
+
+    if row is None:
+        return default
+
+    return row["value"]
+
+
 def set_state(
     key: str,
     value: str,
@@ -1447,6 +1490,36 @@ def database_stats() -> dict[str, int]:
     }
 
 
+def database_stats_readonly(
+    database_path: str | Path | None = None,
+) -> dict[str, int]:
+    """
+    Return basic database statistics without migrating or writing.
+    """
+
+    path = Path(database_path) if database_path is not None else _database_path()
+    queries = {
+        "events": "SELECT COUNT(*) AS count FROM events",
+        "processed": "SELECT COUNT(*) AS count FROM events WHERE processed = 1",
+        "domains": "SELECT COUNT(*) AS count FROM domain_memory",
+        "analyses": "SELECT COUNT(*) AS count FROM analysis",
+        "actions": "SELECT COUNT(*) AS count FROM action_audit",
+        "reputations": "SELECT COUNT(*) AS count FROM domain_reputation",
+        "threat_intel": "SELECT COUNT(*) AS count FROM threat_intel",
+    }
+    stats: dict[str, int] = {key: 0 for key in queries}
+
+    with closing(open_database_readonly(path)) as conn:
+        for key, sql in queries.items():
+            try:
+                row = conn.execute(sql).fetchone()
+            except sqlite3.DatabaseError:
+                continue
+            stats[key] = int(row["count"]) if row else 0
+
+    return stats
+
+
 def _count_rows_by(
     sql: str,
     parameters: tuple[Any, ...] = (),
@@ -1595,4 +1668,3 @@ def vacuum() -> None:
 
     with closing(get_connection()) as conn:
         conn.execute("VACUUM")
-

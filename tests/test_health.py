@@ -114,7 +114,14 @@ class HealthTests(unittest.TestCase):
                     "latency_ms": 1,
                 }
 
-        with patch("engine.ollama_client.OllamaClient", return_value=FakeClient()):
+        with patch("engine.ollama_client.OllamaClient", return_value=FakeClient()), patch(
+            "pihole_ai.health.settings",
+            SimpleNamespace(
+                ai_enabled=True,
+                ollama_url="http://127.0.0.1:11434",
+                ollama_model="llama3.2:1b",
+            ),
+        ):
             check = check_ollama()
 
         self.assertEqual(check.status, HealthStatus.DEGRADED.value)
@@ -149,6 +156,37 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(check.status, HealthStatus.HEALTHY.value)
         self.assertEqual(check.details["current_schema_version"], 1)
         self.assertEqual(check.details["pending_migration_count"], 0)
+
+    def test_events_database_health_does_not_migrate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "events.db"
+            migrations.migrate_database(database_path)
+
+            with patch(
+                "pihole_ai.health.settings",
+                FakeSettings(
+                    events_db=str(database_path),
+                    pihole_db=str(Path(tmpdir) / "pihole.db"),
+                ),
+            ), patch("core.migrations.migrate_database") as migrate:
+                check = check_events_database()
+
+        self.assertEqual(check.status, HealthStatus.HEALTHY.value)
+        migrate.assert_not_called()
+
+    def test_ollama_disabled_skips_connection(self) -> None:
+        with patch(
+            "pihole_ai.health.settings",
+            SimpleNamespace(
+                ai_enabled=False,
+                ollama_url="http://127.0.0.1:11434",
+                ollama_model="llama3.2:1b",
+            ),
+        ), patch("engine.ollama_client.OllamaClient") as client:
+            check = check_ollama()
+
+        self.assertEqual(check.status, HealthStatus.UNKNOWN.value)
+        client.assert_not_called()
 
     def test_events_database_with_pending_migration_is_degraded(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

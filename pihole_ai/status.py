@@ -7,7 +7,30 @@ from __future__ import annotations
 from typing import Any
 
 from core.config import settings
-from core.db import ai_metrics, database_stats, get_state
+from core.db import database_stats_readonly as database_stats
+from core.db import get_state_readonly as get_state
+
+
+def ai_metrics() -> dict[str, int]:
+    """
+    Return AI counters using read-only state access.
+    """
+
+    metrics = {
+        "ai_calls": int(get_state("ai.calls.total", "0") or 0),
+        "rate_limit_skips": int(get_state("ai.rate_limit_skips.total", "0") or 0),
+        "disabled_skips": int(get_state("ai.disabled_skips.total", "0") or 0),
+        "cooldown_skips": int(get_state("ai.cooldown_skips.total", "0") or 0),
+        "ai_parse_errors": int(get_state("ai.parse_errors.total", "0") or 0),
+        "ai_timeouts": int(get_state("ai.timeouts.total", "0") or 0),
+    }
+    metrics["ai_skipped"] = (
+        metrics["rate_limit_skips"]
+        + metrics["disabled_skips"]
+        + metrics["cooldown_skips"]
+        + metrics["ai_timeouts"]
+    )
+    return metrics
 
 
 def get_ollama_health() -> dict[str, Any]:
@@ -38,11 +61,12 @@ def collect_status(
     """
 
     status: dict[str, Any] = {
-        "database": database_stats(),
+        "database": database_stats(settings.events_db),
         "collector": {
             "last_query_id": get_state(
                 "collector.last_query_id",
                 "0",
+                database_path=settings.events_db,
             ),
         },
         "ai": ai_metrics(),

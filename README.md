@@ -472,6 +472,31 @@ database schema status, runtime metadata, and systemd presence with remediation
 guidance. `doctor` does not migrate databases, create directories, change
 permissions, start services, stop services, or modify Pi-hole.
 
+On an installed appliance, `/etc/pihole-ai/pihole-ai.env` is intentionally
+protected because it contains secrets:
+
+```text
+/etc/pihole-ai      root:pihole-ai 0750
+/etc/pihole-ai/pihole-ai.env root:pihole-ai 0640
+```
+
+Read-only commands do not mutate the database or system, but commands that need
+the protected appliance configuration should be run with sudo unless your user
+has explicit read access through the `pihole-ai` group:
+
+```bash
+sudo pihole-ai health
+sudo pihole-ai doctor
+sudo pihole-ai setup status
+sudo pihole-ai config check
+sudo pihole-ai config show
+```
+
+When the protected config cannot be read, PiHole-AI reports
+`config.appliance.permission_denied` with sudo guidance instead of silently
+falling back to defaults. Development checkouts with a readable project `.env`
+can still run unprivileged.
+
 ## First-Run Setup
 
 The setup command gives a guided view over installation, configuration, database
@@ -694,7 +719,7 @@ writing unit files:
 
 ```bash
 sudo python3 -m venv /opt/pihole-ai/venv
-sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-0.4.0rc1-py3-none-any.whl
+sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-0.4.0rc2-py3-none-any.whl
 sudo /opt/pihole-ai/venv/bin/pihole-ai install --dry-run
 ```
 
@@ -712,6 +737,22 @@ If `/etc/pihole-ai/pihole-ai.env` does not exist, it is created from
 `.env.example` plus the runtime database and log paths. If `data/events.db`
 exists and `/var/lib/pihole-ai/events.db` does not, install copies the database
 there and leaves the old project copy untouched.
+Install and upgrade repair ownership on the managed runtime directories and the
+SQLite database files only:
+
+```text
+/var/lib/pihole-ai          pihole-ai:pihole-ai 0750
+/var/lib/pihole-ai/events.db pihole-ai:pihole-ai service-writable
+/var/lib/pihole-ai/events.db-wal pihole-ai:pihole-ai service-writable
+/var/lib/pihole-ai/events.db-shm pihole-ai:pihole-ai service-writable
+```
+
+Health, doctor, setup status, install status, status, config show/check, and
+database status use read-only database access. They do not initialize the
+database, create migration metadata, migrate schema, create directories, or
+write cursor/service state. Use explicit mutating commands such as
+`sudo pihole-ai db migrate`, `sudo pihole-ai install`, and
+`sudo pihole-ai upgrade` for lifecycle changes.
 
 Mutating lifecycle commands run a blocking preflight before changing anything.
 If a blocking issue is found, no files are written, no database migration runs,
@@ -804,7 +845,7 @@ Example install flow on a Pi-hole host:
 ```bash
 python -m build --no-isolation
 sudo python3 -m venv /opt/pihole-ai/venv
-sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-0.4.0rc1-py3-none-any.whl
+sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-0.4.0rc2-py3-none-any.whl
 sudo /opt/pihole-ai/venv/bin/pihole-ai install --no-start
 sudo /usr/local/bin/pihole-ai dashboard auth set-password
 sudo /usr/local/bin/pihole-ai enable

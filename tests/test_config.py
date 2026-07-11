@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import tempfile
 import unittest
@@ -7,12 +8,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.config import (
+    CONFIG_FILE,
     ConfigurationIssue,
     ConfigurationValidationResult,
+    ProtectedConfigurationAccessError,
     Settings,
     ValidationMode,
     ValidationSeverity,
     load_env_file,
+    load_config_with_result,
     validate_config,
 )
 from pihole_ai import cli
@@ -429,6 +433,39 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertTrue(stdout.write.called)
+
+    def test_protected_config_permission_denied_is_distinct_issue(self) -> None:
+        original_exists = Path.exists
+
+        def exists(path):
+            if path == CONFIG_FILE:
+                raise PermissionError("permission denied")
+            return original_exists(path)
+
+        with patch("pathlib.Path.exists", exists):
+            config, result = load_config_with_result(
+                env_files=[CONFIG_FILE],
+                mode=ValidationMode.RUNTIME,
+            )
+
+        self.assertIsNone(config)
+        self.assertIn(
+            "config.appliance.permission_denied",
+            {issue.code for issue in result.issues},
+        )
+
+    def test_protected_config_show_prints_sudo_guidance(self) -> None:
+        with patch(
+            "pihole_ai.config_cli.load_config",
+            side_effect=ProtectedConfigurationAccessError(
+                CONFIG_FILE,
+                PermissionError("permission denied"),
+            ),
+        ), patch("sys.stdout", io.StringIO()) as stdout:
+            exit_code = cli.main(["config", "show"])
+
+        self.assertEqual(exit_code, 3)
+        self.assertIn("sudo pihole-ai config show", stdout.getvalue())
 
 
 if __name__ == "__main__":

@@ -290,6 +290,28 @@ class DatabaseCLITests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertFalse(pihole_path.exists())
 
+    def test_db_status_does_not_create_migration_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "events.db"
+            with closing(sqlite3.connect(database_path)) as conn:
+                conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY)")
+                conn.commit()
+
+            with self.assertRaises(migrations.IncompatibleSchema):
+                migrations.database_status(database_path)
+
+            with closing(sqlite3.connect(database_path)) as conn:
+                row = conn.execute(
+                    """
+                    SELECT 1
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name = 'schema_migrations'
+                    """
+                ).fetchone()
+
+        self.assertIsNone(row)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -59,15 +59,24 @@ def run_doctor() -> DoctorReport:
     """
 
     diagnostics = [
-        _configuration_diagnostic(),
-        _dashboard_auth_diagnostic(),
-        _database_diagnostic(),
-        _health_diagnostic("events_database", check_events_database),
-        _health_diagnostic("pihole_ftl_database", check_pihole_ftl_database),
-        _health_diagnostic("disk_space", check_disk_space),
-        _health_diagnostic("ollama", check_ollama),
-        _runtime_diagnostic(),
-        _systemd_diagnostic(),
+        _safe_diagnostic("configuration", _configuration_diagnostic),
+        _safe_diagnostic("dashboard_auth", _dashboard_auth_diagnostic),
+        _safe_diagnostic("database_schema", _database_diagnostic),
+        _safe_diagnostic(
+            "events_database",
+            lambda: _health_diagnostic("events_database", check_events_database),
+        ),
+        _safe_diagnostic(
+            "pihole_ftl_database",
+            lambda: _health_diagnostic("pihole_ftl_database", check_pihole_ftl_database),
+        ),
+        _safe_diagnostic(
+            "disk_space",
+            lambda: _health_diagnostic("disk_space", check_disk_space),
+        ),
+        _safe_diagnostic("ollama", lambda: _health_diagnostic("ollama", check_ollama)),
+        _safe_diagnostic("runtime", _runtime_diagnostic),
+        _safe_diagnostic("installation", _systemd_diagnostic),
     ]
 
     return DoctorReport(
@@ -75,6 +84,22 @@ def run_doctor() -> DoctorReport:
         diagnostics=diagnostics,
         version=get_version(),
     )
+
+
+def _safe_diagnostic(
+    name: str,
+    diagnostic: Any,
+) -> Diagnostic:
+    try:
+        return diagnostic()
+    except Exception as exc:
+        return Diagnostic(
+            name=name,
+            status=HealthStatus.UNKNOWN.value,
+            summary="Diagnostic could not be completed.",
+            details={"error": exc.__class__.__name__},
+            remediation="Run: sudo pihole-ai doctor",
+        )
 
 
 def print_doctor(
@@ -302,21 +327,21 @@ def _runtime_diagnostic() -> Diagnostic:
 
 def _systemd_diagnostic() -> Diagnostic:
     systemctl = shutil.which("systemctl")
-    status = installation_status()
+    install_status = installation_status()
 
     if systemctl is None:
         return Diagnostic(
             name="installation",
             status=HealthStatus.UNKNOWN.value,
             summary="systemctl is not available.",
-            details=status.to_dict() | {"systemctl": None},
+            details=install_status.to_dict() | {"systemctl": None},
         )
 
-    if status.state == "installed":
+    if install_status.state == "installed":
         status = HealthStatus.HEALTHY
         summary = "Expected systemd units are installed."
         remediation = None
-    elif status.state in {"partial", "drifted", "legacy"}:
+    elif install_status.state in {"partial", "drifted", "legacy"}:
         status = HealthStatus.DEGRADED
         summary = "PiHole-AI installation needs attention."
         remediation = "Run: sudo pihole-ai install"
@@ -329,7 +354,7 @@ def _systemd_diagnostic() -> Diagnostic:
         name="installation",
         status=status.value,
         summary=summary,
-        details=installation_status().to_dict() | {"systemctl": systemctl},
+        details=install_status.to_dict() | {"systemctl": systemctl},
         remediation=remediation,
     )
 
