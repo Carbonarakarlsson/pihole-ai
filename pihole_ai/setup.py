@@ -42,6 +42,7 @@ from pihole_ai.service import (
     DEFAULT_SERVICE_USER,
     SERVICE_NAMES,
     InstallationStatus,
+    _repair_config_permissions,
     installation_status,
     service_action,
     service_enable,
@@ -390,6 +391,13 @@ def update_setup_config(
         uid=existing_uid,
         gid=existing_gid,
     )
+    if env_path == CONFIG_FILE:
+        _repair_config_permissions(
+            config_dir=env_path.parent,
+            env_file=env_path,
+            group=DEFAULT_SERVICE_GROUP,
+            dry_run=False,
+        )
     return env_path
 
 

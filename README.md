@@ -497,6 +497,15 @@ When the protected config cannot be read, PiHole-AI reports
 falling back to defaults. Development checkouts with a readable project `.env`
 can still run unprivileged.
 
+After install or upgrade, verify the appliance service identity can reach the
+protected config while ordinary users remain excluded:
+
+```bash
+sudo -u pihole-ai test -x /etc/pihole-ai
+sudo -u pihole-ai test -r /etc/pihole-ai/pihole-ai.env
+stat -c '%U:%G %a %n' /etc/pihole-ai /etc/pihole-ai/pihole-ai.env
+```
+
 ## First-Run Setup
 
 The setup command gives a guided view over installation, configuration, database
@@ -719,7 +728,7 @@ writing unit files:
 
 ```bash
 sudo python3 -m venv /opt/pihole-ai/venv
-sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-0.4.0rc2-py3-none-any.whl
+sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-0.4.0rc3-py3-none-any.whl
 sudo /opt/pihole-ai/venv/bin/pihole-ai install --dry-run
 ```
 
@@ -845,7 +854,7 @@ Example install flow on a Pi-hole host:
 ```bash
 python -m build --no-isolation
 sudo python3 -m venv /opt/pihole-ai/venv
-sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-0.4.0rc2-py3-none-any.whl
+sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-0.4.0rc3-py3-none-any.whl
 sudo /opt/pihole-ai/venv/bin/pihole-ai install --no-start
 sudo /usr/local/bin/pihole-ai dashboard auth set-password
 sudo /usr/local/bin/pihole-ai enable

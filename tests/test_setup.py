@@ -356,6 +356,34 @@ class SetupConfigWriterTests(unittest.TestCase):
             self.assertTrue(path.with_suffix(".env.bak").exists())
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
 
+    def test_appliance_config_update_repairs_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "pihole-ai.env"
+            path.write_text(
+                "\n".join(
+                    [
+                        "AI_ENABLED=true",
+                        "PIHOLE_AI_DASHBOARD_AUTH_ENABLED=true",
+                        "PIHOLE_AI_DASHBOARD_PASSWORD_HASH=scrypt:32768:8:1$salt$hash",
+                        f"PIHOLE_AI_DASHBOARD_SECRET_KEY={'x' * 48}",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch("pihole_ai.setup.CONFIG_FILE", path), patch(
+                "pihole_ai.setup._repair_config_permissions",
+            ) as repair:
+                update_setup_config({"AI_ENABLED": False}, path=path)
+
+            repair.assert_called_once_with(
+                config_dir=path.parent,
+                env_file=path,
+                group="pihole-ai",
+                dry_run=False,
+            )
+
     def test_invalid_proposed_config_is_not_installed(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "pihole-ai.env"

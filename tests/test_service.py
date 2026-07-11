@@ -38,7 +38,7 @@ from pihole_ai.service import (
 class ServiceTests(unittest.TestCase):
     def _valid_python_check(self, interpreter, args, capture=False):
         if capture:
-            return SimpleCompletedProcess(returncode=0, stdout="pihole-ai 0.4.0rc2\n")
+            return SimpleCompletedProcess(returncode=0, stdout="pihole-ai 0.4.0rc3\n")
         return True
 
     def _invalid_python_check(self, interpreter, args, capture=False):
@@ -1101,6 +1101,127 @@ class ServiceTests(unittest.TestCase):
                 ]
             )
             self.assertEqual(database_path.stat().st_mode & 0o777, 0o660)
+
+    def test_config_permission_repair_targets_appliance_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "pihole_ai.service.grp.getgrnam",
+            return_value=SimpleNamespace(gr_gid=123),
+        ), patch("pihole_ai.service._effective_uid", return_value=0), patch(
+            "pihole_ai.service.os.chown",
+        ) as chown:
+            config_dir = Path(tmpdir) / "pihole-ai"
+            env_file = config_dir / "pihole-ai.env"
+            config_dir.mkdir()
+            env_file.write_text("SECRET=value\n", encoding="utf-8")
+            config_dir.chmod(0o777)
+            env_file.chmod(0o666)
+
+            service_module._repair_config_permissions(
+                config_dir=config_dir,
+                env_file=env_file,
+                group="pihole-ai",
+                dry_run=False,
+            )
+
+            self.assertEqual(config_dir.stat().st_mode & 0o777, 0o750)
+            self.assertEqual(env_file.stat().st_mode & 0o777, 0o640)
+            chown.assert_has_calls(
+                [
+                    call(config_dir, 0, 123),
+                    call(env_file, 0, 123),
+                ]
+            )
+
+    def test_config_permission_repair_rejects_symlink_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = Path(tmpdir) / "pihole-ai"
+            config_dir.mkdir()
+            target = Path(tmpdir) / "target.env"
+            target.write_text("x=1\n", encoding="utf-8")
+            env_file = config_dir / "pihole-ai.env"
+            env_file.symlink_to(target)
+
+            with self.assertRaises(ServiceError):
+                service_module._repair_config_permissions(
+                    config_dir=config_dir,
+                    env_file=env_file,
+                    group="pihole-ai",
+                    dry_run=False,
+                )
+
+    def test_config_access_failure_blocks_before_service_start(self) -> None:
+        issue = service_module._preflight_issue(
+            "install.config.not_service_readable",
+            "error",
+            "Configuration file is not readable.",
+            "Run: sudo pihole-ai install",
+        )
+        with patch("pihole_ai.service._effective_uid", return_value=0), patch(
+            "pihole_ai.service._verify_config_access_for_service",
+            return_value=[issue],
+        ), patch("sys.stdout", io.StringIO()) as stdout:
+            with self.assertRaises(ServiceError):
+                service_module._enforce_config_access(
+                    operation="install",
+                    config_dir=service_module.CONFIG_DIR,
+                    env_file=service_module.CONFIG_FILE,
+                    user="pihole-ai",
+                    group="pihole-ai",
+                )
+
+        self.assertIn("install.config.not_service_readable", stdout.getvalue())
+
+    def test_config_access_verifier_checks_service_identity(self) -> None:
+        config_dir = Path("/etc/pihole-ai")
+        env_file = config_dir / "pihole-ai.env"
+
+        def fake_lstat(path: Path):
+            if path == config_dir:
+                return SimpleNamespace(
+                    st_mode=service_module.stat.S_IFDIR | 0o750,
+                    st_uid=0,
+                    st_gid=123,
+                )
+            if path == env_file:
+                return SimpleNamespace(
+                    st_mode=service_module.stat.S_IFREG | 0o640,
+                    st_uid=0,
+                    st_gid=123,
+                )
+            raise FileNotFoundError(path)
+
+        completed = SimpleNamespace(returncode=0)
+        with patch(
+            "pihole_ai.service.grp.getgrnam",
+            return_value=SimpleNamespace(gr_gid=123),
+        ), patch("pathlib.Path.lstat", fake_lstat), patch(
+            "pihole_ai.service.subprocess.run",
+            return_value=completed,
+        ) as run:
+            issues = service_module._verify_config_access_for_service(
+                config_dir=config_dir,
+                env_file=env_file,
+                user="pihole-ai",
+                group="pihole-ai",
+            )
+
+        self.assertEqual(issues, [])
+        run.assert_has_calls(
+            [
+                call(
+                    ["sudo", "-u", "pihole-ai", "test", "-x", str(config_dir)],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                ),
+                call(
+                    ["sudo", "-u", "pihole-ai", "test", "-r", str(env_file)],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                ),
+            ]
+        )
 
 
 if __name__ == "__main__":

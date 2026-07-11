@@ -45,6 +45,8 @@ RUNTIME_LOG_PATH = RUNTIME_LOG_DIR / "pihole-ai.log"
 RUNTIME_STATE_DIR = Path("/run/pihole-ai")
 DEFAULT_SERVICE_USER = "pihole-ai"
 DEFAULT_SERVICE_GROUP = "pihole-ai"
+CONFIG_DIR_MODE = 0o750
+CONFIG_FILE_MODE = 0o640
 MANAGED_FILE_MARKER = "Managed by PiHole-AI"
 MANAGED_FILE_HEADER = "\n".join(
     [
@@ -1303,6 +1305,32 @@ def _print_preflight_failures(
         print(f"  fix: {issue.remediation}")
 
 
+def _enforce_config_access(
+    operation: str,
+    config_dir: Path,
+    env_file: Path,
+    user: str,
+    group: str,
+) -> None:
+    if _effective_uid() != 0:
+        return
+    if config_dir != CONFIG_DIR or env_file != CONFIG_FILE:
+        return
+
+    issues = _verify_config_access_for_service(
+        config_dir=config_dir,
+        env_file=env_file,
+        user=user,
+        group=group,
+    )
+    result = PreflightResult(issues)
+    if result.blocking_count:
+        _print_preflight_failures(operation, result)
+        raise ServiceError(
+            f"{operation} config access verification failed. Services were not started."
+        )
+
+
 def _ensure_service_identity(
     user: str,
     group: str,
@@ -1581,6 +1609,15 @@ def service_install(
             )
             actions.append(f"migrated {database_path}")
 
+        if not dry_run:
+            _enforce_config_access(
+                operation="install",
+                config_dir=config_path,
+                env_file=environment_file,
+                user=service_user,
+                group=service_group,
+            )
+
         _run_systemctl(
             ["daemon-reload"],
             dry_run=dry_run,
@@ -1786,6 +1823,20 @@ def service_upgrade(
                     dry_run=dry_run,
                 )
                 actions.append(f"migrated {plan.layout.events_db}")
+
+                _repair_config_permissions(
+                    config_dir=plan.layout.config_dir,
+                    env_file=plan.layout.config_file,
+                    group=plan.service_group,
+                    dry_run=dry_run,
+                )
+                _enforce_config_access(
+                    operation="upgrade",
+                    config_dir=plan.layout.config_dir,
+                    env_file=plan.layout.config_file,
+                    user=plan.service_user,
+                    group=plan.service_group,
+                )
 
             _run_systemctl(["daemon-reload"], dry_run=dry_run)
             actions.append("systemctl daemon-reload")
@@ -2087,6 +2138,13 @@ def _prepare_runtime_layout(
             os.chmod(directory, 0o750)
             print(f"Ensured {directory}.")
 
+    _repair_config_permissions(
+        config_dir=config_dir,
+        env_file=env_file,
+        group=group,
+        dry_run=dry_run,
+    )
+
     _ensure_runtime_env(
         project_dir=project_dir,
         env_file=env_file,
@@ -2097,6 +2155,12 @@ def _prepare_runtime_layout(
     _migrate_project_database(
         project_dir=project_dir,
         runtime_db_path=runtime_db_path,
+        dry_run=dry_run,
+    )
+    _repair_config_permissions(
+        config_dir=config_dir,
+        env_file=env_file,
+        group=group,
         dry_run=dry_run,
     )
     _chown_runtime_paths(
@@ -2151,10 +2215,221 @@ def _ensure_runtime_env(
     _atomic_write_managed(
         path=env_file,
         content=MANAGED_FILE_HEADER + content,
-        mode=0o640,
+        mode=CONFIG_FILE_MODE,
         backup=False,
     )
     print(f"Wrote {env_file}.")
+
+
+def _repair_config_permissions(
+    config_dir: Path,
+    env_file: Path,
+    group: str,
+    dry_run: bool,
+) -> None:
+    """
+    Repair protected appliance config metadata without touching content.
+    """
+
+    _reject_symlink(config_dir)
+    _reject_symlink(env_file)
+
+    if dry_run:
+        print(f"Would set {config_dir} to root:{group} {CONFIG_DIR_MODE:o}.")
+        if env_file.exists():
+            print(f"Would set {env_file} to root:{group} {CONFIG_FILE_MODE:o}.")
+        return
+
+    try:
+        gid = grp.getgrnam(group).gr_gid
+    except KeyError as exc:
+        raise ServiceError(f"Service group does not exist: {group}") from exc
+
+    os.chmod(config_dir, CONFIG_DIR_MODE)
+    if _effective_uid() == 0:
+        try:
+            os.chown(config_dir, 0, gid)
+        except OSError:
+            pass
+
+    if env_file.exists():
+        os.chmod(env_file, CONFIG_FILE_MODE)
+        if _effective_uid() == 0:
+            try:
+                os.chown(env_file, 0, gid)
+            except OSError:
+                pass
+
+
+def _reject_symlink(
+    path: Path,
+) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode):
+        raise ServiceError(f"Refusing to manage symlink path: {path}")
+
+
+def _verify_config_access_for_service(
+    config_dir: Path,
+    env_file: Path,
+    user: str,
+    group: str,
+) -> list[PreflightIssue]:
+    """
+    Verify final config metadata and service-account readability.
+    """
+
+    issues: list[PreflightIssue] = []
+
+    try:
+        dir_stat = config_dir.lstat()
+    except OSError as exc:
+        return [
+            _preflight_issue(
+                "install.config.directory_not_traversable",
+                "error",
+                "Configuration directory cannot be inspected.",
+                "Run: sudo pihole-ai install",
+                {"error": exc.__class__.__name__},
+            )
+        ]
+
+    if stat.S_ISLNK(dir_stat.st_mode):
+        return [
+            _preflight_issue(
+                "install.config.symlink",
+                "error",
+                "Configuration directory is a symlink.",
+                "Replace it with a real /etc/pihole-ai directory.",
+            )
+        ]
+
+    try:
+        expected_gid = grp.getgrnam(group).gr_gid
+    except KeyError:
+        expected_gid = -1
+
+    if not stat.S_ISDIR(dir_stat.st_mode):
+        issues.append(
+            _preflight_issue(
+                "install.config.directory_not_traversable",
+                "error",
+                "Configuration path is not a directory.",
+                "Replace /etc/pihole-ai with a directory.",
+            )
+        )
+
+    if stat.S_IMODE(dir_stat.st_mode) != CONFIG_DIR_MODE:
+        issues.append(
+            _preflight_issue(
+                "install.config.unsafe_permissions",
+                "error",
+                "Configuration directory permissions are unsafe.",
+                f"Set {config_dir} to mode {CONFIG_DIR_MODE:o}.",
+                {"mode": oct(stat.S_IMODE(dir_stat.st_mode))},
+            )
+        )
+
+    if dir_stat.st_uid != 0 or dir_stat.st_gid != expected_gid:
+        issues.append(
+            _preflight_issue(
+                "install.config.invalid_owner",
+                "error",
+                "Configuration directory owner/group is invalid.",
+                f"Set {config_dir} to root:{group}.",
+            )
+        )
+
+    try:
+        file_stat = env_file.lstat()
+    except OSError as exc:
+        issues.append(
+            _preflight_issue(
+                "install.config.not_service_readable",
+                "error",
+                "Configuration file cannot be inspected.",
+                "Run: sudo pihole-ai install",
+                {"error": exc.__class__.__name__},
+            )
+        )
+        return issues
+
+    if stat.S_ISLNK(file_stat.st_mode):
+        return [
+            _preflight_issue(
+                "install.config.symlink",
+                "error",
+                "Configuration file is a symlink.",
+                "Replace it with a real /etc/pihole-ai/pihole-ai.env file.",
+            )
+        ]
+
+    if not stat.S_ISREG(file_stat.st_mode):
+        issues.append(
+            _preflight_issue(
+                "install.config.not_service_readable",
+                "error",
+                "Configuration path is not a regular file.",
+                "Replace it with a regular env file.",
+            )
+        )
+
+    if stat.S_IMODE(file_stat.st_mode) != CONFIG_FILE_MODE:
+        issues.append(
+            _preflight_issue(
+                "install.config.unsafe_permissions",
+                "error",
+                "Configuration file permissions are unsafe.",
+                f"Set {env_file} to mode {CONFIG_FILE_MODE:o}.",
+                {"mode": oct(stat.S_IMODE(file_stat.st_mode))},
+            )
+        )
+
+    if file_stat.st_uid != 0 or file_stat.st_gid != expected_gid:
+        issues.append(
+            _preflight_issue(
+                "install.config.invalid_owner",
+                "error",
+                "Configuration file owner/group is invalid.",
+                f"Set {env_file} to root:{group}.",
+            )
+        )
+
+    if issues:
+        return issues
+
+    for code, command, summary in (
+        (
+            "install.config.directory_not_traversable",
+            ["sudo", "-u", user, "test", "-x", str(config_dir)],
+            "Service user cannot traverse the configuration directory.",
+        ),
+        (
+            "install.config.not_service_readable",
+            ["sudo", "-u", user, "test", "-r", str(env_file)],
+            "Service user cannot read the configuration file.",
+        ),
+    ):
+        completed = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if completed.returncode != 0:
+            issues.append(
+                _preflight_issue(
+                    code,
+                    "error",
+                    summary,
+                    "Run: sudo pihole-ai install",
+                )
+            )
+
+    return issues
 
 
 def _runtime_env_content(
