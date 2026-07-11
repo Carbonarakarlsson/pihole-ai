@@ -10,7 +10,7 @@ import tomllib
 
 
 PACKAGE_NAME = "pihole-ai"
-DEVELOPMENT_VERSION = "0.4.0rc1"
+DEVELOPMENT_VERSION = "0.4.0rc3"
 
 
 def get_version() -> str:

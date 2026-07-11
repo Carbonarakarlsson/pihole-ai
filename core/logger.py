@@ -29,7 +29,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from core.config import settings
+from core.config import ConfigurationError, settings
 
 # ============================================================================
 # Constants
@@ -75,7 +75,7 @@ def configure_logging() -> None:
     try:
         log_level = settings.log_level
         log_file = Path(settings.log_file)
-    except OSError:
+    except (ConfigurationError, OSError):
         log_level = "INFO"
         log_file = None
 

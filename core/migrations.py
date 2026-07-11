@@ -38,6 +38,12 @@ class UnsupportedSchemaVersion(MigrationError):
     """
 
 
+class ReadOnlyDatabaseUnavailable(MigrationError):
+    """
+    Existing database could not be opened for read-only inspection.
+    """
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -249,6 +255,30 @@ def open_database(
     return conn
 
 
+def open_database_readonly(
+    database_path: str | Path,
+) -> sqlite3.Connection:
+    """
+    Open an existing SQLite database without creating or modifying it.
+    """
+
+    path = Path(database_path)
+
+    if not path.exists():
+        raise FileNotFoundError(path)
+
+    uri = f"file:{path}?mode=ro"
+    conn = sqlite3.connect(
+        uri,
+        timeout=SQLITE_TIMEOUT_SECONDS,
+        uri=True,
+    )
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_TIMEOUT_SECONDS * 1000}")
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
 def ensure_migration_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -372,7 +402,7 @@ def database_status(
             compatible=True,
         )
 
-    with closing(open_database(path)) as conn:
+    with closing(open_database_readonly(path)) as conn:
         current = current_schema_version(conn)
         _raise_if_future_schema(current)
 

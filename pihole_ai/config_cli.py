@@ -10,6 +10,7 @@ from typing import Any
 
 from core.config import (
     ConfigurationParseError,
+    ProtectedConfigurationAccessError,
     ValidationMode,
     ValidationSeverity,
     load_config,
@@ -93,6 +94,33 @@ def print_config_show(
         config = load_config(
             validate=False,
         )
+
+    except ProtectedConfigurationAccessError as exc:
+        issue = exc.issue()
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "error": exc.__class__.__name__,
+                        "issues": [
+                            {
+                                "code": issue.code,
+                                "severity": issue.severity,
+                                "setting": issue.setting,
+                                "summary": issue.summary,
+                                "remediation": issue.remediation,
+                                "details": issue.details or {},
+                            }
+                        ],
+                    },
+                    sort_keys=True,
+                )
+            )
+        else:
+            print("Appliance configuration is protected.")
+            print("Re-run with sudo: sudo pihole-ai config show")
+
+        return 3
 
     except ConfigurationParseError as exc:
         if as_json:
