@@ -86,6 +86,9 @@ def _decision_ref_for_domain(
     record = get_decision_record(domain)
     if record is None:
         return None
+    decision_id = record.get("decision_id")
+    if decision_id:
+        return str(decision_id)
     created_at = record.get("created_at", "")
     return f"decision:{domain}:{created_at}"
 

@@ -15,12 +15,22 @@
   visible at submission time.
 - Added repository cleanup, repository audit, CLI, configuration, database,
   security, operations, development, and technical-debt documentation.
+- Added immutable append-only decision history with opaque decision IDs,
+  historical evidence rows, explain history/decision/compare flows, and
+  explicit retention maintenance.
+- Added managed threat-intelligence feed sources with safe fetching,
+  generation-based activation, rollback, update audit history, CLI management,
+  dashboard status, and updater systemd units.
 
 ### Changed
 
 - Manual rules and high-confidence threat intelligence are resolved by decisive
   precedence before lower-priority classifiers run.
 - Current active installation examples now use version-neutral wheel patterns.
+- Latest-decision tables are now compatibility projections over immutable
+  history for fresh v0.5 decisions.
+- Threat-intelligence classification now reads enabled sources through active
+  feed generations while preserving manual import compatibility.
 
 ### Fixed
 
@@ -37,8 +47,6 @@
 
 ### Known Limitations
 
-- Fresh v0.5 decisions store the latest structured decision per domain; immutable
-  full per-decision history is still deferred.
 - Database backup/restore commands and long-term retention policy are not yet
   implemented.
 

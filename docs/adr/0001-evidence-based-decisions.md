@@ -82,6 +82,6 @@ dashboard, or API explain rendering.
 ## Consequences
 
 The dashboard and CLI can render a stored decision without rerunning classifiers.
-Historical structured evidence is preserved for the latest decision per domain.
-Future work may add immutable per-decision history, but v0.5 does not rewrite
-historical analyses or add new classifiers.
+Historical structured evidence is preserved in append-only decision history for
+fresh v0.5 decisions. Latest-decision projections remain for compatibility, and
+v0.5 does not rewrite historical analyses or add new classifiers.

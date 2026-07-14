@@ -43,8 +43,7 @@ from core.db import (
     get_unprocessed_domains,
     mark_processed_by_domain,
     record_action,
-    save_analysis,
-    save_decision_evidence,
+    save_analysis_with_decision,
 )
 from core.logger import get_logger
 
@@ -174,7 +173,7 @@ class AnalysisEngine:
                     request,
                 )
 
-                save_analysis(
+                decision_id = save_analysis_with_decision(
                     domain=result.domain,
                     risk=result.risk,
                     confidence=result.confidence,
@@ -182,12 +181,9 @@ class AnalysisEngine:
                     reason=result.reason,
                     model=result.model,
                     analyzed_at=result.analyzed_at,
+                    decision=result.decision,
+                    trigger="cache_expired" if analysis is not None else "first_seen",
                 )
-                if result.decision is not None:
-                    save_decision_evidence(
-                        result.domain,
-                        result.decision,
-                    )
 
                 if _is_ai_parse_error(result):
                     record_action(
@@ -197,6 +193,7 @@ class AnalysisEngine:
                         status="parse_error",
                         reason=result.reason,
                         risk=result.risk,
+                        decision_ref=decision_id,
                     )
 
                 try:
@@ -212,6 +209,7 @@ class AnalysisEngine:
 
                 apply_action_policy(
                     result,
+                    decision_ref=decision_id,
                 )
 
                 mark_processed_by_domain(

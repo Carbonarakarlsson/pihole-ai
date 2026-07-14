@@ -26,6 +26,7 @@ current release baseline is `0.4.0rc3`; v0.5 work is tracked under
 - password bootstrap with no default password
 - health, doctor, setup, status, and database diagnostics
 - evidence-based decisions with stored explain output
+- immutable decision history and decision comparison
 - manual rules, local reputation, threat-intelligence imports, and feedback
 
 ## Appliance Install
@@ -98,6 +99,18 @@ Manual block/allow, local infrastructure, and high-confidence threat-intel hits
 are decisive. AI is skipped when deterministic evidence is decisive or
 sufficient, and disabled/rate-limited/timeout paths persist safe unknown results.
 
+## Threat Intelligence Feeds
+
+Manual `pihole-ai intel import-hosts` remains supported. v0.5 also adds managed
+feed sources with safe HTTPS fetching, size/time limits, generation-based
+activation, rollback, and update audit history. Classification only uses enabled
+sources with an active generation, so failed downloads do not replace the last
+known-good feed.
+
+The appliance installer writes a managed `pihole-ai-intel-update.service` and
+`pihole-ai-intel-update.timer`; automatic updates are opt-in through
+`PIHOLE_AI_INTEL_AUTO_UPDATE_ENABLED`.
+
 ## Ollama Optionality
 
 PiHole-AI remains useful without Ollama. Set `AI_ENABLED=false` to disable local
@@ -122,6 +135,9 @@ AI_ENABLED=true
 AI_MAX_CALLS_PER_MINUTE=2
 AI_COOLDOWN_SECONDS=60
 AI_TIMEOUT_SECONDS=20
+PIHOLE_AI_INTEL_AUTO_UPDATE_ENABLED=false
+PIHOLE_AI_INTEL_UPDATE_INTERVAL_SECONDS=86400
+PIHOLE_AI_INTEL_MAX_DOWNLOAD_BYTES=2000000
 PIHOLE_AI_DASHBOARD_AUTH_ENABLED=true
 PIHOLE_AI_DASHBOARD_USERNAME=admin
 ```
@@ -133,6 +149,11 @@ inventory.
 
 `pihole-ai setup status` derives readiness from install state, configuration,
 database schema, services, runtime health, and optional Ollama status.
+
+Decision IDs use an opaque `dec_<uuid4hex>` format. Fresh classifications append
+to `decision_history` and update latest compatibility projections for existing
+callers. History is not created by dashboard reads, explain reads, health/status
+checks, or cache hits.
 
 `ready=true` means all required setup steps are complete. `overall_stage=degraded`
 means PiHole-AI is operational but warning-level or optional diagnostics need
@@ -162,8 +183,7 @@ loopback is degraded but ready.
 ## Validated Limitations
 
 - Dashboard is single-administrator only.
-- The latest structured decision per domain is persisted; immutable full
-  per-decision history is deferred.
+- Decision-history retention is explicit maintenance, not automatic cleanup.
 - PiHole-AI does not automatically install or manage Ollama models.
 - Database migrations do not downgrade schemas during rollback.
 - Physical Raspberry Pi/systemd field tests remain required before final

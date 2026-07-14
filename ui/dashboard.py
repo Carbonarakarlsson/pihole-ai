@@ -30,10 +30,16 @@ from core.db import (
     database_stats,
     decision_metrics as db_decision_metrics,
     get_recent_actions as db_get_recent_actions,
+    list_intel_source_status,
     query_all,
 )
 from core.logger import get_logger
-from pihole_ai.explain import explain_domain, is_valid_domain_query
+from pihole_ai.explain import (
+    compare_domain_decisions,
+    decision_history,
+    explain_domain,
+    is_valid_domain_query,
+)
 from pihole_ai.feedback import FEEDBACK_VERDICTS, record_feedback
 from pihole_ai.learn import get_reputations as load_reputations
 from pihole_ai.rules import (
@@ -74,7 +80,11 @@ ROUTE_SECURITY = {
     "GET /api/actions": "authenticated_read",
     "GET /api/rules": "authenticated_read",
     "GET /api/reputations": "authenticated_read",
+    "GET /api/intel/sources": "authenticated_read",
     "GET /api/explain/<domain>": "authenticated_read",
+    "GET /api/explain/<domain>/history": "authenticated_read",
+    "GET /api/explain/<domain>/decision/<decision_id>": "authenticated_read",
+    "GET /api/explain/<domain>/compare": "authenticated_read",
     "POST /api/feedback": "authenticated_write_csrf",
     "POST /api/rules": "authenticated_write_csrf",
     "DELETE /api/rules/<domain>": "authenticated_write_csrf",
@@ -629,6 +639,21 @@ input {
 
 .evidence-card.decisive {
     border-left-color: var(--accent);
+}
+
+.history-row {
+    width: 100%;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    background: transparent;
+    color: var(--text);
+    padding: 9px 0;
+    text-align: left;
+    cursor: pointer;
+}
+
+.history-row:hover {
+    color: var(--accent);
 }
 
 .evidence-meta,
@@ -1553,12 +1578,16 @@ function settingsMessage(message) {
     document.getElementById("settings-message").textContent = message;
 }
 
-function renderIntelligence(metrics, status) {
+function renderIntelligence(metrics, status, intelSources) {
     const target = document.getElementById("intelligence-cards");
     clear(target);
     const database = status.database ?? {};
     const ai = status.ai ?? {};
     const config = status.config ?? {};
+    const sources = Array.isArray(intelSources?.sources) ? intelSources.sources : [];
+    const enabledSources = sources.filter((source) => source.enabled).length;
+    const failedSources = sources.filter((source) => source.status === "failed").length;
+    const staleSources = sources.filter((source) => source.status === "stale").length;
 
     target.appendChild(metricPanel("AI Controls", [
         ["Enabled", config.ai_enabled],
@@ -1579,8 +1608,9 @@ function renderIntelligence(metrics, status) {
     ]));
     target.appendChild(metricPanel("Threat Intel", [
         ["Indicators", database.threat_intel ?? 0],
-        ["High Risk", metrics.analysis.high_risk],
-        ["Unknown", metrics.categories?.unknown ?? 0],
+        ["Sources", sources.length],
+        ["Enabled", enabledSources],
+        ["Failed/Stale", `${failedSources}/${staleSources}`],
     ]));
 }
 
@@ -1626,6 +1656,7 @@ function renderExplanation(explanation) {
     renderEvidenceSection(target, "Neutral/context evidence", explanation.neutral_evidence, false);
     renderTraceSection(target, explanation.classifier_trace ?? []);
     renderListSection(target, "Conflicts and uncertainty", explanation.conflicts ?? []);
+    renderHistorySection(target, explanation.domain);
 
     if (explanation.legacy) {
         renderListSection(target, "Legacy decision", [
@@ -1687,6 +1718,83 @@ function renderDecisionSection(target, explanation) {
         metricChip("Time", formatTime(decision.created_at))
     );
     node.append(summary, metrics);
+    target.appendChild(node);
+}
+
+async function renderHistorySection(target, domain) {
+    const node = section("Decision history");
+    const loading = document.createElement("div");
+    loading.className = "empty";
+    loading.textContent = "Loading history...";
+    node.appendChild(loading);
+    target.appendChild(node);
+
+    const response = await checkedFetch(`/api/explain/${encodeURIComponent(domain)}/history?limit=10`);
+    clear(node);
+    const heading = document.createElement("h3");
+    heading.textContent = "Decision history";
+    node.appendChild(heading);
+    if (!response.ok) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "History unavailable.";
+        node.appendChild(empty);
+        return;
+    }
+    const payload = await response.json();
+    const history = Array.isArray(payload.history) ? payload.history : [];
+    if (history.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No decision history yet.";
+        node.appendChild(empty);
+        return;
+    }
+    history.forEach((item) => {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "history-row";
+        row.textContent = `${formatTime(item.created_at)} · ${text(item.verdict)} · risk ${item.risk_score} · ${text(item.trigger)}${item.current ? " · current" : ""}`;
+        row.addEventListener("click", () => loadHistoricalDecision(domain, item.decision_id));
+        node.appendChild(row);
+    });
+    if (history.length >= 2) {
+        const compare = button("Compare latest to previous", () => compareDecisions(
+            domain,
+            history[1].decision_id,
+            history[0].decision_id
+        ));
+        node.appendChild(compare);
+    }
+}
+
+async function loadHistoricalDecision(domain, decisionId) {
+    const response = await checkedFetch(`/api/explain/${encodeURIComponent(domain)}/decision/${encodeURIComponent(decisionId)}`);
+    if (response.ok) {
+        renderExplanation(await response.json());
+    }
+}
+
+async function compareDecisions(domain, olderId, newerId) {
+    const target = document.getElementById("explain");
+    const response = await checkedFetch(
+        `/api/explain/${encodeURIComponent(domain)}/compare?older=${encodeURIComponent(olderId)}&newer=${encodeURIComponent(newerId)}`
+    );
+    if (!response.ok) {
+        return;
+    }
+    const comparison = await response.json();
+    const node = section("Decision comparison");
+    renderListSection(node, "Changes", [
+        `Verdict changed: ${comparison.verdict_changed}`,
+        `Risk delta: ${comparison.risk_delta}`,
+        `Confidence delta: ${comparison.confidence_delta}`,
+        `Policy changed: ${comparison.policy_changed}`,
+        `Decisive evidence changed: ${comparison.decisive_evidence_changed}`,
+        comparison.summary,
+    ]);
+    renderEvidenceSection(node, "Evidence added", comparison.added_evidence ?? [], false);
+    renderEvidenceSection(node, "Evidence removed", comparison.removed_evidence ?? [], false);
     target.appendChild(node);
 }
 
@@ -1902,12 +2010,13 @@ async function loadSettings() {
 }
 
 async function loadMetrics() {
-    const [metrics, status] = await Promise.all([
+    const [metrics, status, intelSources] = await Promise.all([
         checkedFetch("/api/metrics/decisions").then((res) => res.json()),
         checkedFetch("/api/status").then((res) => res.json()),
+        checkedFetch("/api/intel/sources").then((res) => res.json()),
     ]);
     renderDecisionMetrics(metrics);
-    renderIntelligence(metrics, status);
+    renderIntelligence(metrics, status, intelSources);
 }
 
 async function loadTables() {
@@ -2935,6 +3044,26 @@ def create_app() -> Flask:
             )
         )
 
+    @app.get("/api/intel/sources")
+    def intel_sources():
+        sources = []
+        for row in list_intel_source_status():
+            sources.append(
+                {
+                    "source_id": row.get("source_id"),
+                    "name": row.get("name"),
+                    "enabled": bool(row.get("enabled")),
+                    "status": row.get("status") or "unknown",
+                    "entry_count": row.get("entry_count") or 0,
+                    "last_success_at": row.get("last_success_at"),
+                    "last_attempt_at": row.get("last_attempt_at"),
+                    "last_error_code": row.get("last_error_code") or "",
+                }
+            )
+        response = jsonify({"sources": sources})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.get("/api/explain/<path:domain>")
     def explain(domain: str):
         if not is_valid_domain_query(domain):
@@ -2963,6 +3092,57 @@ def create_app() -> Flask:
             ), 404
 
         response = jsonify(explanation)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/api/explain/<path:domain>/history")
+    def explain_history(domain: str):
+        if not is_valid_domain_query(domain):
+            return jsonify({"error": "invalid domain"}), 400
+
+        try:
+            limit = parse_limit(request.args.get("limit"), default=20, maximum=100)
+            before_raw = request.args.get("before")
+            before = float(before_raw) if before_raw else None
+            payload = decision_history(domain, limit=limit, before=before)
+        except ValueError:
+            return jsonify({"error": "invalid request"}), 400
+
+        response = jsonify(payload)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/api/explain/<path:domain>/decision/<decision_id>")
+    def explain_decision(domain: str, decision_id: str):
+        if not is_valid_domain_query(domain):
+            return jsonify({"error": "invalid domain"}), 400
+
+        try:
+            explanation = explain_domain(domain, decision_id=decision_id)
+        except ValueError:
+            return jsonify({"error": "invalid decision id"}), 400
+        except LookupError:
+            return jsonify({"error": "decision not found"}), 404
+
+        response = jsonify(explanation)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/api/explain/<path:domain>/compare")
+    def explain_compare(domain: str):
+        older = request.args.get("older", "")
+        newer = request.args.get("newer", "")
+        if not is_valid_domain_query(domain):
+            return jsonify({"error": "invalid domain"}), 400
+
+        try:
+            payload = compare_domain_decisions(domain, older, newer)
+        except ValueError:
+            return jsonify({"error": "invalid decision id"}), 400
+        except LookupError:
+            return jsonify({"error": "decision not found"}), 404
+
+        response = jsonify(payload)
         response.headers["Cache-Control"] = "no-store"
         return response
 

@@ -9,7 +9,9 @@ import re
 from typing import Any
 
 from core.db import (
+    compare_decisions,
     get_analysis,
+    get_decision,
     get_decision_record,
     get_decision_evidence,
     get_domain_metadata,
@@ -17,6 +19,8 @@ from core.db import (
     get_domain_rule,
     get_recent_actions,
     get_threat_intel,
+    is_valid_decision_id,
+    list_decision_history,
 )
 from engine.evidence import (
     EVIDENCE_POLICY_VERSION,
@@ -84,6 +88,7 @@ def parse_signals(
 def explain_domain(
     domain: str,
     action_limit: int = 10,
+    decision_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Collect all known evidence for a domain.
@@ -98,11 +103,24 @@ def explain_domain(
     analysis = row_to_dict(
         get_analysis(normalized),
     )
-    evidence = sorted(
-        get_decision_evidence(normalized),
-        key=evidence_sort_key,
-    )
-    decision_record = get_decision_record(normalized)
+    selected_decision = None
+    if decision_id is not None:
+        if not is_valid_decision_id(decision_id):
+            raise ValueError("invalid decision id")
+        selected_decision = get_decision(decision_id)
+        if selected_decision is None or selected_decision.get("domain") != normalized:
+            raise LookupError("decision not found")
+        evidence = sorted(
+            selected_decision.get("evidence", []),
+            key=evidence_sort_key,
+        )
+        decision_record = selected_decision
+    else:
+        evidence = sorted(
+            get_decision_evidence(normalized),
+            key=evidence_sort_key,
+        )
+        decision_record = get_decision_record(normalized)
     reputation = row_to_dict(
         get_domain_reputation(normalized),
     )
@@ -192,6 +210,50 @@ def explain_domain(
     return explanation
 
 
+def decision_history(
+    domain: str,
+    limit: int = 20,
+    before: float | None = None,
+) -> dict[str, Any]:
+    normalized = normalize_domain(domain)
+    if not is_valid_domain_query(normalized):
+        raise ValueError("invalid domain")
+    latest = get_decision_record(normalized)
+    latest_id = latest.get("decision_id") if latest else None
+    history = list_decision_history(
+        normalized,
+        limit=limit,
+        before=before,
+    )
+    for item in history:
+        item["current"] = bool(latest_id and item.get("decision_id") == latest_id)
+        item.pop("decisive_evidence_ids", None)
+        item.pop("classifier_trace", None)
+        item.pop("conflicts", None)
+    return {
+        "domain": normalized,
+        "history": history,
+        "limit": limit,
+        "before": before,
+    }
+
+
+def compare_domain_decisions(
+    domain: str,
+    older_id: str,
+    newer_id: str,
+) -> dict[str, Any]:
+    normalized = normalize_domain(domain)
+    if not is_valid_domain_query(normalized):
+        raise ValueError("invalid domain")
+    if not is_valid_decision_id(older_id) or not is_valid_decision_id(newer_id):
+        raise ValueError("invalid decision id")
+    comparison = compare_decisions(older_id, newer_id)
+    if comparison is None or comparison.get("domain") != normalized:
+        raise LookupError("decision not found")
+    return comparison
+
+
 def summarize_decision(
     explanation: dict[str, Any],
     decision_record: dict[str, Any] | None = None,
@@ -206,6 +268,7 @@ def summarize_decision(
 
     if decision_record is not None:
         return {
+            "decision_id": decision_record.get("decision_id"),
             "domain": decision_record["domain"],
             "verdict": decision_record["verdict"],
             "risk_score": decision_record["risk_score"],
@@ -321,13 +384,56 @@ def summarize_explanation(
 def print_explanation(
     domain: str,
     as_json: bool = False,
+    history: bool = False,
+    decision_id: str | None = None,
+    compare: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     Print an explanation and return the collected data.
     """
 
+    if history:
+        payload = decision_history(domain)
+        if as_json:
+            print(json.dumps(payload, indent=2))
+            return payload
+        print(f"PiHole-AI decision history for {payload['domain']}")
+        if not payload["history"]:
+            print("  none")
+        for item in payload["history"]:
+            current = " current" if item.get("current") else ""
+            print(
+                "  "
+                f"{item['created_at']} {item['decision_id']}{current} "
+                f"verdict={item['verdict']} risk={item['risk_score']} "
+                f"confidence={item['confidence']} category={item['category']} "
+                f"source={item['source']} trigger={item['trigger']} "
+                f"policy={item['policy_version']}"
+            )
+        return payload
+
+    if compare is not None:
+        payload = compare_domain_decisions(domain, compare[0], compare[1])
+        if as_json:
+            print(json.dumps(payload, indent=2))
+            return payload
+        print(f"PiHole-AI decision comparison for {payload['domain']}")
+        print(f"  older: {payload['older_decision_id']}")
+        print(f"  newer: {payload['newer_decision_id']}")
+        print(f"  verdict_changed: {payload['verdict_changed']}")
+        print(f"  risk_delta: {payload['risk_delta']:+.0f}")
+        print(f"  confidence_delta: {payload['confidence_delta']:+.2f}")
+        print(f"  policy_changed: {payload['policy_changed']}")
+        print(f"  decisive_evidence_changed: {payload['decisive_evidence_changed']}")
+        print(f"  evidence_added: {len(payload['added_evidence'])}")
+        print(f"  evidence_removed: {len(payload['removed_evidence'])}")
+        print(f"  evidence_changed: {len(payload['changed_evidence'])}")
+        print(f"  summary: {payload['summary']}")
+        return payload
+
     explanation = explain_domain(
         domain,
+        decision_id=decision_id,
     )
 
     if as_json:

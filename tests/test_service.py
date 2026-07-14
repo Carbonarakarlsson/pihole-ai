@@ -9,7 +9,10 @@ from unittest.mock import ANY, call, patch
 
 from pihole_ai import service as service_module
 from pihole_ai.service import (
+    INTEL_UPDATE_SERVICE_NAME,
+    INTEL_UPDATE_TIMER_NAME,
     InstallationLayout,
+    MANAGED_UNIT_NAMES,
     SERVICE_NAMES,
     SERVICE_DEFINITIONS,
     ServiceError,
@@ -18,6 +21,7 @@ from pihole_ai.service import (
     build_install_plan,
     discover_executable_target,
     generate_unit_file,
+    generate_timer_file,
     generated_units,
     installation_status,
     launcher_content,
@@ -107,6 +111,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(plan.service_user, "pihole-ai")
         self.assertFalse(plan.enable_services)
         self.assertIn("pihole-ai-collector.service", plan.unit_paths)
+        self.assertIn(INTEL_UPDATE_TIMER_NAME, plan.unit_paths)
         self.assertIn(layout.config_file, plan.files_to_write)
         self.assertEqual(plan.executable_path, Path("/usr/bin/pihole-ai"))
 
@@ -266,12 +271,24 @@ class ServiceTests(unittest.TestCase):
                 executable_path=plan.executable_path,
             )
 
-        for unit in units.values():
+        for name, unit in units.items():
+            if not name.endswith(".service"):
+                continue
             self.assertIn(
                 "ExecStart=/opt/pihole-ai/venv/bin/python -m pihole_ai.cli",
                 unit,
             )
+        self.assertIn(INTEL_UPDATE_TIMER_NAME, units)
+        self.assertIn(f"Unit={INTEL_UPDATE_SERVICE_NAME}", units[INTEL_UPDATE_TIMER_NAME])
         self.assertIn("# Target: /opt/pihole-ai/venv/bin/pihole-ai", launcher)
+
+    def test_generate_intel_update_timer_file(self) -> None:
+        timer = generate_timer_file(interval_seconds=3600)
+
+        self.assertIn("[Timer]", timer)
+        self.assertIn("OnUnitActiveSec=3600", timer)
+        self.assertIn(f"Unit={INTEL_UPDATE_SERVICE_NAME}", timer)
+        self.assertIn("WantedBy=timers.target", timer)
 
     def test_install_status_reports_executable_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, patch(
@@ -695,7 +712,7 @@ class ServiceTests(unittest.TestCase):
                 launcher_content("/app"),
                 encoding="utf-8",
             )
-            for name in SERVICE_NAMES:
+            for name in MANAGED_UNIT_NAMES:
                 (Path(tmpdir) / name).write_text(
                     "unit",
                     encoding="utf-8",
@@ -707,14 +724,14 @@ class ServiceTests(unittest.TestCase):
                 wrapper_path=wrapper,
             )
 
-            for name in SERVICE_NAMES:
+            for name in MANAGED_UNIT_NAMES:
                 self.assertFalse((Path(tmpdir) / name).exists())
             self.assertFalse(wrapper.exists())
 
         run.assert_has_calls(
             [
                 call(
-                    ["systemctl", "disable", "--now", *SERVICE_NAMES],
+                    ["systemctl", "disable", "--now", *MANAGED_UNIT_NAMES],
                     check=True,
                 ),
                 call(

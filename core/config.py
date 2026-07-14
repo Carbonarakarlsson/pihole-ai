@@ -197,6 +197,15 @@ class Settings:
     dashboard_trust_proxy: bool
     cache_ttl: int
     keep_latest_events: int
+    decision_history_retention_days: int
+    decision_history_max_per_domain: int
+    intel_auto_update_enabled: bool
+    intel_update_interval_seconds: int
+    intel_http_timeout_seconds: int
+    intel_max_download_bytes: int
+    intel_stale_after_seconds: int
+    intel_allow_http: bool
+    intel_user_agent: str
 
     def __init__(
         self,
@@ -273,6 +282,17 @@ class Settings:
                 "action_mode": self.action_mode,
                 "cache_ttl": self.cache_ttl,
                 "keep_latest_events": self.keep_latest_events,
+                "decision_history_retention_days": self.decision_history_retention_days,
+                "decision_history_max_per_domain": self.decision_history_max_per_domain,
+            },
+            "threat_intelligence": {
+                "auto_update_enabled": self.intel_auto_update_enabled,
+                "update_interval_seconds": self.intel_update_interval_seconds,
+                "http_timeout_seconds": self.intel_http_timeout_seconds,
+                "max_download_bytes": self.intel_max_download_bytes,
+                "stale_after_seconds": self.intel_stale_after_seconds,
+                "allow_http": self.intel_allow_http,
+                "user_agent": self.intel_user_agent,
             },
             "ai": {
                 "enabled": self.ai_enabled,
@@ -551,6 +571,7 @@ def _parse_config(
         "ollama_url": raw_value("PIHOLE_AI_OLLAMA_URL", default="http://127.0.0.1:11434"),
         "ollama_model": raw_value("PIHOLE_AI_OLLAMA_MODEL", default="llama3.2:1b"),
         "log_level": raw_value("PIHOLE_AI_LOG_LEVEL", "LOG_LEVEL", default="INFO").upper(),
+        "intel_user_agent": raw_value("PIHOLE_AI_INTEL_USER_AGENT", default="PiHole-AI threat-intel updater"),
         "dashboard_host": raw_value("PIHOLE_AI_DASHBOARD_HOST", default="0.0.0.0"),
         "dashboard_username": raw_value("PIHOLE_AI_DASHBOARD_USERNAME", default="admin"),
         "dashboard_password_hash": raw_value("PIHOLE_AI_DASHBOARD_PASSWORD_HASH", default=""),
@@ -581,6 +602,12 @@ def _parse_config(
         "dashboard_session_lifetime_minutes": ("PIHOLE_AI_DASHBOARD_SESSION_LIFETIME_MINUTES", "480"),
         "cache_ttl": ("PIHOLE_AI_CACHE_TTL", "86400"),
         "keep_latest_events": ("PIHOLE_AI_KEEP_LATEST_EVENTS", "100000"),
+        "decision_history_retention_days": ("PIHOLE_AI_DECISION_HISTORY_RETENTION_DAYS", "365"),
+        "decision_history_max_per_domain": ("PIHOLE_AI_DECISION_HISTORY_MAX_PER_DOMAIN", "100"),
+        "intel_update_interval_seconds": ("PIHOLE_AI_INTEL_UPDATE_INTERVAL_SECONDS", "86400"),
+        "intel_http_timeout_seconds": ("PIHOLE_AI_INTEL_HTTP_TIMEOUT_SECONDS", "20"),
+        "intel_max_download_bytes": ("PIHOLE_AI_INTEL_MAX_DOWNLOAD_BYTES", "2000000"),
+        "intel_stale_after_seconds": ("PIHOLE_AI_INTEL_STALE_AFTER_SECONDS", "172800"),
     }
 
     for field, (env_key, default) in int_fields.items():
@@ -603,6 +630,16 @@ def _parse_config(
     parsed["dev_access_logs"] = _parse_bool(
         setting="DEV_ACCESS_LOGS",
         value=raw_value("DEV_ACCESS_LOGS", default="false"),
+        issues=issues,
+    )
+    parsed["intel_auto_update_enabled"] = _parse_bool(
+        setting="PIHOLE_AI_INTEL_AUTO_UPDATE_ENABLED",
+        value=raw_value("PIHOLE_AI_INTEL_AUTO_UPDATE_ENABLED", default="false"),
+        issues=issues,
+    )
+    parsed["intel_allow_http"] = _parse_bool(
+        setting="PIHOLE_AI_INTEL_ALLOW_HTTP",
+        value=raw_value("PIHOLE_AI_INTEL_ALLOW_HTTP", default="false"),
         issues=issues,
     )
     parsed["dashboard_auth_enabled"] = _parse_bool(
@@ -1121,6 +1158,12 @@ def _validate_numeric(
         "PIHOLE_AI_DASHBOARD_SLOW_POLL_INTERVAL_MS": config.dashboard_slow_poll_interval_ms,
         "PIHOLE_AI_DASHBOARD_SESSION_LIFETIME_MINUTES": config.dashboard_session_lifetime_minutes,
         "PIHOLE_AI_KEEP_LATEST_EVENTS": config.keep_latest_events,
+        "PIHOLE_AI_DECISION_HISTORY_RETENTION_DAYS": config.decision_history_retention_days,
+        "PIHOLE_AI_DECISION_HISTORY_MAX_PER_DOMAIN": config.decision_history_max_per_domain,
+        "PIHOLE_AI_INTEL_UPDATE_INTERVAL_SECONDS": config.intel_update_interval_seconds,
+        "PIHOLE_AI_INTEL_HTTP_TIMEOUT_SECONDS": config.intel_http_timeout_seconds,
+        "PIHOLE_AI_INTEL_MAX_DOWNLOAD_BYTES": config.intel_max_download_bytes,
+        "PIHOLE_AI_INTEL_STALE_AFTER_SECONDS": config.intel_stale_after_seconds,
     }
 
     for setting, value in positive.items():

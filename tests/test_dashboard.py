@@ -149,6 +149,71 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["legacy"])
 
+    def test_explain_history_endpoint_returns_bounded_history(self) -> None:
+        history = {
+            "domain": "bad.example",
+            "history": [
+                {
+                    "decision_id": "dec_" + "1" * 32,
+                    "verdict": "malicious",
+                    "risk_score": 90,
+                    "confidence": 0.9,
+                    "category": "malware",
+                    "source": "heuristics",
+                    "trigger": "first_seen",
+                    "policy_version": "evidence-policy-v1",
+                    "created_at": 1.0,
+                    "current": True,
+                }
+            ],
+            "limit": 20,
+            "before": None,
+        }
+
+        with patch("ui.dashboard.decision_history", return_value=history) as decision_history:
+            response = self.client.get("/api/explain/bad.example/history?limit=20")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["history"][0]["decision_id"], "dec_" + "1" * 32)
+        decision_history.assert_called_once_with("bad.example", limit=20, before=None)
+
+    def test_explain_decision_endpoint_selects_historical_decision(self) -> None:
+        explanation = {
+            "domain": "bad.example",
+            "decision": {"decision_id": "dec_" + "2" * 32},
+            "rule": None,
+            "threat_intel": None,
+            "reputation": None,
+            "actions": [],
+            "metadata": {"query_count": 1},
+            "legacy": False,
+        }
+
+        with patch("ui.dashboard.explain_domain", return_value=explanation) as explain_domain:
+            response = self.client.get("/api/explain/bad.example/decision/dec_" + "2" * 32)
+
+        self.assertEqual(response.status_code, 200)
+        explain_domain.assert_called_once_with("bad.example", decision_id="dec_" + "2" * 32)
+
+    def test_explain_compare_endpoint_returns_comparison(self) -> None:
+        comparison = {
+            "domain": "bad.example",
+            "older_decision_id": "dec_" + "1" * 32,
+            "newer_decision_id": "dec_" + "2" * 32,
+            "risk_delta": 20,
+        }
+
+        with patch("ui.dashboard.compare_domain_decisions", return_value=comparison) as compare:
+            response = self.client.get(
+                "/api/explain/bad.example/compare?older=dec_"
+                + "1" * 32
+                + "&newer=dec_"
+                + "2" * 32
+            )
+
+        self.assertEqual(response.status_code, 200)
+        compare.assert_called_once_with("bad.example", "dec_" + "1" * 32, "dec_" + "2" * 32)
+
     def test_polling_endpoint_returns_dashboard_intervals(self) -> None:
         with patch(
             "ui.dashboard.settings",
@@ -423,6 +488,30 @@ class DashboardTests(unittest.TestCase):
             search="bad",
             min_score=70,
         )
+
+    def test_intel_sources_endpoint_returns_read_only_feed_status(self) -> None:
+        rows = [
+            {
+                "source_id": "feed-a",
+                "name": "Feed A",
+                "url": "https://feeds.example/a.txt",
+                "enabled": 1,
+                "status": "active",
+                "entry_count": 12,
+                "last_success_at": 100.0,
+                "last_attempt_at": 120.0,
+                "last_error_code": "",
+            }
+        ]
+
+        with patch("ui.dashboard.list_intel_source_status", return_value=rows):
+            response = self.client.get("/api/intel/sources")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["sources"][0]["source_id"], "feed-a")
+        self.assertEqual(payload["sources"][0]["entry_count"], 12)
+        self.assertNotIn("url", payload["sources"][0])
 
     def test_explain_endpoint_returns_domain_explanation(self) -> None:
         explanation = {

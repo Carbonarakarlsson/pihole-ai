@@ -120,6 +120,7 @@ def decide_action(
 def apply_action_policy(
     result: AnalysisLike,
     mode: str | None = None,
+    decision_ref: str | None = None,
 ) -> PolicyDecision | None:
     """
     Apply the configured action policy and record the result.
@@ -150,6 +151,7 @@ def apply_action_policy(
                 status="failed",
                 reason=str(exc),
                 risk=result.risk,
+                decision_ref=decision_ref,
             )
             logger.exception(
                 "Failed applying block action for %s.",
@@ -174,6 +176,7 @@ def apply_action_policy(
         status=decision.status,
         reason=decision.reason,
         risk=result.risk,
+        decision_ref=decision_ref,
     )
 
     return decision

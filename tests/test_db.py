@@ -11,6 +11,7 @@ from core import migrations
 from core.migrations import IncompatibleSchema
 from engine.decision_engine import DecisionEngine
 from engine.evidence import EvidenceCollection, EvidenceItem, EvidencePolarity
+from pihole_ai.intel_models import FeedSource
 
 
 class DatabaseTests(unittest.TestCase):
@@ -55,6 +56,10 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn("domain_rules", tables)
         self.assertIn("domain_reputation", tables)
         self.assertIn("threat_intel", tables)
+        self.assertIn("decision_records", tables)
+        self.assertIn("decision_evidence", tables)
+        self.assertIn("decision_history", tables)
+        self.assertIn("decision_history_evidence", tables)
         self.assertIn("schema_migrations", tables)
         self.assertIn("confidence", columns)
 
@@ -195,6 +200,117 @@ class DatabaseTests(unittest.TestCase):
         self.assertIsNotNone(record)
         self.assertEqual(record["risk_score"], 100)
         self.assertEqual(record["policy_version"], "evidence-policy-v1")
+        history = db.list_decision_history("example.com", limit=10)
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0]["decision_id"], record["decision_id"])
+        self.assertEqual(history[0]["supersedes_decision_id"], history[1]["decision_id"])
+        older = db.get_decision(history[1]["decision_id"])
+        self.assertIsNotNone(older)
+        self.assertEqual(older["evidence"][0]["evidence_id"], "first")
+
+    def test_compare_decisions_reports_evidence_changes(self) -> None:
+        engine = DecisionEngine()
+        first = engine.decide(
+            EvidenceCollection(
+                domain="example.com",
+                items=(
+                    EvidenceItem(
+                        evidence_id="one",
+                        classifier="heuristics",
+                        evidence_type="signal",
+                        polarity=EvidencePolarity.RISK,
+                        score=20,
+                        confidence=0.7,
+                        summary="Observed signal.",
+                    ),
+                ),
+            )
+        )
+        second = engine.decide(
+            EvidenceCollection(
+                domain="example.com",
+                items=(
+                    EvidenceItem(
+                        evidence_id="two",
+                        classifier="heuristics",
+                        evidence_type="signal",
+                        polarity=EvidencePolarity.RISK,
+                        score=80,
+                        confidence=0.9,
+                        summary="Observed signal.",
+                    ),
+                    EvidenceItem(
+                        evidence_id="intel",
+                        classifier="threat-intel",
+                        evidence_type="indicator",
+                        polarity=EvidencePolarity.RISK,
+                        score=100,
+                        confidence=0.95,
+                        summary="Threat intel.",
+                        metadata={"decisive": True, "source": "fixture", "precedence": 20},
+                    ),
+                ),
+            )
+        )
+
+        older_id = db.save_decision_evidence("example.com", first)
+        newer_id = db.save_decision_evidence("example.com", second)
+
+        comparison = db.compare_decisions(older_id, newer_id)
+
+        self.assertIsNotNone(comparison)
+        self.assertGreater(comparison["risk_delta"], 0)
+        self.assertTrue(comparison["decisive_evidence_changed"])
+        self.assertEqual(len(comparison["added_evidence"]), 1)
+        self.assertEqual(len(comparison["changed_evidence"]), 1)
+
+    def test_decision_history_retention_preserves_latest_and_feedback_refs(self) -> None:
+        engine = DecisionEngine()
+        ids = []
+        for index in range(3):
+            decision = engine.decide(
+                EvidenceCollection(
+                    domain="example.com",
+                    items=(
+                        EvidenceItem(
+                            evidence_id=f"item-{index}",
+                            classifier="heuristics",
+                            evidence_type="signal",
+                            polarity=EvidencePolarity.RISK,
+                            score=10 + index,
+                            confidence=0.8,
+                            summary=f"Signal {index}.",
+                        ),
+                    ),
+                )
+            )
+            ids.append(db.save_decision_evidence("example.com", decision))
+        db.record_action(
+            domain="example.com",
+            action="feedback",
+            source="test",
+            status="safe",
+            decision_ref=ids[0],
+        )
+
+        dry_run = db.cleanup_decision_history(
+            retention_days=0,
+            max_per_domain=1,
+            dry_run=True,
+        )
+        result = db.cleanup_decision_history(
+            retention_days=0,
+            max_per_domain=1,
+            dry_run=False,
+        )
+
+        remaining = db.list_decision_history("example.com", limit=10)
+        remaining_ids = {item["decision_id"] for item in remaining}
+        self.assertEqual(dry_run.decisions_deleted, 0)
+        self.assertEqual(result.decisions_deleted, 1)
+        self.assertIn(ids[0], remaining_ids)
+        self.assertIn(ids[-1], remaining_ids)
+        self.assertNotIn(ids[1], remaining_ids)
 
     def test_save_decision_evidence_rejects_duplicate_evidence_ids(self) -> None:
         engine = DecisionEngine()
@@ -564,6 +680,66 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["domain"], "bad.example")
         self.assertEqual(db.database_stats()["threat_intel"], 2)
+
+    def test_active_threat_intel_uses_generation_entries(self) -> None:
+        db.save_intel_source(
+            FeedSource(
+                source_id="feed-a",
+                name="Feed A",
+                url="https://feeds.example/a.txt",
+                category="malware",
+                confidence=92,
+            )
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value="abc123",
+            entries=["bad.example"],
+            category="malware",
+            confidence=92,
+            etag="etag-a",
+            last_modified="Mon, 01 Jan 2024 00:00:00 GMT",
+        )
+
+        hit = db.get_active_threat_intel("bad.example")
+
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["source"], "feed-a")
+        self.assertEqual(hit["source_name"], "Feed A")
+        self.assertEqual(hit["generation_id"], "gen_a")
+        self.assertEqual(hit["confidence"], 92)
+
+    def test_threat_intel_generation_rollback_restores_previous_active_set(self) -> None:
+        db.save_intel_source(
+            FeedSource(
+                source_id="feed-a",
+                name="Feed A",
+                url="https://feeds.example/a.txt",
+            )
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_old",
+            content_sha256_value="old",
+            entries=["old.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_new",
+            content_sha256_value="new",
+            entries=["new.example"],
+            category="malware",
+            confidence=80,
+        )
+
+        restored = db.rollback_intel_generation("feed-a")
+
+        self.assertEqual(restored, "gen_old")
+        self.assertIsNotNone(db.get_active_threat_intel("old.example"))
+        self.assertIsNone(db.get_active_threat_intel("new.example"))
 
 
 class DatabaseMigrationTests(unittest.TestCase):

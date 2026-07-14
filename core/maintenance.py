@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from core.config import settings
 from core.db import (
     cleanup_old_events,
+    cleanup_decision_history,
     database_stats,
+    DecisionHistoryRetentionResult,
     vacuum,
 )
 from core.logger import get_logger
@@ -66,6 +68,20 @@ def run_maintenance(
     )
 
     return result
+
+
+def run_decision_history_maintenance(
+    dry_run: bool = False,
+) -> DecisionHistoryRetentionResult:
+    """
+    Apply configured immutable decision-history retention.
+    """
+
+    return cleanup_decision_history(
+        retention_days=settings.decision_history_retention_days,
+        max_per_domain=settings.decision_history_max_per_domain,
+        dry_run=dry_run,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

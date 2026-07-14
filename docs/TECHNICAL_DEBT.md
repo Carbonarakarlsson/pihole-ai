@@ -2,16 +2,16 @@
 
 ## High Priority
 
-### Immutable Per-Decision History And Feedback Linkage
-
-Impact: richer audits and better feedback accountability.  
-Deferred because v0.5 first stores the latest structured decision per domain.  
-Suggested milestone: v0.5.x.
-
 ### Database Backup And Restore Command
 
 Impact: safer upgrades and field support.  
 Deferred to keep lifecycle scope small.  
+Suggested milestone: v0.5.x.
+
+### Decision-History Integrity Doctor
+
+Impact: easier repair guidance for rare manual database corruption.  
+Deferred because v0.5.1 adds the history model and safe retrieval first.  
 Suggested milestone: v0.5.x.
 
 ### Long-Term Retention Policy

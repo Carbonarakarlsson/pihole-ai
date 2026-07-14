@@ -22,7 +22,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
+import uuid
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -37,10 +40,16 @@ from engine.evidence import (
     serialize_decision,
     serialize_evidence_item,
 )
+from pihole_ai.intel_models import FeedSource, FeedState, FeedStatus, FeedUpdateResult
 
 
 DATABASE_PATH: Path | None = None
 _initialized_database_paths: set[Path] = set()
+DEFAULT_DECISION_HISTORY_LIMIT = 20
+MAX_DECISION_HISTORY_LIMIT = 100
+DECISION_ID_PREFIX = "dec_"
+LEGACY_INTEL_SOURCE_ID = "legacy-manual"
+LEGACY_INTEL_GENERATION_ID = "gen_legacy_manual"
 
 
 def _database_path() -> Path:
@@ -430,6 +439,348 @@ def save_analysis(
     )
 
 
+def _generate_decision_id() -> str:
+    return f"{DECISION_ID_PREFIX}{uuid.uuid4().hex}"
+
+
+def _validate_decision_payload(payload: dict[str, Any], items: list[dict[str, Any]]) -> None:
+    evidence_ids = [
+        item["evidence_id"]
+        for item in items
+        if item["evidence_id"]
+    ]
+    if len(evidence_ids) != len(set(evidence_ids)):
+        raise ValueError("Decision contains duplicate evidence IDs.")
+    missing_decisive = [
+        evidence_id
+        for evidence_id in payload["decisive_evidence_ids"]
+        if evidence_id not in set(evidence_ids)
+    ]
+    if missing_decisive:
+        raise ValueError("Decision references missing decisive evidence.")
+
+
+def _latest_decision_id(
+    conn: sqlite3.Connection,
+    domain: str,
+) -> str | None:
+    row = conn.execute(
+        """
+        SELECT decision_id
+        FROM decision_records
+        WHERE domain = ?
+        """,
+        (domain,),
+    ).fetchone()
+    if row is None:
+        return None
+    return row["decision_id"]
+
+
+def _insert_analysis(
+    conn: sqlite3.Connection,
+    *,
+    domain: str,
+    risk: int,
+    confidence: int,
+    category: str,
+    reason: str,
+    model: str,
+    analyzed_at: float,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO analysis
+        (
+            domain,
+            risk,
+            confidence,
+            category,
+            reason,
+            model,
+            analyzed_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+
+        ON CONFLICT(domain)
+
+        DO UPDATE SET
+
+            risk = excluded.risk,
+            confidence = excluded.confidence,
+            category = excluded.category,
+            reason = excluded.reason,
+            model = excluded.model,
+            analyzed_at = excluded.analyzed_at
+        """,
+        (
+            domain,
+            risk,
+            confidence,
+            category,
+            reason,
+            model,
+            analyzed_at,
+        ),
+    )
+
+
+def _insert_decision_projection_and_history(
+    conn: sqlite3.Connection,
+    *,
+    domain: str,
+    decision: Any,
+    trigger: str = "unknown",
+    analysis_id: int | None = None,
+) -> str:
+    payload = serialize_decision(decision)
+    if payload.get("schema_version") is None:
+        payload["schema_version"] = LATEST_SUPPORTED_SCHEMA_VERSION
+    items = payload["evidence"][:MAX_EVIDENCE_ITEMS]
+    _validate_decision_payload(payload, items)
+
+    decision_id = _generate_decision_id()
+    supersedes = _latest_decision_id(conn, domain)
+
+    conn.execute(
+        """
+        INSERT INTO decision_history
+        (
+            decision_id,
+            domain,
+            analysis_id,
+            verdict,
+            risk_score,
+            confidence,
+            category,
+            source,
+            explanation,
+            decisive_evidence_ids_json,
+            classifier_trace_json,
+            conflicts_json,
+            policy_version,
+            application_version,
+            schema_version,
+            trigger,
+            supersedes_decision_id,
+            evidence_truncated,
+            legacy,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            decision_id,
+            domain,
+            analysis_id,
+            payload["verdict"],
+            payload["risk_score"],
+            payload["confidence"],
+            payload["category"],
+            payload["source"],
+            payload["explanation"],
+            json.dumps(payload["decisive_evidence_ids"]),
+            json.dumps(payload["classifier_trace"]),
+            json.dumps(payload["conflicts"]),
+            payload["policy_version"],
+            payload["application_version"],
+            payload["schema_version"],
+            trigger,
+            supersedes,
+            1 if payload["evidence_truncated"] else 0,
+            1 if payload["legacy"] else 0,
+            payload["created_at"],
+        ),
+    )
+    conn.executemany(
+        """
+        INSERT INTO decision_history_evidence
+        (
+            decision_id,
+            evidence_id,
+            classifier,
+            evidence_type,
+            polarity,
+            score,
+            confidence,
+            summary,
+            details,
+            metadata_json,
+            decisive,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                decision_id,
+                item["evidence_id"],
+                item["classifier"],
+                item["evidence_type"],
+                item["polarity"],
+                item["score"],
+                item["confidence"],
+                item["summary"],
+                item["details"],
+                json.dumps(item["metadata"], sort_keys=True),
+                1 if item["decisive"] else 0,
+                item["created_at"],
+            )
+            for item in items
+        ],
+    )
+
+    conn.execute(
+        """
+        INSERT INTO decision_records
+        (
+            domain,
+            decision_id,
+            verdict,
+            risk_score,
+            confidence,
+            category,
+            source,
+            explanation,
+            decisive_evidence_ids_json,
+            classifier_trace_json,
+            conflicts_json,
+            legacy,
+            policy_version,
+            application_version,
+            schema_version,
+            evidence_truncated,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+        ON CONFLICT(domain)
+
+        DO UPDATE SET
+            decision_id = excluded.decision_id,
+            verdict = excluded.verdict,
+            risk_score = excluded.risk_score,
+            confidence = excluded.confidence,
+            category = excluded.category,
+            source = excluded.source,
+            explanation = excluded.explanation,
+            decisive_evidence_ids_json = excluded.decisive_evidence_ids_json,
+            classifier_trace_json = excluded.classifier_trace_json,
+            conflicts_json = excluded.conflicts_json,
+            legacy = excluded.legacy,
+            policy_version = excluded.policy_version,
+            application_version = excluded.application_version,
+            schema_version = excluded.schema_version,
+            evidence_truncated = excluded.evidence_truncated,
+            created_at = excluded.created_at
+        """,
+        (
+            domain,
+            decision_id,
+            payload["verdict"],
+            payload["risk_score"],
+            payload["confidence"],
+            payload["category"],
+            payload["source"],
+            payload["explanation"],
+            json.dumps(payload["decisive_evidence_ids"]),
+            json.dumps(payload["classifier_trace"]),
+            json.dumps(payload["conflicts"]),
+            1 if payload["legacy"] else 0,
+            payload["policy_version"],
+            payload["application_version"],
+            payload["schema_version"],
+            1 if payload["evidence_truncated"] else 0,
+            payload["created_at"],
+        ),
+    )
+
+    conn.execute(
+        """
+        DELETE FROM decision_evidence
+
+        WHERE domain = ?
+        """,
+        (domain,),
+    )
+    conn.executemany(
+        """
+        INSERT INTO decision_evidence
+        (
+            domain,
+            evidence_id,
+            classifier,
+            evidence_type,
+            polarity,
+            score,
+            confidence,
+            summary,
+            details,
+            metadata_json,
+            decisive,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                domain,
+                item["evidence_id"],
+                item["classifier"],
+                item["evidence_type"],
+                item["polarity"],
+                item["score"],
+                item["confidence"],
+                item["summary"],
+                item["details"],
+                json.dumps(item["metadata"], sort_keys=True),
+                1 if item["decisive"] else 0,
+                item["created_at"],
+            )
+            for item in items
+        ],
+    )
+
+    return decision_id
+
+
+def save_analysis_with_decision(
+    *,
+    domain: str,
+    risk: int,
+    confidence: int,
+    category: str,
+    reason: str,
+    model: str,
+    analyzed_at: float,
+    decision: Any | None,
+    trigger: str = "unknown",
+) -> str | None:
+    """
+    Atomically save the latest analysis and optional immutable decision history.
+    """
+
+    with transaction() as conn:
+        _insert_analysis(
+            conn,
+            domain=domain,
+            risk=risk,
+            confidence=confidence,
+            category=category,
+            reason=reason,
+            model=model,
+            analyzed_at=analyzed_at,
+        )
+        if decision is None:
+            return None
+        return _insert_decision_projection_and_history(
+            conn,
+            domain=domain,
+            decision=decision,
+            trigger=trigger,
+        )
+
+
 def get_analysis(
     domain: str,
 ) -> sqlite3.Row | None:
@@ -452,138 +803,23 @@ def get_analysis(
 def save_decision_evidence(
     domain: str,
     decision: Any,
-) -> None:
+) -> str:
     """
-    Persist structured evidence for the latest decision on a domain.
+    Persist structured evidence for a fresh decision and update latest views.
     """
 
     payload = serialize_decision(decision)
     if payload.get("schema_version") is None:
         payload["schema_version"] = LATEST_SUPPORTED_SCHEMA_VERSION
     items = payload["evidence"][:MAX_EVIDENCE_ITEMS]
-    evidence_ids = [
-        item["evidence_id"]
-        for item in items
-        if item["evidence_id"]
-    ]
-    if len(evidence_ids) != len(set(evidence_ids)):
-        raise ValueError("Decision contains duplicate evidence IDs.")
-    missing_decisive = [
-        evidence_id
-        for evidence_id in payload["decisive_evidence_ids"]
-        if evidence_id not in set(evidence_ids)
-    ]
-    if missing_decisive:
-        raise ValueError("Decision references missing decisive evidence.")
+    _validate_decision_payload(payload, items)
 
     with transaction() as conn:
-        conn.execute(
-            """
-            INSERT INTO decision_records
-            (
-                domain,
-                verdict,
-                risk_score,
-                confidence,
-                category,
-                source,
-                explanation,
-                decisive_evidence_ids_json,
-                classifier_trace_json,
-                conflicts_json,
-                legacy,
-                policy_version,
-                application_version,
-                schema_version,
-                evidence_truncated,
-                created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-
-            ON CONFLICT(domain)
-
-            DO UPDATE SET
-                verdict = excluded.verdict,
-                risk_score = excluded.risk_score,
-                confidence = excluded.confidence,
-                category = excluded.category,
-                source = excluded.source,
-                explanation = excluded.explanation,
-                decisive_evidence_ids_json = excluded.decisive_evidence_ids_json,
-                classifier_trace_json = excluded.classifier_trace_json,
-                conflicts_json = excluded.conflicts_json,
-                legacy = excluded.legacy,
-                policy_version = excluded.policy_version,
-                application_version = excluded.application_version,
-                schema_version = excluded.schema_version,
-                evidence_truncated = excluded.evidence_truncated,
-                created_at = excluded.created_at
-            """,
-            (
-                domain,
-                payload["verdict"],
-                payload["risk_score"],
-                payload["confidence"],
-                payload["category"],
-                payload["source"],
-                payload["explanation"],
-                json.dumps(payload["decisive_evidence_ids"]),
-                json.dumps(payload["classifier_trace"]),
-                json.dumps(payload["conflicts"]),
-                1 if payload["legacy"] else 0,
-                payload["policy_version"],
-                payload["application_version"],
-                payload["schema_version"],
-                1 if payload["evidence_truncated"] else 0,
-                payload["created_at"],
-            ),
-        )
-
-        conn.execute(
-            """
-            DELETE FROM decision_evidence
-
-            WHERE domain = ?
-            """,
-            (domain,),
-        )
-
-        conn.executemany(
-            """
-            INSERT INTO decision_evidence
-            (
-                domain,
-                evidence_id,
-                classifier,
-                evidence_type,
-                polarity,
-                score,
-                confidence,
-                summary,
-                details,
-                metadata_json,
-                decisive,
-                created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    domain,
-                    item["evidence_id"],
-                    item["classifier"],
-                    item["evidence_type"],
-                    item["polarity"],
-                    item["score"],
-                    item["confidence"],
-                    item["summary"],
-                    item["details"],
-                    json.dumps(item["metadata"], sort_keys=True),
-                    1 if item["decisive"] else 0,
-                    item["created_at"],
-                )
-                for item in items
-            ],
+        return _insert_decision_projection_and_history(
+            conn,
+            domain=domain,
+            decision=decision,
+            trigger="unknown",
         )
 
 
@@ -670,6 +906,417 @@ def get_decision_record(
     record["legacy"] = bool(record["legacy"])
     record["evidence_truncated"] = bool(record["evidence_truncated"])
     return record
+
+
+def _parse_decision_record(
+    row: sqlite3.Row | dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if row is None:
+        return None
+
+    record = dict(row)
+    for key, target in (
+        ("decisive_evidence_ids_json", "decisive_evidence_ids"),
+        ("classifier_trace_json", "classifier_trace"),
+        ("conflicts_json", "conflicts"),
+    ):
+        try:
+            record[target] = json.loads(record.pop(key) or "[]")
+        except json.JSONDecodeError:
+            record[target] = []
+            record["_degraded"] = True
+
+    record["legacy"] = bool(record.get("legacy"))
+    record["evidence_truncated"] = bool(record.get("evidence_truncated"))
+    return record
+
+
+def _parse_evidence_rows(
+    rows: list[sqlite3.Row],
+) -> list[dict[str, Any]]:
+    evidence = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        except json.JSONDecodeError:
+            item["metadata"] = {
+                "_degraded": True,
+            }
+        item["decisive"] = bool(item.get("decisive"))
+        evidence.append(serialize_evidence_item(item))
+
+    return evidence
+
+
+def get_latest_decision(
+    domain: str,
+) -> dict[str, Any] | None:
+    """
+    Return the latest immutable decision for a domain.
+    """
+
+    record = get_decision_record(domain)
+    if record is None:
+        return None
+    decision_id = record.get("decision_id")
+    if not decision_id:
+        return record
+    return get_decision(str(decision_id))
+
+
+def get_decision(
+    decision_id: str,
+) -> dict[str, Any] | None:
+    """
+    Return one immutable decision plus its persisted evidence.
+    """
+
+    if not is_valid_decision_id(decision_id):
+        return None
+
+    row = query_one(
+        """
+        SELECT *
+        FROM decision_history
+        WHERE decision_id = ?
+        """,
+        (decision_id,),
+    )
+    record = _parse_decision_record(row)
+    if record is None:
+        return None
+    record["evidence"] = get_decision_history_evidence(decision_id)
+    return record
+
+
+def get_decision_history_evidence(
+    decision_id: str,
+) -> list[dict[str, Any]]:
+    """
+    Return persisted evidence for one immutable decision.
+    """
+
+    if not is_valid_decision_id(decision_id):
+        return []
+
+    rows = query_all(
+        """
+        SELECT
+            id,
+            evidence_id,
+            classifier,
+            evidence_type,
+            polarity,
+            score,
+            confidence,
+            summary,
+            details,
+            metadata_json,
+            decisive,
+            created_at
+        FROM decision_history_evidence
+        WHERE decision_id = ?
+        ORDER BY decisive DESC, ABS(score) DESC, confidence DESC, id ASC
+        """,
+        (decision_id,),
+    )
+    return _parse_evidence_rows(rows)
+
+
+def list_decision_history(
+    domain: str,
+    limit: int = DEFAULT_DECISION_HISTORY_LIMIT,
+    before: float | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Return bounded decision history for a domain newest first.
+    """
+
+    limit = max(1, min(MAX_DECISION_HISTORY_LIMIT, int(limit or DEFAULT_DECISION_HISTORY_LIMIT)))
+    params: list[Any] = [domain]
+    where = "domain = ?"
+    if before is not None:
+        where += " AND created_at < ?"
+        params.append(float(before))
+
+    rows = query_all(
+        f"""
+        SELECT *
+        FROM decision_history
+        WHERE {where}
+        ORDER BY created_at DESC, decision_id DESC
+        LIMIT ?
+        """,
+        tuple(params + [limit]),
+    )
+    return [
+        record
+        for row in rows
+        if (record := _parse_decision_record(row)) is not None
+    ]
+
+
+def is_valid_decision_id(
+    decision_id: str,
+) -> bool:
+    return bool(
+        isinstance(decision_id, str)
+        and len(decision_id) == len(DECISION_ID_PREFIX) + 32
+        and decision_id.startswith(DECISION_ID_PREFIX)
+        and all(ch in "0123456789abcdef" for ch in decision_id[len(DECISION_ID_PREFIX):])
+    )
+
+
+def _semantic_evidence_key(
+    item: dict[str, Any],
+) -> str:
+    metadata = item.get("metadata") or {}
+    identity = {
+        key: metadata.get(key)
+        for key in ("source", "domain", "decision", "category", "policy_reason", "precedence")
+        if key in metadata
+    }
+    return json.dumps(
+        {
+            "classifier": item.get("classifier", ""),
+            "evidence_type": item.get("evidence_type", ""),
+            "identity": identity,
+            "summary": item.get("summary", ""),
+        },
+        sort_keys=True,
+    )
+
+
+def compare_decisions(
+    older_id: str,
+    newer_id: str,
+) -> dict[str, Any] | None:
+    """
+    Compare two immutable decisions using semantic evidence keys.
+    """
+
+    older = get_decision(older_id)
+    newer = get_decision(newer_id)
+    if older is None or newer is None:
+        return None
+    if older["domain"] != newer["domain"]:
+        return None
+
+    older_items = {
+        _semantic_evidence_key(item): item
+        for item in older.get("evidence", [])
+    }
+    newer_items = {
+        _semantic_evidence_key(item): item
+        for item in newer.get("evidence", [])
+    }
+    added_keys = sorted(set(newer_items) - set(older_items))
+    removed_keys = sorted(set(older_items) - set(newer_items))
+    shared_keys = sorted(set(older_items) & set(newer_items))
+    changed = []
+    decisive_changed = False
+    for key in shared_keys:
+        before = older_items[key]
+        after = newer_items[key]
+        fields = [
+            field
+            for field in ("polarity", "score", "confidence", "summary", "details", "decisive")
+            if before.get(field) != after.get(field)
+        ]
+        if fields:
+            changed.append(
+                {
+                    "key": key,
+                    "before": before,
+                    "after": after,
+                    "changed_fields": fields,
+                }
+            )
+        if bool(before.get("decisive")) != bool(after.get("decisive")):
+            decisive_changed = True
+
+    risk_delta = float(newer["risk_score"]) - float(older["risk_score"])
+    confidence_delta = float(newer["confidence"]) - float(older["confidence"])
+    summary_parts = []
+    if older["verdict"] != newer["verdict"]:
+        summary_parts.append(f"verdict changed from {older['verdict']} to {newer['verdict']}")
+    if risk_delta:
+        summary_parts.append(f"risk changed by {risk_delta:+.0f}")
+    if added_keys:
+        summary_parts.append(f"{len(added_keys)} evidence item(s) added")
+    if removed_keys:
+        summary_parts.append(f"{len(removed_keys)} evidence item(s) removed")
+    if not summary_parts:
+        summary_parts.append("decisions are semantically similar")
+
+    return {
+        "domain": older["domain"],
+        "older_decision_id": older_id,
+        "newer_decision_id": newer_id,
+        "verdict_changed": older["verdict"] != newer["verdict"],
+        "risk_delta": risk_delta,
+        "confidence_delta": confidence_delta,
+        "category_changed": older.get("category") != newer.get("category"),
+        "source_changed": older.get("source") != newer.get("source"),
+        "policy_changed": older.get("policy_version") != newer.get("policy_version"),
+        "added_evidence": [newer_items[key] for key in added_keys],
+        "removed_evidence": [older_items[key] for key in removed_keys],
+        "changed_evidence": changed,
+        "decisive_evidence_changed": decisive_changed
+        or any(item.get("decisive") for item in [*(newer_items[key] for key in added_keys), *(older_items[key] for key in removed_keys)]),
+        "classifier_trace_changes": {
+            "older": older.get("classifier_trace", []),
+            "newer": newer.get("classifier_trace", []),
+        },
+        "summary": "; ".join(summary_parts),
+    }
+
+
+@dataclass(frozen=True)
+class DecisionHistoryRetentionResult:
+    domains_inspected: int
+    decisions_inspected: int
+    decisions_eligible: int
+    decisions_deleted: int
+    evidence_rows_deleted: int
+    protected_by_latest: int
+    protected_by_feedback: int
+    protected_by_retention: int
+    errors: list[str]
+    dry_run: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "domains_inspected": self.domains_inspected,
+            "decisions_inspected": self.decisions_inspected,
+            "decisions_eligible": self.decisions_eligible,
+            "decisions_deleted": self.decisions_deleted,
+            "evidence_rows_deleted": self.evidence_rows_deleted,
+            "protected_by_latest": self.protected_by_latest,
+            "protected_by_feedback": self.protected_by_feedback,
+            "protected_by_retention": self.protected_by_retention,
+            "errors": list(self.errors),
+            "dry_run": self.dry_run,
+        }
+
+
+def cleanup_decision_history(
+    *,
+    retention_days: int,
+    max_per_domain: int,
+    dry_run: bool = False,
+    batch_size: int = 500,
+) -> DecisionHistoryRetentionResult:
+    """
+    Delete old decision history while preserving latest and feedback references.
+    """
+
+    cutoff = time.time() - max(0, int(retention_days)) * 86400
+    max_per_domain = max(1, int(max_per_domain))
+
+    with transaction() as conn:
+        domains = [
+            row["domain"]
+            for row in conn.execute("SELECT DISTINCT domain FROM decision_history")
+        ]
+        latest_ids = {
+            row["decision_id"]
+            for row in conn.execute(
+                "SELECT decision_id FROM decision_records WHERE decision_id IS NOT NULL"
+            )
+        }
+        feedback_ids = {
+            row["decision_ref"]
+            for row in conn.execute(
+                """
+                SELECT DISTINCT decision_ref
+                FROM action_audit
+                WHERE decision_ref LIKE 'dec_%'
+                """
+            )
+            if row["decision_ref"]
+        }
+
+        inspected = eligible = deleted = evidence_deleted = 0
+        protected_latest = protected_feedback = protected_retention = 0
+        delete_ids: list[str] = []
+
+        for domain in domains:
+            rows = conn.execute(
+                """
+                SELECT decision_id, created_at
+                FROM decision_history
+                WHERE domain = ?
+                ORDER BY created_at DESC, decision_id DESC
+                """,
+                (domain,),
+            ).fetchall()
+            inspected += len(rows)
+            for index, row in enumerate(rows):
+                decision_id = row["decision_id"]
+                if decision_id in latest_ids:
+                    protected_latest += 1
+                    continue
+                if decision_id in feedback_ids:
+                    protected_feedback += 1
+                    continue
+                within_count = index < max_per_domain
+                within_age = float(row["created_at"]) >= cutoff
+                if within_count and within_age:
+                    protected_retention += 1
+                    continue
+                eligible += 1
+                if len(delete_ids) < batch_size:
+                    delete_ids.append(decision_id)
+
+        if not dry_run and delete_ids:
+            for decision_id in delete_ids:
+                row = conn.execute(
+                    """
+                    SELECT supersedes_decision_id
+                    FROM decision_history
+                    WHERE decision_id = ?
+                    """,
+                    (decision_id,),
+                ).fetchone()
+                predecessor = row["supersedes_decision_id"] if row else None
+                conn.execute(
+                    """
+                    UPDATE decision_history
+                    SET supersedes_decision_id = ?
+                    WHERE supersedes_decision_id = ?
+                    """,
+                    (predecessor, decision_id),
+                )
+            placeholders = ",".join("?" for _ in delete_ids)
+            evidence_deleted = conn.execute(
+                f"""
+                DELETE FROM decision_history_evidence
+                WHERE decision_id IN ({placeholders})
+                """,
+                tuple(delete_ids),
+            ).rowcount
+            deleted = conn.execute(
+                f"""
+                DELETE FROM decision_history
+                WHERE decision_id IN ({placeholders})
+                """,
+                tuple(delete_ids),
+            ).rowcount
+
+    return DecisionHistoryRetentionResult(
+        domains_inspected=len(domains),
+        decisions_inspected=inspected,
+        decisions_eligible=eligible,
+        decisions_deleted=0 if dry_run else deleted,
+        evidence_rows_deleted=0 if dry_run else evidence_deleted,
+        protected_by_latest=protected_latest,
+        protected_by_feedback=protected_feedback,
+        protected_by_retention=protected_retention,
+        errors=[],
+        dry_run=dry_run,
+    )
 
 
 def analysis_exists(
@@ -1215,36 +1862,94 @@ def save_threat_intel(
         if last_seen is None:
             last_seen = now
 
-    execute(
-        """
-        INSERT INTO threat_intel
-        (
-            domain,
-            source,
-            category,
-            confidence,
-            first_seen,
-            last_seen
+    confidence = max(0, min(confidence, 100))
+    with transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO threat_intel
+            (
+                domain,
+                source,
+                category,
+                confidence,
+                first_seen,
+                last_seen
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+
+            ON CONFLICT(domain, source)
+
+            DO UPDATE SET
+
+                category = excluded.category,
+                confidence = excluded.confidence,
+                last_seen = excluded.last_seen
+            """,
+            (
+                domain,
+                source,
+                category,
+                confidence,
+                first_seen,
+                last_seen,
+            ),
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        _ensure_legacy_intel_generation(conn)
+        conn.execute(
+            """
+            INSERT INTO threat_intel_generation_entries
+            (
+                generation_id,
+                source_id,
+                domain,
+                category,
+                confidence,
+                first_seen,
+                last_seen
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
 
-        ON CONFLICT(domain, source)
+            ON CONFLICT(generation_id, domain)
 
-        DO UPDATE SET
-
-            category = excluded.category,
-            confidence = excluded.confidence,
-            last_seen = excluded.last_seen
-        """,
-        (
-            domain,
-            source,
-            category,
-            max(0, min(confidence, 100)),
-            first_seen,
-            last_seen,
-        ),
-    )
+            DO UPDATE SET
+                category = excluded.category,
+                confidence = excluded.confidence,
+                last_seen = excluded.last_seen
+            """,
+            (
+                LEGACY_INTEL_GENERATION_ID,
+                LEGACY_INTEL_SOURCE_ID,
+                domain,
+                category,
+                confidence,
+                first_seen,
+                last_seen,
+            ),
+        )
+        count = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM threat_intel_generation_entries
+            WHERE generation_id = ?
+            """,
+            (LEGACY_INTEL_GENERATION_ID,),
+        ).fetchone()["count"]
+        conn.execute(
+            """
+            UPDATE threat_intel_generations
+            SET entry_count = ?
+            WHERE generation_id = ?
+            """,
+            (count, LEGACY_INTEL_GENERATION_ID),
+        )
+        conn.execute(
+            """
+            UPDATE threat_intel_source_state
+            SET entry_count = ?, status = 'active', last_success_at = ?
+            WHERE source_id = ?
+            """,
+            (count, last_seen, LEGACY_INTEL_SOURCE_ID),
+        )
 
 
 def get_threat_intel(
@@ -1328,6 +2033,583 @@ def list_threat_intel(
         """,
         tuple(params + [limit]),
     )
+
+
+def _ensure_legacy_intel_generation(conn: sqlite3.Connection) -> None:
+    now = time.time()
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO threat_intel_sources
+        (
+            source_id,
+            name,
+            url,
+            format,
+            enabled,
+            category,
+            confidence,
+            refresh_interval_seconds,
+            stale_after_seconds,
+            timeout_seconds,
+            max_download_bytes,
+            expected_content_type,
+            allow_http,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            LEGACY_INTEL_SOURCE_ID,
+            "Legacy manual imports",
+            "manual://legacy",
+            "hosts",
+            1,
+            "malware",
+            90,
+            86400,
+            31536000,
+            20,
+            2000000,
+            "",
+            0,
+            now,
+            now,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO threat_intel_generations
+        (
+            generation_id,
+            source_id,
+            status,
+            content_sha256,
+            entry_count,
+            created_at,
+            activated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (LEGACY_INTEL_GENERATION_ID, LEGACY_INTEL_SOURCE_ID, "active", "manual", 0, now, now),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO threat_intel_source_state
+        (
+            source_id,
+            status,
+            last_success_at,
+            entry_count,
+            active_generation
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (LEGACY_INTEL_SOURCE_ID, "active", now, 0, LEGACY_INTEL_GENERATION_ID),
+    )
+
+
+def save_intel_source(
+    source: FeedSource,
+) -> None:
+    with transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO threat_intel_sources
+            (
+                source_id,
+                name,
+                url,
+                format,
+                enabled,
+                category,
+                confidence,
+                refresh_interval_seconds,
+                stale_after_seconds,
+                timeout_seconds,
+                max_download_bytes,
+                expected_content_type,
+                allow_http,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+            ON CONFLICT(source_id)
+
+            DO UPDATE SET
+                name = excluded.name,
+                url = excluded.url,
+                format = excluded.format,
+                enabled = excluded.enabled,
+                category = excluded.category,
+                confidence = excluded.confidence,
+                refresh_interval_seconds = excluded.refresh_interval_seconds,
+                stale_after_seconds = excluded.stale_after_seconds,
+                timeout_seconds = excluded.timeout_seconds,
+                max_download_bytes = excluded.max_download_bytes,
+                expected_content_type = excluded.expected_content_type,
+                allow_http = excluded.allow_http,
+                updated_at = excluded.updated_at
+            """,
+            (
+                source.source_id,
+                source.name,
+                source.url,
+                source.format,
+                1 if source.enabled else 0,
+                source.category,
+                max(0, min(source.confidence, 100)),
+                source.refresh_interval_seconds,
+                source.stale_after_seconds,
+                source.timeout_seconds,
+                source.max_download_bytes,
+                source.expected_content_type,
+                1 if source.allow_http else 0,
+                source.created_at or time.time(),
+                source.updated_at or time.time(),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO threat_intel_source_state (source_id, status)
+            VALUES (?, ?)
+            """,
+            (source.source_id, FeedStatus.UNKNOWN.value),
+        )
+
+
+def get_intel_source(source_id: str) -> dict[str, Any] | None:
+    row = query_one(
+        """
+        SELECT *
+        FROM threat_intel_sources
+        WHERE source_id = ?
+        """,
+        (source_id,),
+    )
+    if row is None:
+        return None
+    item = dict(row)
+    item["enabled"] = bool(item["enabled"])
+    item["allow_http"] = bool(item["allow_http"])
+    return item
+
+
+def list_intel_sources() -> list[dict[str, Any]]:
+    return [
+        _source_row_to_dict(row)
+        for row in query_all(
+            """
+            SELECT *
+            FROM threat_intel_sources
+            ORDER BY source_id ASC
+            """
+        )
+    ]
+
+
+def _source_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item["enabled"] = bool(item["enabled"])
+    item["allow_http"] = bool(item["allow_http"])
+    return item
+
+
+def remove_intel_source(source_id: str) -> bool:
+    with transaction() as conn:
+        row = conn.execute(
+            "SELECT source_id FROM threat_intel_sources WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        conn.execute("DELETE FROM threat_intel_sources WHERE source_id = ?", (source_id,))
+        return True
+
+
+def set_intel_source_enabled(source_id: str, enabled: bool) -> bool:
+    rowid = execute(
+        """
+        UPDATE threat_intel_sources
+        SET enabled = ?, updated_at = ?
+        WHERE source_id = ?
+        """,
+        (1 if enabled else 0, time.time(), source_id),
+    )
+    return rowid >= 0
+
+
+def get_intel_source_state(source_id: str) -> dict[str, Any] | None:
+    row = query_one(
+        """
+        SELECT *
+        FROM threat_intel_source_state
+        WHERE source_id = ?
+        """,
+        (source_id,),
+    )
+    return dict(row) if row is not None else None
+
+
+def list_intel_source_status() -> list[dict[str, Any]]:
+    rows = query_all(
+        """
+        SELECT
+            s.*,
+            st.status,
+            st.last_attempt_at,
+            st.last_success_at,
+            st.next_update_at,
+            st.etag,
+            st.last_modified,
+            st.content_sha256,
+            st.entry_count,
+            st.active_generation,
+            st.last_error_code,
+            st.last_error_summary,
+            st.consecutive_failures
+        FROM threat_intel_sources s
+        LEFT JOIN threat_intel_source_state st
+            ON st.source_id = s.source_id
+        ORDER BY s.source_id ASC
+        """
+    )
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["enabled"] = bool(item["enabled"])
+        item["allow_http"] = bool(item["allow_http"])
+        result.append(item)
+    return result
+
+
+def activate_intel_generation(
+    *,
+    source_id: str,
+    generation_id: str,
+    content_sha256_value: str,
+    entries: list[str],
+    category: str,
+    confidence: int,
+    etag: str = "",
+    last_modified: str = "",
+) -> tuple[str, str]:
+    now = time.time()
+    confidence = max(0, min(confidence, 100))
+    with transaction() as conn:
+        state = conn.execute(
+            "SELECT active_generation FROM threat_intel_source_state WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+        previous = state["active_generation"] if state and state["active_generation"] else ""
+        conn.execute(
+            """
+            INSERT INTO threat_intel_generations
+            (
+                generation_id,
+                source_id,
+                status,
+                content_sha256,
+                entry_count,
+                created_at,
+                previous_generation
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (generation_id, source_id, "staging", content_sha256_value, len(entries), now, previous),
+        )
+        conn.executemany(
+            """
+            INSERT INTO threat_intel_generation_entries
+            (
+                generation_id,
+                source_id,
+                domain,
+                category,
+                confidence,
+                first_seen,
+                last_seen
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (generation_id, source_id, domain, category, confidence, now, now)
+                for domain in entries
+            ],
+        )
+        if previous:
+            conn.execute(
+                """
+                UPDATE threat_intel_generations
+                SET status = 'inactive'
+                WHERE generation_id = ?
+                """,
+                (previous,),
+            )
+        conn.execute(
+            """
+            UPDATE threat_intel_generations
+            SET status = 'active', activated_at = ?
+            WHERE generation_id = ?
+            """,
+            (now, generation_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO threat_intel_source_state
+            (
+                source_id,
+                status,
+                last_attempt_at,
+                last_success_at,
+                next_update_at,
+                etag,
+                last_modified,
+                content_sha256,
+                entry_count,
+                active_generation,
+                last_error_code,
+                last_error_summary,
+                consecutive_failures
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+            ON CONFLICT(source_id)
+
+            DO UPDATE SET
+                status = excluded.status,
+                last_attempt_at = excluded.last_attempt_at,
+                last_success_at = excluded.last_success_at,
+                next_update_at = excluded.next_update_at,
+                etag = excluded.etag,
+                last_modified = excluded.last_modified,
+                content_sha256 = excluded.content_sha256,
+                entry_count = excluded.entry_count,
+                active_generation = excluded.active_generation,
+                last_error_code = '',
+                last_error_summary = '',
+                consecutive_failures = 0
+            """,
+            (
+                source_id,
+                FeedStatus.ACTIVE.value,
+                now,
+                now,
+                None,
+                etag,
+                last_modified,
+                content_sha256_value,
+                len(entries),
+                generation_id,
+                "",
+                "",
+                0,
+            ),
+        )
+    return previous, generation_id
+
+
+def get_active_threat_intel(domain: str) -> sqlite3.Row | None:
+    return query_one(
+        """
+        SELECT
+            e.domain,
+            e.source_id AS source,
+            s.name AS source_name,
+            e.category,
+            e.confidence,
+            e.first_seen,
+            e.last_seen,
+            g.generation_id,
+            st.last_success_at,
+            st.status,
+            s.stale_after_seconds
+        FROM threat_intel_generation_entries e
+        JOIN threat_intel_generations g
+            ON g.generation_id = e.generation_id
+            AND g.status = 'active'
+        JOIN threat_intel_sources s
+            ON s.source_id = e.source_id
+            AND s.enabled = 1
+        LEFT JOIN threat_intel_source_state st
+            ON st.source_id = s.source_id
+        WHERE e.domain = ?
+        ORDER BY e.confidence DESC, e.last_seen DESC
+        LIMIT 1
+        """,
+        (domain,),
+    )
+
+
+def record_intel_update_audit(
+    result: FeedUpdateResult,
+    *,
+    http_status: int | None = None,
+) -> int:
+    return execute(
+        """
+        INSERT INTO threat_intel_update_audit
+        (
+            source_id,
+            attempted_at,
+            result,
+            http_status,
+            changed,
+            not_modified,
+            downloaded_bytes,
+            parsed_entries,
+            accepted_entries,
+            rejected_entries,
+            duplicate_entries,
+            previous_generation,
+            active_generation,
+            duration_ms,
+            warnings_json,
+            error_code,
+            error_summary
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            result.source_id,
+            time.time(),
+            "success" if result.success else "failed",
+            http_status,
+            1 if result.changed else 0,
+            1 if result.not_modified else 0,
+            result.downloaded_bytes,
+            result.parsed_entries,
+            result.accepted_entries,
+            result.rejected_entries,
+            result.duplicate_entries,
+            result.previous_generation,
+            result.active_generation,
+            result.duration_ms,
+            json.dumps(result.warnings),
+            result.error_code,
+            result.error_summary,
+        ),
+    )
+
+
+def list_intel_update_audit(limit: int = 100, source_id: str = "") -> list[dict[str, Any]]:
+    where = ""
+    params: list[Any] = []
+    if source_id:
+        where = "WHERE source_id = ?"
+        params.append(source_id)
+    rows = query_all(
+        f"""
+        SELECT *
+        FROM threat_intel_update_audit
+        {where}
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        tuple(params + [limit]),
+    )
+    result = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["warnings"] = json.loads(item.pop("warnings_json") or "[]")
+        except json.JSONDecodeError:
+            item["warnings"] = []
+        item["changed"] = bool(item["changed"])
+        item["not_modified"] = bool(item["not_modified"])
+        result.append(item)
+    return result
+
+
+def mark_intel_update_not_modified(source_id: str, etag: str = "", last_modified: str = "") -> None:
+    now = time.time()
+    execute(
+        """
+        UPDATE threat_intel_source_state
+        SET
+            status = CASE WHEN active_generation = '' THEN 'unknown' ELSE 'active' END,
+            last_attempt_at = ?,
+            etag = CASE WHEN ? != '' THEN ? ELSE etag END,
+            last_modified = CASE WHEN ? != '' THEN ? ELSE last_modified END,
+            last_error_code = '',
+            last_error_summary = '',
+            consecutive_failures = 0
+        WHERE source_id = ?
+        """,
+        (now, etag, etag, last_modified, last_modified, source_id),
+    )
+
+
+def mark_intel_update_failed(source_id: str, code: str, summary: str) -> None:
+    now = time.time()
+    execute(
+        """
+        INSERT INTO threat_intel_source_state
+        (
+            source_id,
+            status,
+            last_attempt_at,
+            last_error_code,
+            last_error_summary,
+            consecutive_failures
+        )
+        VALUES (?, ?, ?, ?, ?, 1)
+
+        ON CONFLICT(source_id)
+
+        DO UPDATE SET
+            status = 'failed',
+            last_attempt_at = excluded.last_attempt_at,
+            last_error_code = excluded.last_error_code,
+            last_error_summary = excluded.last_error_summary,
+            consecutive_failures = consecutive_failures + 1
+        """,
+        (source_id, FeedStatus.FAILED.value, now, code, summary[:240]),
+    )
+
+
+def rollback_intel_generation(source_id: str) -> str | None:
+    with transaction() as conn:
+        state = conn.execute(
+            "SELECT active_generation FROM threat_intel_source_state WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+        if state is None or not state["active_generation"]:
+            return None
+        active = state["active_generation"]
+        active_row = conn.execute(
+            "SELECT previous_generation FROM threat_intel_generations WHERE generation_id = ?",
+            (active,),
+        ).fetchone()
+        previous = active_row["previous_generation"] if active_row else ""
+        if not previous:
+            return None
+        previous_row = conn.execute(
+            "SELECT entry_count, content_sha256 FROM threat_intel_generations WHERE generation_id = ?",
+            (previous,),
+        ).fetchone()
+        if previous_row is None:
+            return None
+        now = time.time()
+        conn.execute("UPDATE threat_intel_generations SET status = 'inactive' WHERE generation_id = ?", (active,))
+        conn.execute(
+            "UPDATE threat_intel_generations SET status = 'active', activated_at = ? WHERE generation_id = ?",
+            (now, previous),
+        )
+        conn.execute(
+            """
+            UPDATE threat_intel_source_state
+            SET active_generation = ?,
+                entry_count = ?,
+                content_sha256 = ?,
+                status = 'active',
+                last_success_at = ?
+            WHERE source_id = ?
+            """,
+            (previous, previous_row["entry_count"], previous_row["content_sha256"], now, source_id),
+        )
+        return previous
 
 
 # ============================================================================

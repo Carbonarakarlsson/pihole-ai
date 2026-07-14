@@ -17,6 +17,15 @@ dashboard, or logging settings generally require a service restart.
 | `PIHOLE_AI_ENGINE_INTERVAL` | integer seconds | `5` | no | positive | `5` | all |
 | `PIHOLE_AI_CACHE_TTL` | integer seconds | `86400` | no | zero or positive | `86400` | all |
 | `PIHOLE_AI_KEEP_LATEST_EVENTS` | integer | `100000` | no | positive | `100000` | all |
+| `PIHOLE_AI_DECISION_HISTORY_RETENTION_DAYS` | integer days | `365` | no | positive | `365` | all |
+| `PIHOLE_AI_DECISION_HISTORY_MAX_PER_DOMAIN` | integer | `100` | no | positive | `100` | all |
+| `PIHOLE_AI_INTEL_AUTO_UPDATE_ENABLED` | boolean | `false` | no | boolean | `false` | all |
+| `PIHOLE_AI_INTEL_UPDATE_INTERVAL_SECONDS` | integer seconds | `86400` | no | positive | `86400` | all |
+| `PIHOLE_AI_INTEL_HTTP_TIMEOUT_SECONDS` | integer seconds | `20` | no | positive | `20` | all |
+| `PIHOLE_AI_INTEL_MAX_DOWNLOAD_BYTES` | integer bytes | `2000000` | no | positive | `2000000` | all |
+| `PIHOLE_AI_INTEL_STALE_AFTER_SECONDS` | integer seconds | `172800` | no | positive | `172800` | all |
+| `PIHOLE_AI_INTEL_ALLOW_HTTP` | boolean | `false` | no | boolean | `false` | all |
+| `PIHOLE_AI_INTEL_USER_AGENT` | string | `PiHole-AI threat-intel updater` | no | non-empty | `PiHole-AI threat-intel updater` | all |
 | `PIHOLE_AI_ALERT_THRESHOLD` | integer | `50` | no | 0-100 | `50` | all |
 | `PIHOLE_AI_HIGH_RISK_THRESHOLD` | integer | `70` | no | 0-100 | `70` | all |
 | `PIHOLE_AI_ACTION_MODE` | enum | `dry-run` | no | `off`, `dry-run`, `block` | `dry-run` | all |

@@ -356,7 +356,7 @@ class ThreatIntelClassifierTests(unittest.TestCase):
 
     def test_returns_none_when_domain_is_not_in_feed(self) -> None:
         with patch(
-            "engine.classifiers.threat_intel.get_threat_intel",
+            "engine.classifiers.threat_intel.get_active_threat_intel",
             return_value=None,
         ):
             result = self.classifier.classify(
@@ -367,12 +367,14 @@ class ThreatIntelClassifierTests(unittest.TestCase):
 
     def test_classifies_known_bad_domain_from_feed(self) -> None:
         with patch(
-            "engine.classifiers.threat_intel.get_threat_intel",
+            "engine.classifiers.threat_intel.get_active_threat_intel",
             return_value={
                 "domain": "bad.example",
                 "source": "test-feed",
+                "source_name": "test-feed",
                 "category": DomainCategory.MALWARE.value,
                 "confidence": 95,
+                "generation_id": "gen_test",
             },
         ):
             result = self.classifier.classify(
@@ -389,12 +391,14 @@ class ThreatIntelClassifierTests(unittest.TestCase):
 
     def test_unknown_feed_category_falls_back_to_suspicious(self) -> None:
         with patch(
-            "engine.classifiers.threat_intel.get_threat_intel",
+            "engine.classifiers.threat_intel.get_active_threat_intel",
             return_value={
                 "domain": "bad.example",
                 "source": "test-feed",
+                "source_name": "test-feed",
                 "category": "unknown-feed-category",
                 "confidence": 60,
+                "generation_id": "gen_test",
             },
         ):
             result = self.classifier.classify(
@@ -407,12 +411,14 @@ class ThreatIntelClassifierTests(unittest.TestCase):
 
     def test_high_confidence_feed_hit_is_decisive_evidence(self) -> None:
         with patch(
-            "engine.classifiers.threat_intel.get_threat_intel",
+            "engine.classifiers.threat_intel.get_active_threat_intel",
             return_value={
                 "domain": "bad.example",
                 "source": "test-feed",
+                "source_name": "test-feed",
                 "category": DomainCategory.MALWARE.value,
                 "confidence": 95,
+                "generation_id": "gen_test",
             },
         ):
             evidence = self.classifier.collect_evidence(
@@ -511,12 +517,14 @@ class ClassifierPipelineTests(unittest.TestCase):
                 "signals": '["manual allow rule"]',
             },
         ), patch(
-            "engine.classifiers.threat_intel.get_threat_intel",
+            "engine.classifiers.threat_intel.get_active_threat_intel",
             return_value={
                 "domain": "bad.example",
                 "source": "test-feed",
+                "source_name": "test-feed",
                 "category": DomainCategory.MALWARE.value,
                 "confidence": 95,
+                "generation_id": "gen_test",
             },
         ):
             pipeline = ClassifierPipeline()

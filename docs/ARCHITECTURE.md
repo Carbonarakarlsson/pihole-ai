@@ -7,6 +7,7 @@ PiHole-AI is a local appliance-style companion for Pi-hole. It reads Pi-hole FTL
 - `collector`: reads the Pi-hole FTL database and records DNS query events.
 - `engine`: processes unclassified events, applies the classifier pipeline, caches analysis, and records actions.
 - `dashboard`: Flask application for authenticated inspection, explanation, feedback, rules, setup, and health views.
+- `intel-update`: scheduled oneshot updater for configured threat-intelligence feeds.
 - `pihole-ai` CLI: operational entrypoint for runtime commands, diagnostics, setup, lifecycle management, and auth bootstrap.
 
 ## Evidence-Based Decision Pipeline
@@ -37,14 +38,17 @@ signals from the same classifier/type. AI-only decisions have a confidence
 ceiling, and AI is skipped when local deterministic evidence is decisive or
 sufficient.
 
-Fresh decisions persist their supporting evidence in `decision_evidence`.
-Legacy rows in `analysis` remain readable, and explain views mark them as legacy
-when no stored evidence is available.
+Fresh decisions persist immutable append-only rows in `decision_history` and
+`decision_history_evidence`. `decision_records` and `decision_evidence` remain
+latest-decision compatibility projections for existing callers. Legacy rows in
+`analysis` remain readable, and explain views mark them as legacy when no stored
+evidence is available.
 
 The canonical explain contract groups stored decisions into final decision,
 decisive evidence, risk evidence, safety evidence, neutral evidence, classifier
 trace, conflicts, and legacy state. CLI JSON, the authenticated explain API, and
-the dashboard Explain panel use the same field vocabulary.
+the dashboard Explain panel use the same field vocabulary. Historical selection
+renders the exact persisted evidence for the selected immutable decision ID.
 
 ## Configuration
 
@@ -69,15 +73,24 @@ Current appliance schema includes:
   policy version
 - v4 `action_audit.decision_ref` for linking feedback to the decision visible
   at feedback time
+- v5 `decision_history` and `decision_history_evidence` for append-only
+  immutable history
+- v6 generation-based threat-intelligence feed sources, update state, active
+  generations, entries, and audit history
 
 Evidence persistence is bounded. PiHole-AI stores the most influential evidence
 items first, redacts secret-bearing metadata, truncates oversized fields
 deterministically, and degrades malformed persisted metadata safely during
 explain rendering.
 
-Feedback does not rewrite historical decision evidence. When a stored decision
-exists, feedback audit rows record a `decision_ref` for traceability while future
-classifications remain free to produce new decisions.
+Feedback does not rewrite historical decision evidence. When an immutable
+decision exists, feedback audit rows record its `decision_id` for traceability
+while future classifications remain free to produce new decisions.
+
+Threat-intelligence feeds are imported as immutable generations. Classification
+looks only at enabled sources with an active generation, so failed or partial
+downloads never replace a working feed. Rollback reactivates the previous
+generation for the source.
 
 ## Health, Doctor, And Setup
 
@@ -91,7 +104,7 @@ diagnostics should be reviewed.
 
 ## Lifecycle
 
-`pihole_ai.service` owns appliance lifecycle APIs. It builds install plans, performs preflight checks, writes managed systemd units, handles dedicated service identity, takes lifecycle locks, and preserves configuration/data by default.
+`pihole_ai.service` owns appliance lifecycle APIs. It builds install plans, performs preflight checks, writes managed systemd units, handles dedicated service identity, takes lifecycle locks, and preserves configuration/data by default. The managed systemd set includes the collector, engine, dashboard, and threat-intelligence update service/timer units.
 
 Mutating lifecycle actions stay in the CLI. The dashboard does not perform privileged installation or service management without sudo guidance.
 

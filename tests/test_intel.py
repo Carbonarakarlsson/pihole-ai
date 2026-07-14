@@ -5,11 +5,20 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pihole_ai.intel import (
+    add_source,
     import_hosts_file,
     normalize_domain,
     parse_hosts_domains,
     print_intel,
 )
+from pihole_ai.intel_feeds import (
+    ERROR_INSECURE_URL,
+    ERROR_PRIVATE_ADDRESS,
+    FeedError,
+    parse_feed,
+    validate_feed_url,
+)
+from pihole_ai.intel_models import FeedFormat, FeedSource
 
 
 class ThreatIntelTests(unittest.TestCase):
@@ -86,6 +95,56 @@ class ThreatIntelTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
         self.assertIn("bad.example", stdout.getvalue())
+
+    def test_parse_feed_deduplicates_and_rejects_invalid_domains(self) -> None:
+        source = FeedSource(
+            source_id="test-feed",
+            name="Test Feed",
+            url="https://feeds.example/hosts.txt",
+            format=FeedFormat.HOSTS.value,
+        )
+
+        parsed = parse_feed(
+            b"0.0.0.0 bad.example\nbad.example\nlocalhost\nbad/example\n",
+            FeedFormat.HOSTS.value,
+            source,
+        )
+
+        self.assertEqual(parsed.accepted_entries, ["bad.example"])
+        self.assertEqual(parsed.duplicate_count, 1)
+        self.assertEqual(parsed.rejected_count, 2)
+
+    def test_validate_feed_url_rejects_http_without_opt_in(self) -> None:
+        with self.assertRaises(FeedError) as raised:
+            validate_feed_url("http://feeds.example/hosts.txt")
+
+        self.assertEqual(raised.exception.code, ERROR_INSECURE_URL)
+
+    def test_validate_feed_url_rejects_private_addresses(self) -> None:
+        with patch(
+            "pihole_ai.intel_feeds.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("127.0.0.1", 0))],
+        ):
+            with self.assertRaises(FeedError) as raised:
+                validate_feed_url("https://localhost/hosts.txt")
+
+        self.assertEqual(raised.exception.code, ERROR_PRIVATE_ADDRESS)
+
+    def test_add_source_validates_and_persists_feed_source(self) -> None:
+        with patch(
+            "pihole_ai.intel.validate_feed_url",
+            return_value=None,
+        ), patch("pihole_ai.intel.save_intel_source") as save_intel_source:
+            source = add_source(
+                source_id="malware-feed",
+                name="Malware Feed",
+                url="https://feeds.example/hosts.txt",
+                feed_format=FeedFormat.HOSTS.value,
+            )
+
+        self.assertEqual(source.source_id, "malware-feed")
+        self.assertEqual(source.url, "https://feeds.example/hosts.txt")
+        save_intel_source.assert_called_once()
 
 
 if __name__ == "__main__":

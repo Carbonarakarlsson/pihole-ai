@@ -44,6 +44,7 @@ class FakeAnalyzer:
             reason="Test analysis.",
             model="fake",
             analyzed_at=123.0,
+            decision=None,
         )
 
 
@@ -138,8 +139,8 @@ class AnalysisEngineTests(unittest.TestCase):
                 "tags": ["test"],
             },
         ) as get_domain_metadata, patch(
-            "engine.engine.save_analysis",
-        ) as save_analysis, patch(
+            "engine.engine.save_analysis_with_decision",
+        ) as save_analysis_with_decision, patch(
             "engine.engine.apply_action_policy",
         ) as apply_action_policy, patch(
             "engine.engine.mark_processed_by_domain",
@@ -156,7 +157,7 @@ class AnalysisEngineTests(unittest.TestCase):
         self.assertEqual(request.metadata.query_count, 12)
         self.assertEqual(request.metadata.device_count, 2)
         self.assertEqual(request.metadata.tags, ["test"])
-        save_analysis.assert_called_once_with(
+        save_analysis_with_decision.assert_called_once_with(
             domain="example.com",
             risk=15,
             confidence=80,
@@ -164,6 +165,8 @@ class AnalysisEngineTests(unittest.TestCase):
             reason="Test analysis.",
             model="fake",
             analyzed_at=123.0,
+            decision=None,
+            trigger="first_seen",
         )
         apply_action_policy.assert_called_once()
         self.assertEqual(
@@ -245,8 +248,8 @@ class AnalysisEngineTests(unittest.TestCase):
                 "query_count": 2,
             },
         ) as get_domain_metadata, patch(
-            "engine.engine.save_analysis",
-        ) as save_analysis, patch(
+            "engine.engine.save_analysis_with_decision",
+        ) as save_analysis_with_decision, patch(
             "engine.engine.apply_action_policy",
         ) as apply_action_policy, patch(
             "engine.engine.mark_processed_by_domain",
@@ -257,7 +260,11 @@ class AnalysisEngineTests(unittest.TestCase):
         self.assertEqual(processed, 1)
         self.assertEqual(len(analyzer.requests), 1)
         get_domain_metadata.assert_called_once_with("retry.example")
-        save_analysis.assert_called_once()
+        save_analysis_with_decision.assert_called_once()
+        self.assertEqual(
+            save_analysis_with_decision.call_args.kwargs["trigger"],
+            "cache_expired",
+        )
         apply_action_policy.assert_called_once()
         mark_processed_by_domain.assert_called_once_with("retry.example")
 
@@ -301,8 +308,8 @@ class AnalysisEngineTests(unittest.TestCase):
                 "domain": "stale.example",
             },
         ) as get_domain_metadata, patch(
-            "engine.engine.save_analysis",
-        ) as save_analysis, patch(
+            "engine.engine.save_analysis_with_decision",
+        ) as save_analysis_with_decision, patch(
             "engine.engine.apply_action_policy",
         ) as apply_action_policy, patch(
             "engine.engine.mark_processed_by_domain",
@@ -313,7 +320,11 @@ class AnalysisEngineTests(unittest.TestCase):
         self.assertEqual(processed, 1)
         self.assertEqual(len(analyzer.requests), 1)
         get_domain_metadata.assert_called_once_with("stale.example")
-        save_analysis.assert_called_once()
+        save_analysis_with_decision.assert_called_once()
+        self.assertEqual(
+            save_analysis_with_decision.call_args.kwargs["trigger"],
+            "cache_expired",
+        )
         apply_action_policy.assert_called_once()
         mark_processed_by_domain.assert_called_once_with("stale.example")
 
@@ -355,8 +366,8 @@ class AnalysisEngineTests(unittest.TestCase):
                 "domain": "fallback.example",
             },
         ), patch(
-            "engine.engine.save_analysis",
-        ) as save_analysis, patch(
+            "engine.engine.save_analysis_with_decision",
+        ) as save_analysis_with_decision, patch(
             "engine.engine.apply_action_policy",
         ) as apply_action_policy, patch(
             "engine.engine.mark_processed_by_domain",
@@ -365,7 +376,7 @@ class AnalysisEngineTests(unittest.TestCase):
             processed = engine.process_once()
 
         self.assertEqual(processed, 1)
-        save_analysis.assert_called_once_with(
+        save_analysis_with_decision.assert_called_once_with(
             domain="fallback.example",
             risk=50,
             confidence=0,
@@ -373,6 +384,8 @@ class AnalysisEngineTests(unittest.TestCase):
             reason="AI backend unavailable.",
             model="fake-model",
             analyzed_at=456.0,
+            decision=None,
+            trigger="first_seen",
         )
         apply_action_policy.assert_called_once()
         mark_processed_by_domain.assert_called_once_with("fallback.example")

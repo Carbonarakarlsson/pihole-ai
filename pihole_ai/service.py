@@ -62,6 +62,16 @@ SERVICE_NAMES = [
     "pihole-ai-engine.service",
     "pihole-ai-dashboard.service",
 ]
+INTEL_UPDATE_SERVICE_NAME = "pihole-ai-intel-update.service"
+INTEL_UPDATE_TIMER_NAME = "pihole-ai-intel-update.timer"
+INTEL_UNIT_NAMES = [
+    INTEL_UPDATE_SERVICE_NAME,
+    INTEL_UPDATE_TIMER_NAME,
+]
+MANAGED_UNIT_NAMES = [
+    *SERVICE_NAMES,
+    *INTEL_UNIT_NAMES,
+]
 START_ORDER = SERVICE_NAMES
 STOP_ORDER = list(reversed(SERVICE_NAMES))
 
@@ -76,6 +86,8 @@ class ServiceDefinition:
     description: str
     command: list[str]
     after: str
+    service_type: str = "simple"
+    restart: str | None = "always"
 
 
 @dataclass(frozen=True)
@@ -274,6 +286,14 @@ SERVICE_DEFINITIONS = [
         ],
         after="network-online.target pihole-ai-engine.service",
     ),
+    ServiceDefinition(
+        name=INTEL_UPDATE_SERVICE_NAME,
+        description="PiHole-AI Threat Intelligence Feed Update",
+        command=["intel", "update", "--all", "--non-interactive"],
+        after="network-online.target",
+        service_type="oneshot",
+        restart=None,
+    ),
 ]
 
 
@@ -336,26 +356,60 @@ def generate_unit_file(
     if read_only_paths:
         hardening.append(f"ReadOnlyPaths={read_only_paths}")
 
-    return MANAGED_FILE_HEADER + "\n".join(
+    service_lines = [
+        "[Unit]",
+        f"Description={service.description}",
+        f"After={service.after}",
+        "Wants=network-online.target",
+        "",
+        "[Service]",
+        f"Type={service.service_type}",
+        f"User={service_user}",
+        f"Group={service_group}",
+        f"WorkingDirectory={working_directory}",
+        f"EnvironmentFile={environment_file}",
+        f"ExecStart={exec_start}",
+    ]
+    if service.restart:
+        service_lines.extend(
+            [
+                f"Restart={service.restart}",
+                "RestartSec=5",
+            ]
+        )
+    service_lines.extend(
         [
-            "[Unit]",
-            f"Description={service.description}",
-            f"After={service.after}",
-            "Wants=network-online.target",
-            "",
-            "[Service]",
-            "Type=simple",
-            f"User={service_user}",
-            f"Group={service_group}",
-            f"WorkingDirectory={working_directory}",
-            f"EnvironmentFile={environment_file}",
-            f"ExecStart={exec_start}",
-            "Restart=always",
-            "RestartSec=5",
             *hardening,
             "",
             "[Install]",
             "WantedBy=multi-user.target",
+            "",
+        ]
+    )
+    return MANAGED_FILE_HEADER + "\n".join(service_lines)
+
+
+def generate_timer_file(
+    service_name: str = INTEL_UPDATE_SERVICE_NAME,
+    interval_seconds: int = 86400,
+) -> str:
+    """
+    Generate the managed systemd timer for threat-intelligence updates.
+    """
+
+    return MANAGED_FILE_HEADER + "\n".join(
+        [
+            "[Unit]",
+            "Description=PiHole-AI Threat Intelligence Feed Update Timer",
+            "",
+            "[Timer]",
+            "OnBootSec=5min",
+            f"OnUnitActiveSec={interval_seconds}",
+            "Persistent=true",
+            f"Unit={service_name}",
+            "",
+            "[Install]",
+            "WantedBy=timers.target",
             "",
         ]
     )
@@ -373,7 +427,7 @@ def generated_units(
     Return all generated unit file contents.
     """
 
-    return {
+    units = {
         service.name: generate_unit_file(
             service=service,
             python_path=python_path,
@@ -385,6 +439,8 @@ def generated_units(
         )
         for service in SERVICE_DEFINITIONS
     }
+    units[INTEL_UPDATE_TIMER_NAME] = generate_timer_file()
+    return units
 
 
 def discover_executable_target(
@@ -629,7 +685,7 @@ def build_install_plan(
     service_group = group or DEFAULT_SERVICE_GROUP
     unit_paths = {
         name: runtime_layout.systemd_dir / name
-        for name in SERVICE_NAMES
+        for name in MANAGED_UNIT_NAMES
     }
     directories = [
         runtime_layout.config_dir,
@@ -890,7 +946,7 @@ def installation_status(
         state = "legacy" if legacy["detected"] else "not_installed"
     elif drifted:
         state = "drifted"
-    elif installed_count < len(SERVICE_NAMES) or managed_count < installed_count:
+    elif installed_count < len(MANAGED_UNIT_NAMES) or managed_count < installed_count:
         state = "partial"
     else:
         state = "installed"
@@ -1725,12 +1781,12 @@ def service_uninstall(
 
     with lifecycle_lock("uninstall", layout=plan.layout, dry_run=dry_run):
         _run_systemctl(
-            ["disable", "--now", *SERVICE_NAMES],
+            ["disable", "--now", *MANAGED_UNIT_NAMES],
             dry_run=dry_run,
         )
         actions.append("disabled and stopped services")
 
-        for name in SERVICE_NAMES:
+        for name in MANAGED_UNIT_NAMES:
             path = Path(systemd_dir) / name
 
             if dry_run:

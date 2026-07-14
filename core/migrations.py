@@ -5,6 +5,7 @@ Explicit SQLite migrations for the PiHole-AI events database.
 from __future__ import annotations
 
 import sqlite3
+import uuid
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -302,6 +303,416 @@ def _apply_action_decision_ref(conn: sqlite3.Connection) -> None:
         )
 
 
+def _apply_immutable_decision_history(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS decision_history (
+            decision_id TEXT PRIMARY KEY,
+            domain TEXT NOT NULL,
+            analysis_id INTEGER,
+            verdict TEXT NOT NULL,
+            risk_score REAL NOT NULL,
+            confidence REAL NOT NULL,
+            category TEXT,
+            source TEXT,
+            explanation TEXT,
+            decisive_evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+            classifier_trace_json TEXT NOT NULL DEFAULT '[]',
+            conflicts_json TEXT NOT NULL DEFAULT '[]',
+            policy_version TEXT NOT NULL,
+            application_version TEXT NOT NULL DEFAULT '',
+            schema_version INTEGER,
+            trigger TEXT NOT NULL DEFAULT 'unknown',
+            supersedes_decision_id TEXT,
+            evidence_truncated INTEGER NOT NULL DEFAULT 0,
+            legacy INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL,
+            FOREIGN KEY (supersedes_decision_id)
+                REFERENCES decision_history(decision_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS decision_history_evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_id TEXT NOT NULL,
+            evidence_id TEXT NOT NULL,
+            classifier TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            polarity TEXT NOT NULL,
+            score REAL NOT NULL,
+            confidence REAL NOT NULL,
+            summary TEXT NOT NULL,
+            details TEXT,
+            metadata_json TEXT NOT NULL,
+            decisive INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL,
+            UNIQUE(decision_id, evidence_id),
+            FOREIGN KEY (decision_id)
+                REFERENCES decision_history(decision_id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_decision_history_domain_created ON decision_history(domain, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_decision_history_analysis_id ON decision_history(analysis_id)",
+        "CREATE INDEX IF NOT EXISTS idx_decision_history_supersedes ON decision_history(supersedes_decision_id)",
+        "CREATE INDEX IF NOT EXISTS idx_decision_history_verdict ON decision_history(verdict)",
+        "CREATE INDEX IF NOT EXISTS idx_decision_history_policy ON decision_history(policy_version)",
+        "CREATE INDEX IF NOT EXISTS idx_decision_history_evidence_decision ON decision_history_evidence(decision_id)",
+    ):
+        conn.execute(statement)
+
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(decision_records)")
+    }
+    if "decision_id" not in columns:
+        conn.execute("ALTER TABLE decision_records ADD COLUMN decision_id TEXT")
+
+    existing = conn.execute(
+        """
+        SELECT *
+        FROM decision_records
+        WHERE decision_id IS NULL
+        """
+    ).fetchall()
+    for row in existing:
+        decision_id = f"dec_{uuid.uuid4().hex}"
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO decision_history
+            (
+                decision_id,
+                domain,
+                verdict,
+                risk_score,
+                confidence,
+                category,
+                source,
+                explanation,
+                decisive_evidence_ids_json,
+                classifier_trace_json,
+                conflicts_json,
+                policy_version,
+                application_version,
+                schema_version,
+                trigger,
+                evidence_truncated,
+                legacy,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                decision_id,
+                row["domain"],
+                row["verdict"],
+                row["risk_score"],
+                row["confidence"],
+                row["category"],
+                row["source"],
+                row["explanation"],
+                row["decisive_evidence_ids_json"],
+                row["classifier_trace_json"],
+                row["conflicts_json"],
+                row["policy_version"],
+                row["application_version"] or "",
+                row["schema_version"],
+                "unknown",
+                row["evidence_truncated"],
+                1,
+                row["created_at"],
+            ),
+        )
+        evidence_rows = conn.execute(
+            """
+            SELECT *
+            FROM decision_evidence
+            WHERE domain = ?
+            ORDER BY id ASC
+            """,
+            (row["domain"],),
+        ).fetchall()
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO decision_history_evidence
+            (
+                decision_id,
+                evidence_id,
+                classifier,
+                evidence_type,
+                polarity,
+                score,
+                confidence,
+                summary,
+                details,
+                metadata_json,
+                decisive,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    decision_id,
+                    evidence["evidence_id"],
+                    evidence["classifier"],
+                    evidence["evidence_type"],
+                    evidence["polarity"],
+                    evidence["score"],
+                    evidence["confidence"],
+                    evidence["summary"],
+                    evidence["details"],
+                    evidence["metadata_json"],
+                    evidence["decisive"],
+                    evidence["created_at"],
+                )
+                for evidence in evidence_rows
+            ],
+        )
+        conn.execute(
+            """
+            UPDATE decision_records
+            SET decision_id = ?
+            WHERE domain = ?
+            """,
+            (decision_id, row["domain"]),
+        )
+        legacy_ref = f"decision:{row['domain']}:{row['created_at']}"
+        conn.execute(
+            """
+            UPDATE action_audit
+            SET decision_ref = ?
+            WHERE decision_ref = ?
+            """,
+            (decision_id, legacy_ref),
+        )
+
+
+def _apply_threat_intel_feed_management(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS threat_intel_sources (
+            source_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            url TEXT NOT NULL,
+            format TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            category TEXT NOT NULL,
+            confidence INTEGER NOT NULL,
+            refresh_interval_seconds INTEGER NOT NULL,
+            stale_after_seconds INTEGER NOT NULL,
+            timeout_seconds INTEGER NOT NULL,
+            max_download_bytes INTEGER NOT NULL,
+            expected_content_type TEXT NOT NULL DEFAULT '',
+            allow_http INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS threat_intel_source_state (
+            source_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'unknown',
+            last_attempt_at REAL,
+            last_success_at REAL,
+            next_update_at REAL,
+            etag TEXT NOT NULL DEFAULT '',
+            last_modified TEXT NOT NULL DEFAULT '',
+            content_sha256 TEXT NOT NULL DEFAULT '',
+            entry_count INTEGER NOT NULL DEFAULT 0,
+            active_generation TEXT NOT NULL DEFAULT '',
+            last_error_code TEXT NOT NULL DEFAULT '',
+            last_error_summary TEXT NOT NULL DEFAULT '',
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (source_id)
+                REFERENCES threat_intel_sources(source_id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS threat_intel_generations (
+            generation_id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            entry_count INTEGER NOT NULL,
+            created_at REAL NOT NULL,
+            activated_at REAL,
+            previous_generation TEXT,
+            FOREIGN KEY (source_id)
+                REFERENCES threat_intel_sources(source_id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS threat_intel_generation_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            generation_id TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            domain TEXT NOT NULL,
+            category TEXT NOT NULL,
+            confidence INTEGER NOT NULL,
+            first_seen REAL NOT NULL,
+            last_seen REAL NOT NULL,
+            UNIQUE(generation_id, domain),
+            FOREIGN KEY (generation_id)
+                REFERENCES threat_intel_generations(generation_id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS threat_intel_update_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id TEXT NOT NULL,
+            attempted_at REAL NOT NULL,
+            result TEXT NOT NULL,
+            http_status INTEGER,
+            changed INTEGER NOT NULL DEFAULT 0,
+            not_modified INTEGER NOT NULL DEFAULT 0,
+            downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+            parsed_entries INTEGER NOT NULL DEFAULT 0,
+            accepted_entries INTEGER NOT NULL DEFAULT 0,
+            rejected_entries INTEGER NOT NULL DEFAULT 0,
+            duplicate_entries INTEGER NOT NULL DEFAULT 0,
+            previous_generation TEXT NOT NULL DEFAULT '',
+            active_generation TEXT NOT NULL DEFAULT '',
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            warnings_json TEXT NOT NULL DEFAULT '[]',
+            error_code TEXT NOT NULL DEFAULT '',
+            error_summary TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_threat_intel_sources_enabled ON threat_intel_sources(enabled)",
+        "CREATE INDEX IF NOT EXISTS idx_threat_intel_entries_domain ON threat_intel_generation_entries(domain)",
+        "CREATE INDEX IF NOT EXISTS idx_threat_intel_entries_source ON threat_intel_generation_entries(source_id)",
+        "CREATE INDEX IF NOT EXISTS idx_threat_intel_generations_source ON threat_intel_generations(source_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_threat_intel_update_audit_source ON threat_intel_update_audit(source_id, attempted_at DESC)",
+    ):
+        conn.execute(statement)
+
+    legacy_count = conn.execute(
+        "SELECT COUNT(*) AS count FROM threat_intel"
+    ).fetchone()["count"]
+    if legacy_count:
+        now = datetime.now(timezone.utc).timestamp()
+        source_id = "legacy-manual"
+        generation_id = "gen_legacy_manual"
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO threat_intel_sources
+            (
+                source_id,
+                name,
+                url,
+                format,
+                enabled,
+                category,
+                confidence,
+                refresh_interval_seconds,
+                stale_after_seconds,
+                timeout_seconds,
+                max_download_bytes,
+                expected_content_type,
+                allow_http,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source_id,
+                "Legacy manual imports",
+                "manual://legacy",
+                "hosts",
+                1,
+                "malware",
+                90,
+                86400,
+                31536000,
+                20,
+                2000000,
+                "",
+                0,
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO threat_intel_generations
+            (
+                generation_id,
+                source_id,
+                status,
+                content_sha256,
+                entry_count,
+                created_at,
+                activated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (generation_id, source_id, "active", "legacy", legacy_count, now, now),
+        )
+        rows = conn.execute("SELECT * FROM threat_intel").fetchall()
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO threat_intel_generation_entries
+            (
+                generation_id,
+                source_id,
+                domain,
+                category,
+                confidence,
+                first_seen,
+                last_seen
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    generation_id,
+                    source_id,
+                    row["domain"],
+                    row["category"],
+                    row["confidence"],
+                    row["first_seen"],
+                    row["last_seen"],
+                )
+                for row in rows
+            ],
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO threat_intel_source_state
+            (
+                source_id,
+                status,
+                last_attempt_at,
+                last_success_at,
+                next_update_at,
+                entry_count,
+                active_generation
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (source_id, "active", now, now, None, legacy_count, generation_id),
+        )
+
+
 MIGRATIONS = [
     Migration(
         version=1,
@@ -322,6 +733,16 @@ MIGRATIONS = [
         version=4,
         name="action_audit_decision_ref",
         apply=_apply_action_decision_ref,
+    ),
+    Migration(
+        version=5,
+        name="immutable_decision_history",
+        apply=_apply_immutable_decision_history,
+    ),
+    Migration(
+        version=6,
+        name="threat_intel_feed_management",
+        apply=_apply_threat_intel_feed_management,
     ),
 ]
 

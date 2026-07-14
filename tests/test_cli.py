@@ -123,6 +123,33 @@ class CLITests(unittest.TestCase):
         print_explanation.assert_called_once_with(
             domain="Example.COM",
             as_json=True,
+            history=False,
+            decision_id=None,
+            compare=None,
+        )
+
+    def test_explain_history_and_compare_flags_dispatch(self) -> None:
+        with patch("pihole_ai.explain.print_explanation") as print_explanation:
+            exit_code = cli.main(
+                [
+                    "explain",
+                    "example.com",
+                    "--history",
+                    "--decision",
+                    "dec_" + "1" * 32,
+                    "--compare",
+                    "dec_" + "1" * 32,
+                    "dec_" + "2" * 32,
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        print_explanation.assert_called_once_with(
+            domain="example.com",
+            as_json=False,
+            history=True,
+            decision_id="dec_" + "1" * 32,
+            compare=("dec_" + "1" * 32, "dec_" + "2" * 32),
         )
 
     def test_feedback_dispatches_with_options(self) -> None:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 
-from core.db import get_threat_intel
+from core.db import get_active_threat_intel
 from engine.evidence import EvidenceItem, EvidencePolarity
 from engine.classifiers.base import BaseClassifier
 from engine.models import (
@@ -39,7 +39,7 @@ class ThreatIntelClassifier(BaseClassifier):
         request: AnalysisRequest,
     ) -> AnalysisResult | None:
         domain = request.domain.lower()
-        hit = get_threat_intel(
+        hit = get_active_threat_intel(
             domain,
         )
 
@@ -62,7 +62,7 @@ class ThreatIntelClassifier(BaseClassifier):
             confidence=confidence,
             category=category,
             reason=(
-                f"Matched threat-intel feed '{hit['source']}' "
+                f"Matched threat-intel feed '{hit['source_name'] or hit['source']}' "
                 f"as {hit['category']}."
             ),
             model="threat-intel",
@@ -75,7 +75,7 @@ class ThreatIntelClassifier(BaseClassifier):
         request: AnalysisRequest,
     ) -> list[EvidenceItem]:
         domain = request.domain.lower()
-        hit = get_threat_intel(domain)
+        hit = get_active_threat_intel(domain)
         if hit is None:
             return []
 
@@ -84,17 +84,24 @@ class ThreatIntelClassifier(BaseClassifier):
             DomainCategory.SUSPICIOUS.value,
         )
         confidence = int(hit["confidence"] or 0)
-        decisive = confidence >= 70
+        observed_at = hit.get("last_success_at") or hit.get("last_seen") or time.time()
+        age_seconds = max(0.0, time.time() - float(observed_at))
+        stale_after = float(hit.get("stale_after_seconds") or 0)
+        freshness = "fresh"
+        if stale_after > 0 and age_seconds > stale_after:
+            freshness = "stale"
+        decisive = confidence >= 70 and freshness == "fresh"
+        effective_score = max(50 if freshness == "stale" else 70, min(100, confidence))
         return [
             EvidenceItem(
-                evidence_id=f"threat-intel:{domain}:{hit['source']}",
+                evidence_id=f"threat-intel:{domain}:{hit['source']}:{hit.get('generation_id', 'manual')}",
                 classifier="threat-intel",
                 evidence_type="feed_hit",
                 polarity=EvidencePolarity.RISK,
-                score=max(70, min(100, confidence)),
+                score=effective_score,
                 confidence=confidence / 100.0,
                 summary=(
-                    f"Matched threat-intel feed '{hit['source']}' "
+                    f"Matched threat-intel feed '{hit.get('source_name') or hit['source']}' "
                     f"as {hit['category']}."
                 ),
                 metadata={
@@ -102,9 +109,15 @@ class ThreatIntelClassifier(BaseClassifier):
                     "precedence": 30,
                     "policy_reason": "high-confidence threat-intelligence hit",
                     "source": "threat-intel",
+                    "source_id": hit["source"],
+                    "source_name": hit["source_name"],
                     "feed_source": hit["source"],
                     "feed_category": hit["category"],
                     "feed_confidence": confidence,
+                    "generation_id": hit["generation_id"],
+                    "feed_age_seconds": age_seconds,
+                    "freshness": freshness,
+                    "exact_match": True,
                     "category": category,
                 },
             )

@@ -138,7 +138,7 @@ class FeedbackTests(unittest.TestCase):
 
         self.assertEqual(result.domain, "bad.example")
         self.assertEqual(before, after)
-        self.assertEqual(actions[0]["decision_ref"], "decision:bad.example:" + str(decision.created_at))
+        self.assertRegex(actions[0]["decision_ref"], r"^dec_[0-9a-f]{32}$")
 
 
 if __name__ == "__main__":

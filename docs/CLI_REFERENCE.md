@@ -32,9 +32,9 @@ appliance. JSON output is available only where noted.
 | `explain` | explain local evidence for a domain | read-only | user | `--json` |
 | `feedback` | record human feedback | mutating | user with DB write access | no |
 | `rules` | manage manual allow/block rules | mutating/read-only | user with DB write access | no |
-| `intel` | import/list local threat intelligence | mutating/read-only | user with DB write access | no |
+| `intel` | manage threat-intelligence imports and feeds | mutating/read-only | user with DB write access | selected subcommands |
 | `evaluate` | benchmark classifiers against fixtures | read-only | user | `--json` |
-| `maintenance` | trim/vacuum the events database | mutating | user with DB write access | no |
+| `maintenance` | trim/vacuum events or retain decision history | mutating | user with DB write access | `decision-history --json` |
 | `export` | export rows from local datasets | read-only/write output | user | format option |
 | `learn` | update local reputation from history | mutating | user with DB write access | no |
 | `config-path` | print active config path | read-only | user | no |
@@ -72,6 +72,9 @@ pihole-ai health [--json]
 pihole-ai doctor [--json]
 
 pihole-ai explain DOMAIN [--json]
+pihole-ai explain DOMAIN --history [--json]
+pihole-ai explain DOMAIN --decision DECISION_ID [--json]
+pihole-ai explain DOMAIN --compare OLDER_ID NEWER_ID [--json]
 pihole-ai feedback DOMAIN safe|bad|false-positive|false-negative|noisy
                   [--reason TEXT] [--promote] [--apply]
 
@@ -82,13 +85,28 @@ pihole-ai rules remove DOMAIN
 
 pihole-ai intel import-hosts PATH --source NAME [--category NAME]
                               [--confidence 0-100]
-pihole-ai intel list [--limit N] [--q TEXT] [--source NAME] [--category NAME]
+pihole-ai intel list [--limit N] [--q TEXT] [--source NAME] [--category NAME] [--json]
+pihole-ai intel source list [--json]
+pihole-ai intel source show SOURCE_ID [--json]
+pihole-ai intel source add SOURCE_ID --name NAME --url URL
+                            [--format hosts|domains|text]
+                            [--category NAME] [--confidence 0-100]
+                            [--disabled] [--allow-http]
+pihole-ai intel source remove SOURCE_ID
+pihole-ai intel source enable SOURCE_ID
+pihole-ai intel source disable SOURCE_ID
+pihole-ai intel update [--source SOURCE_ID] [--all] [--dry-run]
+                       [--non-interactive] [--json]
+pihole-ai intel status [--json]
+pihole-ai intel rollback --source SOURCE_ID [--json]
+pihole-ai intel audit [--source SOURCE_ID] [--limit N] [--json]
 
 pihole-ai evaluate PATH [--risk-tolerance N] [--include-ai] [--json]
 pihole-ai export analysis|events|actions|reputations
                  [--format json|csv] [--output PATH] [--limit N]
                  [--q TEXT] [--min-risk N] [--category NAME]
 pihole-ai maintenance [--keep-latest N] [--vacuum]
+pihole-ai maintenance decision-history [--dry-run] [--json]
 pihole-ai learn [--limit N] [--min-score N] [--no-audit]
 ```
 

@@ -3,9 +3,9 @@
 - Package version: `0.4.0rc3`
 - Active branch: `v2-refactor`
 - Stable release baseline: v0.4 release candidate line
-- Current epic: v0.5 evidence-based decision engine
+- Current epic: v0.5 threat-intelligence feed management
 - Test suite: unittest discovery under `tests`
-- Latest schema version: `4`
+- Latest schema version: `6`
 - Supported Python: 3.13+
 - Supported deployment: Linux/systemd appliance, Raspberry Pi target
 
@@ -24,14 +24,16 @@
 - protected config and service identity repair
 - dashboard authentication, sessions, CSRF, and security headers
 - health, doctor, setup, install status, and database diagnostics
-- schema migrations through v4
+- schema migrations through v6
 - evidence-based decision aggregation
 - stored explain evidence for CLI/API/dashboard
 - feedback audit linkage to stored decisions
+- immutable decision history, selected decision explain, and comparison
+- automatic threat-intelligence feed source registry, generation activation,
+  rollback, audit trail, and updater systemd timer
 
 ## Known Limitations
 
-- latest structured decision per domain, not immutable full history
 - no first-class database backup/restore command
 - single dashboard administrator
 - no automatic Ollama/model installation
@@ -39,8 +41,8 @@
 
 ## Next Planned Epic
 
-Continue v0.5 hardening around immutable history, backup/restore, retention, and
-field diagnostics.
+Continue v0.5 hardening around feed diagnostics, backup/restore, retention, and
+field validation.
 
 ## Release Blockers
 

@@ -260,6 +260,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print explanation as JSON.",
     )
+    explain.add_argument(
+        "--history",
+        action="store_true",
+        help="Show recent immutable decision history for the domain.",
+    )
+    explain.add_argument(
+        "--decision",
+        default=None,
+        help="Show one immutable decision by decision ID.",
+    )
+    explain.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("OLDER_ID", "NEWER_ID"),
+        help="Compare two immutable decision IDs for the domain.",
+    )
 
     feedback = subcommands.add_parser(
         "feedback",
@@ -507,6 +523,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run database maintenance.",
     )
     maintenance.add_argument(
+        "maintenance_command",
+        nargs="?",
+        choices=["decision-history"],
+        help="Optional maintenance task.",
+    )
+    maintenance.add_argument(
         "--keep-latest",
         type=int,
         default=None,
@@ -516,6 +538,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--vacuum",
         action="store_true",
         help="Run SQLite VACUUM after cleanup.",
+    )
+    maintenance.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show maintenance changes without deleting history.",
+    )
+    maintenance.add_argument(
+        "--json",
+        action="store_true",
+        help="Print maintenance result as JSON.",
     )
 
     learn = subcommands.add_parser(
@@ -599,6 +631,61 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Filter by category.",
     )
+    intel_list.add_argument(
+        "--json",
+        action="store_true",
+        help="Print rows as JSON.",
+    )
+
+    intel_source = intel_commands.add_parser(
+        "source",
+        help="Manage configured threat-intel feed sources.",
+    )
+    intel_source_commands = intel_source.add_subparsers(
+        dest="intel_source_command",
+        required=True,
+    )
+    intel_source_list = intel_source_commands.add_parser("list", help="List feed sources.")
+    intel_source_list.add_argument("--json", action="store_true", help="Print JSON.")
+    intel_source_show = intel_source_commands.add_parser("show", help="Show one feed source.")
+    intel_source_show.add_argument("source_id")
+    intel_source_show.add_argument("--json", action="store_true", help="Print JSON.")
+    intel_source_add = intel_source_commands.add_parser("add", help="Add or update a feed source.")
+    intel_source_add.add_argument("source_id")
+    intel_source_add.add_argument("--name", required=True)
+    intel_source_add.add_argument("--url", required=True)
+    intel_source_add.add_argument("--format", choices=["hosts", "domains", "text"], default="hosts")
+    intel_source_add.add_argument("--category", default="malware")
+    intel_source_add.add_argument("--confidence", type=int, default=90)
+    intel_source_add.add_argument("--disabled", action="store_true")
+    intel_source_add.add_argument("--allow-http", action="store_true")
+    intel_source_add.add_argument("--json", action="store_true", help="Print JSON.")
+    for source_action in ("remove", "enable", "disable"):
+        parser_source_action = intel_source_commands.add_parser(
+            source_action,
+            help=f"{source_action.title()} a feed source.",
+        )
+        parser_source_action.add_argument("source_id")
+        parser_source_action.add_argument("--json", action="store_true", help="Print JSON.")
+
+    intel_update = intel_commands.add_parser("update", help="Fetch and activate configured feeds.")
+    intel_update.add_argument("--source", default="")
+    intel_update.add_argument("--all", action="store_true")
+    intel_update.add_argument("--dry-run", action="store_true")
+    intel_update.add_argument("--non-interactive", action="store_true")
+    intel_update.add_argument("--json", action="store_true", help="Print JSON.")
+
+    intel_status = intel_commands.add_parser("status", help="Show feed source status.")
+    intel_status.add_argument("--json", action="store_true", help="Print JSON.")
+
+    intel_rollback = intel_commands.add_parser("rollback", help="Rollback a source to the previous generation.")
+    intel_rollback.add_argument("--source", required=True)
+    intel_rollback.add_argument("--json", action="store_true", help="Print JSON.")
+
+    intel_audit = intel_commands.add_parser("audit", help="List feed update audit records.")
+    intel_audit.add_argument("--source", default="")
+    intel_audit.add_argument("--limit", type=int, default=100)
+    intel_audit.add_argument("--json", action="store_true", help="Print JSON.")
 
     rules = subcommands.add_parser(
         "rules",
@@ -981,6 +1068,9 @@ def main(
         print_explanation(
             domain=args.domain,
             as_json=args.json,
+            history=args.history,
+            decision_id=args.decision,
+            compare=tuple(args.compare) if args.compare else None,
         )
         return 0
 
@@ -1169,7 +1259,27 @@ def main(
         return 0
 
     if args.command == "maintenance":
-        from core.maintenance import run_maintenance
+        import json
+
+        from core.maintenance import run_decision_history_maintenance, run_maintenance
+
+        if args.maintenance_command == "decision-history":
+            result = run_decision_history_maintenance(
+                dry_run=args.dry_run,
+            )
+            if args.json:
+                print(json.dumps(result.to_dict(), sort_keys=True))
+            else:
+                print(
+                    "Decision-history maintenance complete: "
+                    f"domains_inspected={result.domains_inspected}, "
+                    f"decisions_inspected={result.decisions_inspected}, "
+                    f"decisions_eligible={result.decisions_eligible}, "
+                    f"decisions_deleted={result.decisions_deleted}, "
+                    f"evidence_rows_deleted={result.evidence_rows_deleted}, "
+                    f"dry_run={result.dry_run}"
+                )
+            return 0
 
         result = run_maintenance(
             keep_latest=args.keep_latest,
@@ -1195,7 +1305,24 @@ def main(
         return 0
 
     if args.command == "intel":
-        from pihole_ai.intel import import_hosts_file, print_intel
+        import json
+
+        from core.db import (
+            get_intel_source,
+            list_intel_sources,
+            list_intel_update_audit,
+            remove_intel_source,
+            set_intel_source_enabled,
+        )
+        from pihole_ai.intel import (
+            add_source,
+            get_intel_rows,
+            import_hosts_file,
+            print_intel,
+            rollback_source,
+            source_status,
+            update_sources,
+        )
 
         if args.intel_command == "import-hosts":
             count = import_hosts_file(
@@ -1210,12 +1337,134 @@ def main(
             return 0
 
         if args.intel_command == "list":
-            print_intel(
-                limit=args.limit,
-                search=args.q,
-                source=args.source,
-                category=args.category,
-            )
+            if args.json:
+                print(json.dumps(get_intel_rows(args.limit, args.q, args.source, args.category), sort_keys=True))
+            else:
+                print_intel(
+                    limit=args.limit,
+                    search=args.q,
+                    source=args.source,
+                    category=args.category,
+                )
+            return 0
+
+        if args.intel_command == "source":
+            if args.intel_source_command == "list":
+                rows = list_intel_sources()
+                if args.json:
+                    print(json.dumps(rows, sort_keys=True))
+                else:
+                    for row in rows:
+                        enabled = "enabled" if row["enabled"] else "disabled"
+                        print(f"{row['source_id']} {enabled} {row['format']} {row['url']}")
+                return 0
+            if args.intel_source_command == "show":
+                row = get_intel_source(args.source_id)
+                if row is None:
+                    print("Feed source not found.")
+                    return 1
+                if args.json:
+                    print(json.dumps(row, sort_keys=True))
+                else:
+                    for key, value in row.items():
+                        print(f"{key}: {value}")
+                return 0
+            if args.intel_source_command == "add":
+                source = add_source(
+                    source_id=args.source_id,
+                    name=args.name,
+                    url=args.url,
+                    feed_format=args.format,
+                    category=args.category,
+                    confidence=args.confidence,
+                    enabled=not args.disabled,
+                    allow_http=args.allow_http,
+                )
+                if args.json:
+                    print(json.dumps(source.to_dict(), sort_keys=True))
+                else:
+                    print(f"Saved feed source {source.source_id}.")
+                return 0
+            if args.intel_source_command == "remove":
+                removed = remove_intel_source(args.source_id)
+                if args.json:
+                    print(json.dumps({"removed": removed}, sort_keys=True))
+                else:
+                    print("Removed feed source." if removed else "Feed source not found.")
+                return 0 if removed else 1
+            if args.intel_source_command in {"enable", "disable"}:
+                enabled = args.intel_source_command == "enable"
+                set_intel_source_enabled(args.source_id, enabled)
+                if args.json:
+                    print(json.dumps({"source_id": args.source_id, "enabled": enabled}, sort_keys=True))
+                else:
+                    print(f"{'Enabled' if enabled else 'Disabled'} feed source {args.source_id}.")
+                return 0
+
+        if args.intel_command == "update":
+            try:
+                results = update_sources(
+                    source_id=args.source or None,
+                    all_sources=args.all,
+                    dry_run=args.dry_run,
+                )
+            except RuntimeError as exc:
+                print(str(exc))
+                return 1
+            payload = [result.to_dict() for result in results]
+            if args.json:
+                print(json.dumps(payload, sort_keys=True))
+            else:
+                for result in results:
+                    status = "ok" if result.success else result.error_code
+                    print(
+                        f"{result.source_id}: {status} changed={result.changed} "
+                        f"accepted={result.accepted_entries} active={result.active_generation}"
+                    )
+            return 0 if all(result.success for result in results) else 1
+
+        if args.intel_command == "status":
+            rows = source_status()
+            if args.json:
+                print(json.dumps(rows, sort_keys=True))
+            else:
+                if not rows:
+                    print("No feed sources configured.")
+                for row in rows:
+                    print(
+                        f"{row['source_id']} status={row.get('status') or 'unknown'} "
+                        f"enabled={bool(row['enabled'])} entries={row.get('entry_count') or 0} "
+                        f"active={row.get('active_generation') or ''}"
+                    )
+            return 0
+
+        if args.intel_command == "rollback":
+            generation = rollback_source(args.source)
+            if generation is None:
+                if args.json:
+                    print(json.dumps({"rolled_back": False, "error": "intel.rollback.unavailable"}, sort_keys=True))
+                else:
+                    print("Rollback unavailable.")
+                return 1
+            if args.json:
+                print(json.dumps({"rolled_back": True, "active_generation": generation}, sort_keys=True))
+            else:
+                print(f"Rolled back {args.source} to {generation}.")
+            return 0
+
+        if args.intel_command == "audit":
+            rows = list_intel_update_audit(limit=args.limit, source_id=args.source)
+            if args.json:
+                print(json.dumps(rows, sort_keys=True))
+            else:
+                if not rows:
+                    print("No feed update audit records.")
+                for row in rows:
+                    print(
+                        f"{row['source_id']} result={row['result']} "
+                        f"changed={row['changed']} accepted={row['accepted_entries']} "
+                        f"error={row['error_code']}"
+                    )
             return 0
 
     if args.command == "rules":

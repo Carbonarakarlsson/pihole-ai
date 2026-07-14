@@ -107,7 +107,7 @@ class EvaluateTests(unittest.TestCase):
             "engine.classifiers.reputation.get_domain_reputation",
             return_value=None,
         ), patch(
-            "engine.classifiers.threat_intel.get_threat_intel",
+            "engine.classifiers.threat_intel.get_active_threat_intel",
             return_value=None,
         ):
             result = run_benchmark(
