@@ -639,6 +639,11 @@ class DashboardTests(unittest.TestCase):
             self.assertIn(label, response.data)
         self.assertIn(b"Companion appliance", response.data)
         self.assertIn(b'id="setup-banner"', response.data)
+        self.assertIn(b"Setup complete with warnings", response.data)
+        self.assertIn(
+            b"PiHole-AI is operational; review recommended configuration warnings.",
+            response.data,
+        )
         self.assertIn(b'id="setup-steps"', response.data)
         self.assertIn(b"Derived from live state", response.data)
         self.assertIn(b"/api/setup", response.data)

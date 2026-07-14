@@ -1,7 +1,10 @@
 import unittest
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from actions.alerts import alert
 from actions.policy import (
     PolicyDecision,
     apply_action_policy,
@@ -32,6 +35,19 @@ class ActionPolicyTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.rule_patch.stop()
+
+    def test_alert_writes_configured_alert_log_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "actions.alerts.settings",
+            SimpleNamespace(alert_log=Path(tmpdir) / "alerts.log"),
+        ), patch("actions.alerts.record_action") as record_action:
+            alert("hello")
+
+            self.assertEqual(
+                (Path(tmpdir) / "alerts.log").read_text(encoding="utf-8"),
+                "hello\n",
+            )
+            record_action.assert_called_once()
 
     def test_decide_action_returns_none_when_mode_is_off(self) -> None:
         self.assertIsNone(

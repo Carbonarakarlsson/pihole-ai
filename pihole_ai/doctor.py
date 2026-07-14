@@ -61,6 +61,7 @@ def run_doctor() -> DoctorReport:
     diagnostics = [
         _safe_diagnostic("configuration", _configuration_diagnostic),
         _safe_diagnostic("dashboard_auth", _dashboard_auth_diagnostic),
+        _safe_diagnostic("dashboard_exposure", _dashboard_exposure_diagnostic),
         _safe_diagnostic("database_schema", _database_diagnostic),
         _safe_diagnostic(
             "events_database",
@@ -257,6 +258,10 @@ def _dashboard_auth_diagnostic() -> Diagnostic:
         issue
         for issue in result.issues
         if issue.code.startswith("config.dashboard.")
+        and issue.code not in {
+            "config.dashboard.non_loopback_bind",
+            "config.dashboard.proxy_trust_unsafe",
+        }
     ]
     status = HealthStatus.HEALTHY.value
     remediation = None
@@ -293,6 +298,60 @@ def _dashboard_auth_diagnostic() -> Diagnostic:
             ],
         },
         remediation=remediation,
+    )
+
+
+def _dashboard_exposure_diagnostic() -> Diagnostic:
+    config, result = load_config_with_result(
+        mode=ValidationMode.RUNTIME,
+    )
+    if config is None:
+        return Diagnostic(
+            name="dashboard_exposure",
+            status=HealthStatus.UNKNOWN.value,
+            summary="Dashboard exposure could not be checked.",
+            details={"configured": False},
+            remediation="Run: pihole-ai config check",
+        )
+
+    exposure_issues = [
+        issue
+        for issue in result.issues
+        if issue.code
+        in {
+            "config.dashboard.non_loopback_bind",
+            "config.dashboard.proxy_trust_unsafe",
+        }
+    ]
+    exposed = config.dashboard_host not in {"127.0.0.1", "::1", "localhost"}
+    status = HealthStatus.DEGRADED.value if exposure_issues else HealthStatus.HEALTHY.value
+
+    return Diagnostic(
+        name="dashboard_exposure",
+        status=status,
+        summary=(
+            "Dashboard is reachable outside loopback."
+            if exposed
+            else "Dashboard is loopback-only."
+        ),
+        details={
+            "host": config.dashboard_host,
+            "auth_enabled": config.dashboard_auth_enabled,
+            "exposed": exposed,
+            "issues": [
+                {
+                    "code": issue.code,
+                    "severity": issue.severity,
+                    "summary": issue.summary,
+                }
+                for issue in exposure_issues
+            ],
+        },
+        remediation=(
+            "Ensure authentication is enabled and firewall/network access is restricted."
+            if exposure_issues
+            else None
+        ),
     )
 
 

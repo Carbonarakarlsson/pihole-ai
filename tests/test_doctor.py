@@ -8,10 +8,13 @@ from pihole_ai.doctor import (
     Diagnostic,
     DoctorReport,
     _database_diagnostic,
+    _dashboard_auth_diagnostic,
+    _dashboard_exposure_diagnostic,
     _systemd_diagnostic,
     run_doctor,
 )
 from pihole_ai.health import HealthCheck, HealthStatus
+from core.config import ConfigurationIssue, ConfigurationValidationResult, ValidationSeverity
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,7 @@ class DoctorTests(unittest.TestCase):
     def test_doctor_healthy_result(self) -> None:
         with patch("pihole_ai.doctor._configuration_diagnostic", return_value=Diagnostic("configuration", "healthy", "ok", {})), \
              patch("pihole_ai.doctor._dashboard_auth_diagnostic", return_value=Diagnostic("dashboard_auth", "healthy", "ok", {})), \
+             patch("pihole_ai.doctor._dashboard_exposure_diagnostic", return_value=Diagnostic("dashboard_exposure", "healthy", "ok", {})), \
              patch("pihole_ai.doctor._database_diagnostic", return_value=Diagnostic("database_schema", "healthy", "ok", {})), \
              patch("pihole_ai.doctor.check_events_database", return_value=health_check("events_database")), \
              patch("pihole_ai.doctor.check_pihole_ftl_database", return_value=health_check("pihole_ftl_database")), \
@@ -103,6 +107,7 @@ class DoctorTests(unittest.TestCase):
              patch("core.migrations.migrate_database") as migrate, \
              patch("pihole_ai.doctor._configuration_diagnostic", return_value=Diagnostic("configuration", "healthy", "ok", {})), \
              patch("pihole_ai.doctor._dashboard_auth_diagnostic", return_value=Diagnostic("dashboard_auth", "healthy", "ok", {})), \
+             patch("pihole_ai.doctor._dashboard_exposure_diagnostic", return_value=Diagnostic("dashboard_exposure", "healthy", "ok", {})), \
              patch("pihole_ai.doctor._database_diagnostic", return_value=Diagnostic("database_schema", "healthy", "ok", {})), \
              patch("pihole_ai.doctor.check_events_database", return_value=health_check("events_database")), \
              patch("pihole_ai.doctor.check_pihole_ftl_database", return_value=health_check("pihole_ftl_database")), \
@@ -159,6 +164,40 @@ class DoctorTests(unittest.TestCase):
 
         self.assertIn("executable", diagnostic.details)
         self.assertFalse(diagnostic.details["executable"]["package_importable"])
+
+    def test_dashboard_exposure_warning_does_not_degrade_auth_diagnostic(self) -> None:
+        config = type(
+            "Config",
+            (),
+            {
+                "dashboard_auth_enabled": True,
+                "dashboard_username": "admin",
+                "dashboard_password_hash": "hash",
+                "dashboard_secret_key": "secret",
+                "dashboard_host": "0.0.0.0",
+                "dashboard_trust_proxy": False,
+            },
+        )()
+        result = ConfigurationValidationResult(
+            mode="runtime",
+            issues=[
+                ConfigurationIssue(
+                    code="config.dashboard.non_loopback_bind",
+                    severity=ValidationSeverity.WARNING.value,
+                    setting="PIHOLE_AI_DASHBOARD_HOST",
+                    summary="Dashboard is configured to bind outside loopback.",
+                    remediation="Use firewall.",
+                    details={},
+                )
+            ],
+        )
+
+        with patch("pihole_ai.doctor.load_config_with_result", return_value=(config, result)):
+            auth = _dashboard_auth_diagnostic()
+            exposure = _dashboard_exposure_diagnostic()
+
+        self.assertEqual(auth.status, HealthStatus.HEALTHY.value)
+        self.assertEqual(exposure.status, HealthStatus.DEGRADED.value)
 
 
 if __name__ == "__main__":

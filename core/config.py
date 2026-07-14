@@ -23,6 +23,7 @@ RUNTIME_DATA_DIR = Path("/var/lib/pihole-ai")
 RUNTIME_LOG_DIR = Path("/var/log/pihole-ai")
 RUNTIME_EVENTS_DB = RUNTIME_DATA_DIR / "events.db"
 RUNTIME_LOG_FILE = RUNTIME_LOG_DIR / "pihole-ai.log"
+RUNTIME_ALERT_LOG = RUNTIME_LOG_DIR / "alerts.log"
 
 
 class ConfigurationError(RuntimeError):
@@ -545,7 +546,7 @@ def _parse_config(
         "events_db": _path(raw_value("EVENTS_DB_PATH", "PIHOLE_AI_EVENTS_DB", default=str(RUNTIME_EVENTS_DB))),
         "log_file": _path(raw_value("LOG_PATH", "PIHOLE_AI_LOG_FILE", default=str(RUNTIME_LOG_FILE))),
         "pihole_db": _path(raw_value("PIHOLE_AI_PIHOLE_DB", default="/etc/pihole/pihole-FTL.db")),
-        "alert_log": _path(raw_value("PIHOLE_AI_ALERT_LOG", default=str(DATA_DIR / "alerts.log"))),
+        "alert_log": _path(raw_value("PIHOLE_AI_ALERT_LOG", default=str(RUNTIME_ALERT_LOG))),
         "action_mode": raw_value("PIHOLE_AI_ACTION_MODE", default="dry-run").lower(),
         "ollama_url": raw_value("PIHOLE_AI_OLLAMA_URL", default="http://127.0.0.1:11434"),
         "ollama_model": raw_value("PIHOLE_AI_OLLAMA_MODEL", default="llama3.2:1b"),
@@ -935,7 +936,7 @@ def _validate_dashboard(
                 ValidationSeverity.WARNING,
                 "PIHOLE_AI_DASHBOARD_HOST",
                 "Dashboard is configured to bind outside loopback.",
-                "Use firewall or network-level access control, or bind to 127.0.0.1.",
+                "Dashboard is reachable outside loopback. Ensure authentication is enabled and firewall/network access is restricted.",
             )
         )
 

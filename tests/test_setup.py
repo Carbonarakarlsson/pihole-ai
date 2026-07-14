@@ -204,7 +204,24 @@ class SetupStateTests(unittest.TestCase):
             )
         )
         self.assertEqual(report.overall_stage, SetupStage.DEGRADED.value)
+        self.assertTrue(report.ready)
+        self.assertEqual(setup_exit_code(report), 0)
         self.assertEqual(self._step(report, "ollama").status, "warning")
+
+    def test_warning_only_configuration_is_degraded_ready_not_unconfigured(self):
+        report = self.evaluate_with(
+            result=validation_result(warnings=1),
+            health=health_report(overall=HealthStatus.DEGRADED.value),
+        )
+
+        self.assertEqual(report.overall_stage, SetupStage.DEGRADED.value)
+        self.assertTrue(report.ready)
+        self.assertTrue(report.has_warnings)
+        self.assertEqual(report.warning_count, 2)
+        self.assertEqual(report.blocking_issue_count, 0)
+        configuration = self._step(report, "configuration")
+        self.assertEqual(configuration.status, "warning")
+        self.assertTrue(configuration.complete)
 
     def test_required_health_failure_blocks(self):
         report = self.evaluate_with(

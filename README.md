@@ -438,6 +438,7 @@ PIHOLE_AI_DASHBOARD_SESSION_LIFETIME_MINUTES=480
 PIHOLE_AI_DASHBOARD_TRUST_PROXY=false
 DEV_ACCESS_LOGS=false
 LOG_PATH=/var/log/pihole-ai/pihole-ai.log
+PIHOLE_AI_ALERT_LOG=/var/log/pihole-ai/alerts.log
 LOG_LEVEL=INFO
 PIHOLE_AI_LOG_LEVEL=INFO
 ```
@@ -582,6 +583,10 @@ Readiness is derived from live state, not from an “onboarding complete” flag
 If configuration becomes invalid, services stop, schema becomes incompatible,
 Pi-hole DB access disappears, or required health checks fail, setup status
 changes automatically.
+
+`ready` means all required setup steps are complete. Warning-only states, such
+as a dashboard bound outside loopback with authentication enabled and firewall
+controls in place, report `overall_stage=degraded` with `ready=true`.
 
 Required readiness checks:
 

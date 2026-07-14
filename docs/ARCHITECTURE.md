@@ -85,7 +85,9 @@ classifications remain free to produce new decisions.
 - `doctor` combines diagnostics and remediation guidance without mutation.
 - `setup` derives onboarding readiness from actual configuration, install, schema, service, health, and optional Ollama state.
 
-Readiness is not stored as a boolean.
+Readiness is not stored as a boolean. `ready` means required setup is complete;
+`degraded` means the appliance is operational but warning-level or optional
+diagnostics should be reviewed.
 
 ## Lifecycle
 

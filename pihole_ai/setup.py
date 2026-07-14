@@ -78,6 +78,15 @@ class SetupStep:
     remediation: str | None = None
     action: SetupAction | None = None
     details: dict[str, Any] = field(default_factory=dict)
+    complete: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.complete is None:
+            object.__setattr__(
+                self,
+                "complete",
+                self.status in {"complete", "warning", "skipped"},
+            )
 
 
 @dataclass(frozen=True)
@@ -87,6 +96,9 @@ class SetupReport:
     steps: list[SetupStep]
     application_version: str
     generated_at: float
+    has_warnings: bool = False
+    blocking_issue_count: int = 0
+    warning_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -165,18 +177,27 @@ def evaluate_setup(
         _final_health_step(health),
     ]
     stage = _stage_for_steps(steps, install, config_result)
+    warning_count = sum(1 for step in steps if step.status == "warning")
+    blocking_issue_count = sum(
+        1
+        for step in steps
+        if step.required and (step.status == "blocked" or not step.complete)
+    )
 
     return SetupReport(
         overall_stage=stage.value,
-        ready=stage == SetupStage.READY,
+        ready=_operationally_ready(steps),
         steps=steps,
         application_version=get_version(),
         generated_at=generated_at,
+        has_warnings=warning_count > 0,
+        blocking_issue_count=blocking_issue_count,
+        warning_count=warning_count,
     )
 
 
 def setup_exit_code(report: SetupReport) -> int:
-    if report.overall_stage == SetupStage.READY.value:
+    if report.ready:
         return 0
     if report.overall_stage == SetupStage.BLOCKED.value:
         return 2
@@ -200,6 +221,9 @@ def print_setup_status(
                         "steps": [],
                         "application_version": get_version(),
                         "generated_at": time.time(),
+                        "has_warnings": False,
+                        "blocking_issue_count": 1,
+                        "warning_count": 0,
                         "error": exc.__class__.__name__,
                     },
                     sort_keys=True,
@@ -584,6 +608,7 @@ def _install_step(status: InstallationStatus) -> SetupStep:
             "Run: sudo pihole-ai install or sudo pihole-ai upgrade",
             SetupAction("run_upgrade", "Install or upgrade services", True),
             status.to_dict(),
+            False,
         )
     return SetupStep(
         "install",
@@ -765,19 +790,20 @@ def _service_identity_step(status: InstallationStatus) -> SetupStep:
                 "service_group": status.service_group,
             },
         )
-    return SetupStep(
-        "service_identity",
-        "Service identity",
-        "warning",
-        True,
-        "Services are not using the default dedicated appliance identity.",
-        "Run: sudo pihole-ai install",
-        SetupAction("run_install", "Regenerate services", True),
-        {
-            "service_user": status.service_user,
-            "service_group": status.service_group,
-        },
-    )
+        return SetupStep(
+            "service_identity",
+            "Service identity",
+            "warning",
+            True,
+            "Services are not using the default dedicated appliance identity.",
+            "Run: sudo pihole-ai install",
+            SetupAction("run_install", "Regenerate services", True),
+            {
+                "service_user": status.service_user,
+                "service_group": status.service_group,
+            },
+            False,
+        )
 
 
 def _services_step(status: InstallationStatus) -> SetupStep:
@@ -996,17 +1022,31 @@ def _stage_for_steps(
         return SetupStage.NOT_INSTALLED
     if config_result.error_count or any(
         step.id in {"configuration", "pihole_database"}
-        and step.status in {"pending", "warning"}
+        and not step.complete
         for step in required
     ):
         return SetupStage.INSTALLED_UNCONFIGURED
-    if any(step.id == "services" and step.status != "complete" for step in required):
+    if any(step.id == "services" and not step.complete for step in required):
         return SetupStage.SERVICES_INACTIVE
-    if any(step.status == "pending" for step in required):
+    if any(not step.complete for step in required):
         return SetupStage.CONFIGURED
     if any(step.status == "warning" for step in steps):
         return SetupStage.DEGRADED
     return SetupStage.READY
+
+
+def _operationally_ready(
+    steps: list[SetupStep],
+) -> bool:
+    """
+    Required setup is complete even when non-blocking warnings remain.
+    """
+
+    return all(
+        step.complete
+        for step in steps
+        if step.required
+    )
 
 
 def _service_user_can_read(

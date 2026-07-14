@@ -1217,12 +1217,16 @@ function renderSetup(report) {
     banner.classList.toggle("blocked", report.overall_stage === "blocked");
 
     const title = document.createElement("strong");
-    title.textContent = report.ready
+    title.textContent = report.ready && report.has_warnings
+        ? "Setup complete with warnings"
+        : report.ready
         ? "Setup complete"
         : `Setup needs attention: ${text(report.overall_stage)}`;
     const body = document.createElement("span");
     body.className = "muted";
-    body.textContent = report.ready
+    body.textContent = report.ready && report.has_warnings
+        ? "PiHole-AI is operational; review recommended configuration warnings."
+        : report.ready
         ? "The dashboard is using live appliance state."
         : "Diagnostics remain available while you finish setup from the CLI.";
     banner.append(title, body);

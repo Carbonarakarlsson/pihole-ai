@@ -71,6 +71,13 @@ class ConfigTests(unittest.TestCase):
         ):
             self.assertEqual(Settings().log_level, "DEBUG")
 
+    def test_default_alert_log_uses_appliance_log_directory(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                Settings().alert_log,
+                Path("/var/log/pihole-ai/alerts.log"),
+            )
+
     def test_specific_pihole_log_level_overrides_generic_log_level(self) -> None:
         with patch.dict(
             os.environ,
@@ -135,6 +142,25 @@ class ConfigTests(unittest.TestCase):
             "config.dashboard.invalid_port",
             {issue.code for issue in result.issues},
         )
+
+    def test_non_loopback_dashboard_warning_remediation_mentions_auth_and_firewall(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = self.valid_env(tmpdir) | {
+                "PIHOLE_AI_DASHBOARD_HOST": "0.0.0.0",
+            }
+            result = validate_config(
+                Settings(env=env),
+                mode=ValidationMode.RUNTIME,
+            )
+
+        issue = next(
+            item
+            for item in result.issues
+            if item.code == "config.dashboard.non_loopback_bind"
+        )
+        self.assertEqual(issue.severity, ValidationSeverity.WARNING.value)
+        self.assertIn("authentication", issue.remediation)
+        self.assertIn("firewall", issue.remediation)
 
     def test_missing_pihole_database_allowed_in_syntax_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

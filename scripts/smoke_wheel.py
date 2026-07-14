@@ -75,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "EVENTS_DB_PATH": str(tmp / "events.db"),
                 "LOG_PATH": str(tmp / "pihole-ai.log"),
+                "PIHOLE_AI_ALERT_LOG": str(tmp / "alerts.log"),
                 "PIHOLE_AI_PIHOLE_DB": str(tmp / "pihole-FTL.db"),
                 "PIHOLE_AI_DASHBOARD_HOST": "127.0.0.1",
                 "PIHOLE_AI_DASHBOARD_AUTH_ENABLED": "false",
@@ -85,11 +86,33 @@ def main(argv: list[str] | None = None) -> int:
         for command, expected_codes in COMMANDS:
             completed = run([str(cli), *command[1:]], env, expected_codes)
             if "--json" in command:
-                json.loads(completed.stdout)
+                payload = json.loads(completed.stdout)
+                if command[1:4] == ["config", "show", "--json"]:
+                    assert_runtime_paths_not_in_site_packages(payload)
         imports = "; ".join(f"import {name}" for name in IMPORTS)
         run([str(python), "-c", imports], env)
     print("wheel smoke test ok")
     return 0
+
+
+def assert_runtime_paths_not_in_site_packages(
+    payload: dict,
+) -> None:
+    paths = [
+        payload.get("events_db", ""),
+        payload.get("log_file", ""),
+        payload.get("alert_log", ""),
+    ]
+    offenders = [
+        path
+        for path in paths
+        if "site-packages" in str(path)
+    ]
+    if offenders:
+        raise RuntimeError(
+            "Runtime write path points inside site-packages: "
+            + ", ".join(map(str, offenders))
+        )
 
 
 if __name__ == "__main__":
