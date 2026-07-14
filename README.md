@@ -141,8 +141,12 @@ collector.last_query_id
 ```
 
 PiHole-AI uses ordered SQLite schema migrations. `schema_migrations`
-records the applied versions, and the current supported schema includes the
-v2 `decision_evidence` table.
+records the applied versions, and the current supported schema includes:
+
+- v2 `decision_evidence` for bounded supporting evidence items
+- v3 `decision_records` for the final reproducible decision contract
+- v4 `action_audit.decision_ref` to link feedback/audit rows to the stored
+  decision present when feedback was submitted
 Migrations are transactional and apply only to the PiHole-AI events database;
 the Pi-hole FTL database is read as an input source and is never migrated.
 
@@ -178,6 +182,19 @@ Analysis results include:
 For fresh v0.5 decisions, structured supporting evidence is also persisted in
 `decision_evidence` so `pihole-ai explain <domain>` and the dashboard can show
 why a decision happened without reconstructing it from current state alone.
+The final decision, trace, conflicts, policy version, and timestamps are stored
+in `decision_records`.
+
+Evidence score signs are intentional:
+
+- positive scores increase risk
+- negative scores decrease risk
+- zero is neutral context
+
+Evidence metadata is sanitized before persistence and API output. Secret-bearing
+keys, raw prompts, raw model payloads, cookies, CSRF values, tokens, and
+password-like fields are redacted. Evidence item counts, summaries, details,
+metadata size, and classifier trace length are bounded for appliance use.
 
 Cache policy:
 
@@ -609,6 +626,28 @@ Explain local evidence for a domain:
 pihole-ai explain example.com
 pihole-ai explain example.com --json
 ```
+
+Explain output is grouped into:
+
+- final decision
+- decisive evidence
+- supporting risk evidence
+- supporting safety evidence
+- neutral/context evidence
+- classifier trace
+- conflicts and uncertainty
+- legacy decision note when structured evidence was not stored
+
+The dashboard Explain panel renders the same contract as the CLI/API. Legacy
+analysis rows remain readable with `legacy: true` and the message:
+
+```text
+This decision predates structured evidence storage.
+```
+
+When feedback is submitted, PiHole-AI records a reference to the current stored
+decision when one exists. The original decision/evidence rows are not rewritten;
+future analyses may produce a different decision.
 
 Record human feedback:
 

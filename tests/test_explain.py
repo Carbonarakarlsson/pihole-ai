@@ -55,6 +55,9 @@ class ExplainTests(unittest.TestCase):
             "pihole_ai.explain.get_decision_evidence",
             return_value=[],
         ), patch(
+            "pihole_ai.explain.get_decision_record",
+            return_value=None,
+        ), patch(
             "pihole_ai.explain.get_domain_metadata",
             return_value={
                 "domain": "bad.example",
@@ -131,6 +134,33 @@ class ExplainTests(unittest.TestCase):
                 }
             ],
         ), patch(
+            "pihole_ai.explain.get_decision_record",
+            return_value={
+                "domain": "bad.example",
+                "verdict": "malicious",
+                "risk_score": 100,
+                "confidence": 0.95,
+                "category": "malware",
+                "source": "threat-intel",
+                "explanation": "Threat intel hit.",
+                "decisive_evidence_ids": ["threat-intel:bad.example:feed"],
+                "classifier_trace": [
+                    {
+                        "classifier": "ThreatIntelClassifier",
+                        "status": "consulted",
+                        "evidence_count": 1,
+                        "latency_ms": 1,
+                    }
+                ],
+                "conflicts": [],
+                "legacy": False,
+                "policy_version": "evidence-policy-v1",
+                "application_version": "0.5-test",
+                "schema_version": 3,
+                "evidence_truncated": False,
+                "created_at": 1.0,
+            },
+        ), patch(
             "pihole_ai.explain.get_domain_metadata",
             return_value={
                 "domain": "bad.example",
@@ -142,9 +172,10 @@ class ExplainTests(unittest.TestCase):
         ):
             explanation = explain_domain("bad.example")
 
-        self.assertEqual(explanation["decision"]["risk"], 100)
+        self.assertEqual(explanation["decision"]["risk_score"], 100)
         self.assertEqual(explanation["decision"]["evidence_count"], 1)
         self.assertEqual(len(explanation["decisive_evidence"]), 1)
+        self.assertEqual(len(explanation["classifier_trace"]), 1)
         self.assertEqual(
             explanation["summary"],
             "decisive evidence from threat-intel",
@@ -163,7 +194,14 @@ class ExplainTests(unittest.TestCase):
                 "evidence": [],
                 "decision": None,
                 "decisive_evidence": [],
+                "risk_evidence": [],
+                "safety_evidence": [],
+                "neutral_evidence": [],
+                "classifier_trace": [],
+                "conflicts": [],
+                "legacy": False,
                 "legacy_analysis": False,
+                "legacy_note": "",
                 "metadata": {},
                 "actions": [],
             },

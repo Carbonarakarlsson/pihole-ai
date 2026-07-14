@@ -27,7 +27,16 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from core.config import settings
-from core.migrations import migrate_database, open_database_readonly
+from core.migrations import (
+    LATEST_SUPPORTED_SCHEMA_VERSION,
+    migrate_database,
+    open_database_readonly,
+)
+from engine.evidence import (
+    MAX_EVIDENCE_ITEMS,
+    serialize_decision,
+    serialize_evidence_item,
+)
 
 
 DATABASE_PATH: Path | None = None
@@ -448,9 +457,88 @@ def save_decision_evidence(
     Persist structured evidence for the latest decision on a domain.
     """
 
-    items = getattr(getattr(decision, "evidence", None), "items", ())
+    payload = serialize_decision(decision)
+    if payload.get("schema_version") is None:
+        payload["schema_version"] = LATEST_SUPPORTED_SCHEMA_VERSION
+    items = payload["evidence"][:MAX_EVIDENCE_ITEMS]
+    evidence_ids = [
+        item["evidence_id"]
+        for item in items
+        if item["evidence_id"]
+    ]
+    if len(evidence_ids) != len(set(evidence_ids)):
+        raise ValueError("Decision contains duplicate evidence IDs.")
+    missing_decisive = [
+        evidence_id
+        for evidence_id in payload["decisive_evidence_ids"]
+        if evidence_id not in set(evidence_ids)
+    ]
+    if missing_decisive:
+        raise ValueError("Decision references missing decisive evidence.")
 
     with transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO decision_records
+            (
+                domain,
+                verdict,
+                risk_score,
+                confidence,
+                category,
+                source,
+                explanation,
+                decisive_evidence_ids_json,
+                classifier_trace_json,
+                conflicts_json,
+                legacy,
+                policy_version,
+                application_version,
+                schema_version,
+                evidence_truncated,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+            ON CONFLICT(domain)
+
+            DO UPDATE SET
+                verdict = excluded.verdict,
+                risk_score = excluded.risk_score,
+                confidence = excluded.confidence,
+                category = excluded.category,
+                source = excluded.source,
+                explanation = excluded.explanation,
+                decisive_evidence_ids_json = excluded.decisive_evidence_ids_json,
+                classifier_trace_json = excluded.classifier_trace_json,
+                conflicts_json = excluded.conflicts_json,
+                legacy = excluded.legacy,
+                policy_version = excluded.policy_version,
+                application_version = excluded.application_version,
+                schema_version = excluded.schema_version,
+                evidence_truncated = excluded.evidence_truncated,
+                created_at = excluded.created_at
+            """,
+            (
+                domain,
+                payload["verdict"],
+                payload["risk_score"],
+                payload["confidence"],
+                payload["category"],
+                payload["source"],
+                payload["explanation"],
+                json.dumps(payload["decisive_evidence_ids"]),
+                json.dumps(payload["classifier_trace"]),
+                json.dumps(payload["conflicts"]),
+                1 if payload["legacy"] else 0,
+                payload["policy_version"],
+                payload["application_version"],
+                payload["schema_version"],
+                1 if payload["evidence_truncated"] else 0,
+                payload["created_at"],
+            ),
+        )
+
         conn.execute(
             """
             DELETE FROM decision_evidence
@@ -482,17 +570,17 @@ def save_decision_evidence(
             [
                 (
                     domain,
-                    item.evidence_id,
-                    item.classifier,
-                    item.evidence_type,
-                    item.polarity.value,
-                    item.score,
-                    item.confidence,
-                    item.summary,
-                    item.details,
-                    json.dumps(item.metadata, sort_keys=True),
-                    1 if item.decisive else 0,
-                    item.created_at,
+                    item["evidence_id"],
+                    item["classifier"],
+                    item["evidence_type"],
+                    item["polarity"],
+                    item["score"],
+                    item["confidence"],
+                    item["summary"],
+                    item["details"],
+                    json.dumps(item["metadata"], sort_keys=True),
+                    1 if item["decisive"] else 0,
+                    item["created_at"],
                 )
                 for item in items
             ],
@@ -538,11 +626,50 @@ def get_decision_evidence(
         try:
             item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
         except json.JSONDecodeError:
-            item["metadata"] = {}
-        item["decisive"] = bool(item["decisive"])
-        evidence.append(item)
+            item["metadata"] = {
+                "_degraded": True,
+            }
+        item["decisive"] = bool(item.get("decisive"))
+        evidence.append(serialize_evidence_item(item))
 
     return evidence
+
+
+def get_decision_record(
+    domain: str,
+) -> dict[str, Any] | None:
+    """
+    Return the stored final decision contract for a domain.
+    """
+
+    row = query_one(
+        """
+        SELECT *
+
+        FROM decision_records
+
+        WHERE domain = ?
+        """,
+        (domain,),
+    )
+    if row is None:
+        return None
+
+    record = dict(row)
+    for key, target in (
+        ("decisive_evidence_ids_json", "decisive_evidence_ids"),
+        ("classifier_trace_json", "classifier_trace"),
+        ("conflicts_json", "conflicts"),
+    ):
+        try:
+            record[target] = json.loads(record.pop(key) or "[]")
+        except json.JSONDecodeError:
+            record[target] = []
+            record["_degraded"] = True
+
+    record["legacy"] = bool(record["legacy"])
+    record["evidence_truncated"] = bool(record["evidence_truncated"])
+    return record
 
 
 def analysis_exists(
@@ -586,6 +713,7 @@ def record_action(
     reason: str = "",
     risk: int | None = None,
     created_at: float | None = None,
+    decision_ref: str | None = None,
 ) -> int:
     """
     Record an action taken by PiHole-AI.
@@ -606,9 +734,10 @@ def record_action(
             status,
             reason,
             risk,
-            created_at
+            created_at,
+            decision_ref
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             domain,
@@ -618,6 +747,7 @@ def record_action(
             reason,
             risk,
             created_at,
+            decision_ref,
         ),
     )
 
@@ -664,7 +794,8 @@ def get_recent_actions(
             status,
             reason,
             risk,
-            created_at
+            created_at,
+            decision_ref
 
         FROM action_audit
 

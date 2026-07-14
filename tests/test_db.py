@@ -2,6 +2,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -186,10 +187,71 @@ class DatabaseTests(unittest.TestCase):
         db.save_decision_evidence("example.com", second)
 
         evidence = db.get_decision_evidence("example.com")
+        record = db.get_decision_record("example.com")
         self.assertEqual(len(evidence), 1)
         self.assertEqual(evidence[0]["evidence_id"], "second")
         self.assertTrue(evidence[0]["decisive"])
         self.assertEqual(evidence[0]["metadata"]["precedence"], 10)
+        self.assertIsNotNone(record)
+        self.assertEqual(record["risk_score"], 100)
+        self.assertEqual(record["policy_version"], "evidence-policy-v1")
+
+    def test_save_decision_evidence_rejects_duplicate_evidence_ids(self) -> None:
+        engine = DecisionEngine()
+        decision = engine.decide(
+            EvidenceCollection(
+                domain="example.com",
+                items=(
+                    EvidenceItem(
+                        evidence_id="duplicate",
+                        classifier="one",
+                        evidence_type="signal",
+                        polarity=EvidencePolarity.RISK,
+                        score=20,
+                        confidence=0.8,
+                        summary="One.",
+                    ),
+                    EvidenceItem(
+                        evidence_id="duplicate",
+                        classifier="two",
+                        evidence_type="signal",
+                        polarity=EvidencePolarity.RISK,
+                        score=30,
+                        confidence=0.8,
+                        summary="Two.",
+                    ),
+                ),
+            )
+        )
+
+        with self.assertRaises(ValueError):
+            db.save_decision_evidence("example.com", decision)
+
+    def test_save_decision_evidence_rejects_missing_decisive_reference(self) -> None:
+        engine = DecisionEngine()
+        decision = engine.decide(
+            EvidenceCollection(
+                domain="example.com",
+                items=(
+                    EvidenceItem(
+                        evidence_id="risk",
+                        classifier="test",
+                        evidence_type="signal",
+                        polarity=EvidencePolarity.RISK,
+                        score=80,
+                        confidence=0.8,
+                        summary="Risk.",
+                    ),
+                ),
+            )
+        )
+        broken = replace(
+            decision,
+            decisive_evidence_ids=("missing",),
+        )
+
+        with self.assertRaises(ValueError):
+            db.save_decision_evidence("example.com", broken)
 
     def test_state_values_are_upserted(self) -> None:
         db.set_state("collector.last_query_id", "10")

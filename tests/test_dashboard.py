@@ -69,6 +69,86 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(response.get_json(), metrics)
         get_metrics.assert_called_once_with()
 
+    def test_explain_endpoint_returns_grouped_contract(self) -> None:
+        explanation = {
+            "domain": "bad.example",
+            "decision": {
+                "verdict": "malicious",
+                "risk_score": 100,
+                "confidence": 0.95,
+                "category": "malware",
+                "source": "threat-intel",
+                "explanation": "Threat intel hit.",
+                "created_at": 1.0,
+            },
+            "rule": None,
+            "threat_intel": None,
+            "reputation": None,
+            "actions": [],
+            "metadata": {"query_count": 1},
+            "legacy": False,
+            "decisive_evidence": [{"evidence_id": "one"}],
+            "risk_evidence": [],
+            "safety_evidence": [],
+            "neutral_evidence": [],
+            "classifier_trace": [],
+            "conflicts": [],
+        }
+
+        with patch("ui.dashboard.explain_domain", return_value=explanation):
+            response = self.client.get("/api/explain/bad.example")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["decision"]["risk_score"], 100)
+        self.assertIn("decisive_evidence", payload)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    def test_explain_endpoint_rejects_invalid_domain(self) -> None:
+        response = self.client.get("/api/explain/%3Cscript%3E")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_explain_endpoint_returns_404_for_unknown_domain(self) -> None:
+        explanation = {
+            "domain": "missing.example",
+            "decision": None,
+            "rule": None,
+            "threat_intel": None,
+            "reputation": None,
+            "actions": [],
+            "metadata": {"query_count": 0},
+            "legacy": False,
+        }
+
+        with patch("ui.dashboard.explain_domain", return_value=explanation):
+            response = self.client.get("/api/explain/missing.example")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.get_json()["error"], "domain not found")
+
+    def test_explain_endpoint_returns_legacy_analysis(self) -> None:
+        explanation = {
+            "domain": "old.example",
+            "decision": {
+                "legacy": True,
+                "risk_score": 70,
+                "category": "suspicious",
+            },
+            "rule": None,
+            "threat_intel": None,
+            "reputation": None,
+            "actions": [],
+            "metadata": {"query_count": 0},
+            "legacy": True,
+        }
+
+        with patch("ui.dashboard.explain_domain", return_value=explanation):
+            response = self.client.get("/api/explain/old.example")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["legacy"])
+
     def test_polling_endpoint_returns_dashboard_intervals(self) -> None:
         with patch(
             "ui.dashboard.settings",
@@ -367,6 +447,16 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), explanation)
         explain_domain.assert_called_once_with("example.com")
+
+    def test_dashboard_page_contains_evidence_explain_sections(self) -> None:
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn("Final decision", html)
+        self.assertIn("Decisive evidence", html)
+        self.assertIn("Supporting risk evidence", html)
+        self.assertIn("Classifier trace", html)
 
     def test_feedback_endpoint_records_domain_feedback(self) -> None:
         with patch("ui.dashboard.record_feedback") as record_feedback:

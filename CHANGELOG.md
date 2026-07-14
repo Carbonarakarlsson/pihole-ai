@@ -10,6 +10,11 @@ v0.5 development:
   precedence before lower-priority classifiers run.
 - Fresh decisions persist supporting evidence in `decision_evidence` for
   `pihole-ai explain` and dashboard/API consumers.
+- Added `decision_records` persistence and a polished dashboard Explain panel
+  for final decisions, evidence groups, classifier traces, conflicts, and legacy
+  decisions.
+- Added feedback audit provenance linking feedback to the stored decision
+  visible at submission time.
 
 ## v0.4.0rc1
 

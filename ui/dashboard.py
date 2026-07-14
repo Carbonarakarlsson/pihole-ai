@@ -33,7 +33,7 @@ from core.db import (
     query_all,
 )
 from core.logger import get_logger
-from pihole_ai.explain import explain_domain
+from pihole_ai.explain import explain_domain, is_valid_domain_query
 from pihole_ai.feedback import FEEDBACK_VERDICTS, record_feedback
 from pihole_ai.learn import get_reputations as load_reputations
 from pihole_ai.rules import (
@@ -582,6 +582,72 @@ input {
     white-space: pre-wrap;
 }
 
+.explain-section {
+    background: var(--panel-soft);
+    border-radius: 8px;
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+}
+
+.explain-section h3 {
+    font-size: 13px;
+    margin: 0;
+}
+
+.decision-summary {
+    display: grid;
+    gap: 6px;
+}
+
+.decision-metrics,
+.trace-row,
+.evidence-card {
+    display: grid;
+    gap: 6px;
+}
+
+.decision-metrics {
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+}
+
+.metric-chip {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.metric-chip strong {
+    color: var(--text);
+    display: block;
+    font-size: 14px;
+}
+
+.evidence-card {
+    border-left: 3px solid var(--line);
+    padding: 8px 0 8px 10px;
+}
+
+.evidence-card.decisive {
+    border-left-color: var(--accent);
+}
+
+.evidence-meta,
+.trace-meta {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.evidence-details summary {
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.explain-message {
+    color: var(--muted);
+    padding: 12px;
+}
+
 .grid {
     display: grid;
     gap: 16px;
@@ -1078,6 +1144,12 @@ function riskClass(risk) {
     return "risk-low";
 }
 
+function formatTime(value) {
+    const numeric = Number(value ?? 0);
+    if (!numeric) return "-";
+    return new Date(numeric * 1000).toLocaleString();
+}
+
 function emptyState(id, show) {
     const target = document.getElementById(id);
     if (target) {
@@ -1543,37 +1615,205 @@ function renderExplanation(explanation) {
         false
     )));
 
-    [
-        ["Domain", explanation.domain],
-        ["Summary", explanation.summary],
-        ["Rule", explanation.rule],
-        ["Threat Intel", explanation.threat_intel],
-        ["Reputation", explanation.reputation],
-        ["Analysis", explanation.analysis],
-        ["Metadata", explanation.metadata],
-        ["Actions", explanation.actions],
-    ].forEach(([label, value]) => {
-        const item = document.createElement("div");
-        item.className = "explain-item";
+    renderDecisionSection(target, explanation);
+    renderEvidenceSection(target, "Decisive evidence", explanation.decisive_evidence, true);
+    renderEvidenceSection(target, "Supporting risk evidence", explanation.risk_evidence, false);
+    renderEvidenceSection(target, "Supporting safety evidence", explanation.safety_evidence, false);
+    renderEvidenceSection(target, "Neutral/context evidence", explanation.neutral_evidence, false);
+    renderTraceSection(target, explanation.classifier_trace ?? []);
+    renderListSection(target, "Conflicts and uncertainty", explanation.conflicts ?? []);
 
-        const heading = document.createElement("strong");
-        heading.textContent = label;
+    if (explanation.legacy) {
+        renderListSection(target, "Legacy decision", [
+            explanation.legacy_note || "This decision predates structured evidence storage.",
+        ]);
+    }
+}
 
-        const body = document.createElement("pre");
-        body.textContent = typeof value === "string"
-            ? value
-            : JSON.stringify(value ?? "none", null, 2);
+function section(title) {
+    const node = document.createElement("section");
+    node.className = "explain-section";
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    node.appendChild(heading);
+    return node;
+}
 
-        item.append(heading, body);
-        target.appendChild(item);
+function metricChip(label, value) {
+    const chip = document.createElement("div");
+    chip.className = "metric-chip";
+    const strong = document.createElement("strong");
+    strong.textContent = text(value);
+    const span = document.createElement("span");
+    span.textContent = label;
+    chip.append(strong, span);
+    return chip;
+}
+
+function renderDecisionSection(target, explanation) {
+    const node = section("Final decision");
+    const decision = explanation.decision;
+    if (!decision) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No decision stored for this domain.";
+        node.appendChild(empty);
+        target.appendChild(node);
+        return;
+    }
+
+    const summary = document.createElement("div");
+    summary.className = "decision-summary";
+    const badge = document.createElement("span");
+    badge.className = `badge ${riskClass(decision.risk_score ?? decision.risk ?? 0)}`;
+    badge.textContent = text(decision.verdict || "unknown");
+    const explanationText = document.createElement("p");
+    explanationText.textContent = text(decision.explanation);
+    summary.append(badge, explanationText);
+
+    const metrics = document.createElement("div");
+    metrics.className = "decision-metrics";
+    const confidence = Number(decision.confidence ?? 0);
+    metrics.append(
+        metricChip("Risk", `${decision.risk_score ?? decision.risk ?? 0}/100`),
+        metricChip("Confidence", confidence <= 1 ? `${Math.round(confidence * 100)}%` : `${confidence}%`),
+        metricChip("Category", decision.category),
+        metricChip("Source", decision.source),
+        metricChip("Policy", decision.policy_version ?? explanation.policy_version ?? "-"),
+        metricChip("Time", formatTime(decision.created_at))
+    );
+    node.append(summary, metrics);
+    target.appendChild(node);
+}
+
+function renderEvidenceSection(target, title, evidence = [], decisive = false) {
+    const node = section(title);
+    if (!Array.isArray(evidence) || evidence.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "None";
+        node.appendChild(empty);
+        target.appendChild(node);
+        return;
+    }
+    evidence.forEach((item) => {
+        const card = document.createElement("article");
+        card.className = `evidence-card${decisive || item.decisive ? " decisive" : ""}`;
+        const titleLine = document.createElement("strong");
+        titleLine.textContent = `${text(item.classifier)} · ${text(item.evidence_type)}`;
+        const summary = document.createElement("div");
+        summary.textContent = text(item.summary);
+        const meta = document.createElement("div");
+        meta.className = "evidence-meta";
+        const score = Number(item.score ?? 0);
+        const confidence = Number(item.confidence ?? 0);
+        meta.textContent = `score ${score >= 0 ? "+" : ""}${score} · confidence ${Math.round(confidence * 100)}%`;
+        card.append(titleLine, summary, meta);
+
+        const policyReason = item.metadata?.policy_reason || item.metadata?.precedence;
+        if (policyReason) {
+            const policy = document.createElement("div");
+            policy.className = "evidence-meta";
+            policy.textContent = `policy: ${text(policyReason)}`;
+            card.appendChild(policy);
+        }
+
+        if (item.details || Object.keys(item.metadata ?? {}).length > 0) {
+            const details = document.createElement("details");
+            details.className = "evidence-details";
+            const summaryNode = document.createElement("summary");
+            summaryNode.textContent = "Details";
+            const pre = document.createElement("pre");
+            pre.textContent = JSON.stringify({
+                details: item.details || undefined,
+                metadata: item.metadata || {},
+            }, null, 2);
+            details.append(summaryNode, pre);
+            card.appendChild(details);
+        }
+        node.appendChild(card);
     });
+    target.appendChild(node);
+}
+
+function renderTraceSection(target, trace) {
+    const node = section("Classifier trace");
+    if (!Array.isArray(trace) || trace.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No classifier trace stored.";
+        node.appendChild(empty);
+        target.appendChild(node);
+        return;
+    }
+    trace.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "trace-row";
+        const title = document.createElement("strong");
+        title.textContent = `${text(item.classifier)} · ${text(item.status)}`;
+        const meta = document.createElement("div");
+        meta.className = "trace-meta";
+        meta.textContent = `evidence ${item.evidence_count ?? 0} · latency ${item.latency_ms ?? 0}ms`;
+        row.append(title, meta);
+        if (item.reason) {
+            const reason = document.createElement("div");
+            reason.className = "trace-meta";
+            reason.textContent = text(item.reason);
+            row.appendChild(reason);
+        }
+        node.appendChild(row);
+    });
+    target.appendChild(node);
+}
+
+function renderListSection(target, title, values) {
+    const node = section(title);
+    if (!Array.isArray(values) || values.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "None";
+        node.appendChild(empty);
+        target.appendChild(node);
+        return;
+    }
+    values.forEach((value) => {
+        const item = document.createElement("div");
+        item.textContent = text(value);
+        node.appendChild(item);
+    });
+    target.appendChild(node);
 }
 
 async function explainDomain(domain) {
-    const explanation = await checkedFetch(
-        `/api/explain/${encodeURIComponent(domain)}`
-    ).then((res) => res.json());
-    renderExplanation(explanation);
+    const target = document.getElementById("explain");
+    const feedbackTarget = document.getElementById("explain-feedback");
+    clear(target);
+    clear(feedbackTarget);
+    const loading = document.createElement("div");
+    loading.className = "explain-message";
+    loading.textContent = "Loading explanation...";
+    target.appendChild(loading);
+
+    const response = await checkedFetch(`/api/explain/${encodeURIComponent(domain)}`);
+    if (response.status === 404) {
+        clear(target);
+        const message = document.createElement("div");
+        message.className = "explain-message";
+        message.textContent = "No local decision or evidence for this domain yet.";
+        target.appendChild(message);
+        return;
+    }
+    if (!response.ok) {
+        clear(target);
+        const message = document.createElement("div");
+        message.className = "explain-message";
+        message.textContent = response.status === 400
+            ? "That domain is not valid."
+            : "Explanation could not be loaded.";
+        target.appendChild(message);
+        return;
+    }
+    renderExplanation(await response.json());
 }
 
 async function saveRule(domain, decision) {
@@ -2693,11 +2933,34 @@ def create_app() -> Flask:
 
     @app.get("/api/explain/<path:domain>")
     def explain(domain: str):
-        return jsonify(
-            explain_domain(
-                domain,
-            )
-        )
+        if not is_valid_domain_query(domain):
+            return jsonify({"error": "invalid domain"}), 400
+
+        try:
+            explanation = explain_domain(domain)
+        except ValueError:
+            return jsonify({"error": "invalid domain"}), 400
+
+        if (
+            explanation.get("decision") is None
+            and explanation.get("rule") is None
+            and explanation.get("threat_intel") is None
+            and explanation.get("reputation") is None
+            and not explanation.get("actions", [])
+            and explanation.get("metadata", {}).get("query_count", 0) == 0
+        ):
+            return jsonify(
+                {
+                    "error": "domain not found",
+                    "domain": explanation["domain"],
+                    "decision": None,
+                    "legacy": False,
+                }
+            ), 404
+
+        response = jsonify(explanation)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.post("/api/feedback")
     def create_feedback():

@@ -5,10 +5,12 @@ Domain explanation helpers.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from core.db import (
     get_analysis,
+    get_decision_record,
     get_decision_evidence,
     get_domain_metadata,
     get_domain_reputation,
@@ -16,6 +18,14 @@ from core.db import (
     get_recent_actions,
     get_threat_intel,
 )
+from engine.evidence import (
+    EVIDENCE_POLICY_VERSION,
+    detect_conflicts,
+    evidence_sort_key,
+)
+
+
+DOMAIN_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,253}$")
 
 
 def normalize_domain(
@@ -26,6 +36,13 @@ def normalize_domain(
     """
 
     return domain.strip().lower().rstrip(".")
+
+
+def is_valid_domain_query(
+    domain: str,
+) -> bool:
+    normalized = normalize_domain(domain)
+    return bool(normalized and DOMAIN_PATTERN.match(normalized))
 
 
 def row_to_dict(
@@ -75,6 +92,17 @@ def explain_domain(
     normalized = normalize_domain(
         domain,
     )
+    if not is_valid_domain_query(normalized):
+        raise ValueError("invalid domain")
+
+    analysis = row_to_dict(
+        get_analysis(normalized),
+    )
+    evidence = sorted(
+        get_decision_evidence(normalized),
+        key=evidence_sort_key,
+    )
+    decision_record = get_decision_record(normalized)
     reputation = row_to_dict(
         get_domain_reputation(normalized),
     )
@@ -102,25 +130,61 @@ def explain_domain(
             get_threat_intel(normalized),
         ),
         "reputation": reputation,
-        "analysis": row_to_dict(
-            get_analysis(normalized),
-        ),
-        "evidence": get_decision_evidence(normalized),
+        "analysis": analysis,
+        "evidence": evidence,
         "metadata": get_domain_metadata(
             normalized,
         ),
         "actions": actions,
     }
-    explanation["decision"] = summarize_decision(explanation)
+    explanation["decision"] = summarize_decision(
+        explanation,
+        decision_record,
+    )
     explanation["decisive_evidence"] = [
         item
-        for item in explanation["evidence"]
+        for item in evidence
         if item.get("decisive")
     ]
-    explanation["legacy_analysis"] = (
-        explanation["analysis"] is not None
-        and not explanation["evidence"]
+    explanation["risk_evidence"] = [
+        item
+        for item in evidence
+        if item.get("polarity") == "risk" and not item.get("decisive")
+    ]
+    explanation["safety_evidence"] = [
+        item
+        for item in evidence
+        if item.get("polarity") == "safety" and not item.get("decisive")
+    ]
+    explanation["neutral_evidence"] = [
+        item
+        for item in evidence
+        if item.get("polarity") == "neutral" and not item.get("decisive")
+    ]
+    explanation["classifier_trace"] = (
+        decision_record.get("classifier_trace", [])
+        if decision_record is not None
+        else []
     )
+    explanation["conflicts"] = (
+        decision_record.get("conflicts", [])
+        if decision_record is not None
+        else detect_conflicts(evidence)
+    )
+    explanation["policy_version"] = (
+        decision_record.get("policy_version", EVIDENCE_POLICY_VERSION)
+        if decision_record is not None
+        else EVIDENCE_POLICY_VERSION
+    )
+    explanation["legacy_analysis"] = (
+        analysis is not None
+        and decision_record is None
+    )
+    explanation["legacy"] = explanation["legacy_analysis"]
+    if explanation["legacy"]:
+        explanation["legacy_note"] = "This decision predates structured evidence storage."
+    else:
+        explanation["legacy_note"] = ""
     explanation["summary"] = summarize_explanation(
         explanation,
     )
@@ -130,6 +194,7 @@ def explain_domain(
 
 def summarize_decision(
     explanation: dict[str, Any],
+    decision_record: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """
     Summarize the latest stored decision in a stable API shape.
@@ -138,6 +203,27 @@ def summarize_decision(
     analysis = explanation["analysis"]
     if analysis is None:
         return None
+
+    if decision_record is not None:
+        return {
+            "domain": decision_record["domain"],
+            "verdict": decision_record["verdict"],
+            "risk_score": decision_record["risk_score"],
+            "confidence": decision_record["confidence"],
+            "category": decision_record["category"],
+            "source": decision_record["source"],
+            "explanation": decision_record["explanation"],
+            "decisive_evidence_ids": decision_record["decisive_evidence_ids"],
+            "classifier_trace": decision_record["classifier_trace"],
+            "conflicts": decision_record["conflicts"],
+            "legacy": decision_record["legacy"],
+            "policy_version": decision_record["policy_version"],
+            "application_version": decision_record.get("application_version", ""),
+            "schema_version": decision_record.get("schema_version"),
+            "evidence_truncated": decision_record["evidence_truncated"],
+            "created_at": decision_record["created_at"],
+            "evidence_count": len(explanation["evidence"]),
+        }
 
     evidence = explanation["evidence"]
     decisive = [
@@ -148,13 +234,34 @@ def summarize_decision(
 
     return {
         "risk": analysis["risk"],
+        "risk_score": analysis["risk"],
         "confidence": analysis["confidence"],
         "category": analysis["category"],
         "source": analysis["model"],
         "explanation": analysis["reason"],
         "evidence_count": len(evidence),
         "decisive_evidence_ids": decisive,
+        "verdict": _verdict_for_analysis(analysis),
+        "classifier_trace": [],
+        "conflicts": [],
+        "legacy": True,
+        "policy_version": EVIDENCE_POLICY_VERSION,
+        "created_at": analysis.get("analyzed_at", 0),
     }
+
+
+def _verdict_for_analysis(
+    analysis: dict[str, Any],
+) -> str:
+    risk = int(analysis.get("risk", 0) or 0)
+    category = str(analysis.get("category", "unknown"))
+    if risk >= 80 or category in {"malware", "phishing", "command-and-control"}:
+        return "malicious"
+    if risk >= 60:
+        return "suspicious"
+    if risk <= 29:
+        return "safe"
+    return "unknown"
 
 
 def summarize_explanation(
@@ -236,34 +343,42 @@ def print_explanation(
     print(f"  summary: {explanation['summary']}")
 
     decision = explanation.get("decision")
+    print("  Final decision:")
     if decision is not None:
-        print("  decision:")
         print(
             "    "
-            f"risk={decision['risk']} confidence={decision['confidence']} "
+            f"verdict={decision.get('verdict', 'unknown')} "
+            f"risk={decision.get('risk_score', decision.get('risk'))}/100 "
+            f"confidence={decision['confidence']} "
             f"category={decision['category']} source={decision['source']}"
         )
         print(f"    explanation: {decision['explanation']}")
+    else:
+        print("    none")
 
-    _print_section(
-        "rule",
-        explanation["rule"],
+    _print_evidence_group(
+        "Decisive evidence",
+        explanation.get("decisive_evidence", []),
     )
-    _print_section(
-        "threat_intel",
-        explanation["threat_intel"],
+    _print_evidence_group(
+        "Risk evidence",
+        explanation.get("risk_evidence", []),
     )
-    _print_section(
-        "reputation",
-        explanation["reputation"],
+    _print_evidence_group(
+        "Safety evidence",
+        explanation.get("safety_evidence", []),
     )
-    _print_section(
-        "analysis",
-        explanation["analysis"],
+    _print_evidence_group(
+        "Neutral evidence",
+        explanation.get("neutral_evidence", []),
     )
-    _print_evidence(
-        explanation.get("evidence", []),
+    _print_trace(
+        explanation.get("classifier_trace", []),
     )
+    _print_list("Conflicts", explanation.get("conflicts", []))
+    if explanation.get("legacy"):
+        print(f"  Legacy note: {explanation['legacy_note']}")
+
     _print_section(
         "metadata",
         explanation["metadata"],
@@ -325,3 +440,50 @@ def _print_evidence(
             f"{item['polarity']} score={item['score']} "
             f"confidence={item['confidence']:.2f} - {item['summary']}"
         )
+
+
+def _print_evidence_group(
+    name: str,
+    evidence: list[dict[str, Any]],
+) -> None:
+    print(f"  {name}:")
+    if not evidence:
+        print("    none")
+        return
+    for item in evidence:
+        marker = " decisive" if item.get("decisive") else ""
+        print(
+            "    "
+            f"{item['classifier']}:{item['evidence_type']}{marker} "
+            f"score={item['score']:+.0f} confidence={item['confidence']:.2f} "
+            f"- {item['summary']}"
+        )
+
+
+def _print_trace(
+    trace: list[dict[str, Any]],
+) -> None:
+    print("  Classifier trace:")
+    if not trace:
+        print("    none")
+        return
+    for item in trace:
+        suffix = f" reason={item['reason']}" if item.get("reason") else ""
+        print(
+            "    "
+            f"{item['classifier']} status={item['status']} "
+            f"evidence={item['evidence_count']} "
+            f"latency={item['latency_ms']}ms{suffix}"
+        )
+
+
+def _print_list(
+    name: str,
+    values: list[str],
+) -> None:
+    print(f"  {name}:")
+    if not values:
+        print("    none")
+        return
+    for value in values:
+        print(f"    {value}")

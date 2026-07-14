@@ -229,11 +229,99 @@ def _apply_baseline(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _apply_decision_evidence(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS decision_evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain TEXT NOT NULL,
+            evidence_id TEXT NOT NULL,
+            classifier TEXT NOT NULL,
+            evidence_type TEXT NOT NULL,
+            polarity TEXT NOT NULL,
+            score REAL NOT NULL,
+            confidence REAL NOT NULL,
+            summary TEXT NOT NULL,
+            details TEXT,
+            metadata_json TEXT NOT NULL,
+            decisive INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_decision_evidence_domain
+        ON decision_evidence(domain)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_decision_evidence_classifier
+        ON decision_evidence(classifier)
+        """
+    )
+
+
+def _apply_decision_records(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS decision_records (
+            domain TEXT PRIMARY KEY,
+            verdict TEXT NOT NULL,
+            risk_score INTEGER NOT NULL,
+            confidence REAL NOT NULL,
+            category TEXT NOT NULL,
+            source TEXT NOT NULL,
+            explanation TEXT NOT NULL,
+            decisive_evidence_ids_json TEXT NOT NULL,
+            classifier_trace_json TEXT NOT NULL,
+            conflicts_json TEXT NOT NULL,
+            legacy INTEGER NOT NULL DEFAULT 0,
+            policy_version TEXT NOT NULL,
+            application_version TEXT,
+            schema_version INTEGER,
+            evidence_truncated INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL
+        )
+        """
+    )
+
+
+def _apply_action_decision_ref(conn: sqlite3.Connection) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(action_audit)")
+    }
+    if "decision_ref" not in columns:
+        conn.execute(
+            """
+            ALTER TABLE action_audit
+            ADD COLUMN decision_ref TEXT
+            """
+        )
+
+
 MIGRATIONS = [
     Migration(
         version=1,
         name="baseline_current_schema",
         apply=_apply_baseline,
+    ),
+    Migration(
+        version=2,
+        name="decision_evidence",
+        apply=_apply_decision_evidence,
+    ),
+    Migration(
+        version=3,
+        name="decision_records",
+        apply=_apply_decision_records,
+    ),
+    Migration(
+        version=4,
+        name="action_audit_decision_ref",
+        apply=_apply_action_decision_ref,
     ),
 ]
 

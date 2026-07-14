@@ -41,6 +41,11 @@ Fresh decisions persist their supporting evidence in `decision_evidence`.
 Legacy rows in `analysis` remain readable, and explain views mark them as legacy
 when no stored evidence is available.
 
+The canonical explain contract groups stored decisions into final decision,
+decisive evidence, risk evidence, safety evidence, neutral evidence, classifier
+trace, conflicts, and legacy state. CLI JSON, the authenticated explain API, and
+the dashboard Explain panel use the same field vocabulary.
+
 ## Configuration
 
 `core.config` is the public configuration API. It loads env files and environment overrides into typed settings, validates them by mode, and exposes safe serialization that redacts secrets and credential-bearing URLs.
@@ -60,6 +65,19 @@ Current appliance schema includes:
 
 - v1 baseline runtime tables
 - v2 `decision_evidence` for explainable decision traces
+- v3 `decision_records` for final decision, trace, conflicts, provenance, and
+  policy version
+- v4 `action_audit.decision_ref` for linking feedback to the decision visible
+  at feedback time
+
+Evidence persistence is bounded. PiHole-AI stores the most influential evidence
+items first, redacts secret-bearing metadata, truncates oversized fields
+deterministically, and degrades malformed persisted metadata safely during
+explain rendering.
+
+Feedback does not rewrite historical decision evidence. When a stored decision
+exists, feedback audit rows record a `decision_ref` for traceability while future
+classifications remain free to produce new decisions.
 
 ## Health, Doctor, And Setup
 
