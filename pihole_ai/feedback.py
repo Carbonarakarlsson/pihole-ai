@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from core.db import record_action
+from core.db import get_decision_record, record_action
 from pihole_ai.rules import add_rule
 
 
@@ -58,12 +58,15 @@ def record_feedback(
             apply_block=apply_block,
         )
 
+    decision_ref = _decision_ref_for_domain(normalized)
+
     record_action(
         domain=normalized,
         action="feedback",
         source="pihole_ai.feedback",
         status=verdict,
         reason=reason,
+        decision_ref=decision_ref,
     )
 
     return FeedbackResult(
@@ -71,6 +74,20 @@ def record_feedback(
         verdict=verdict,
         promoted=promoted,
     )
+
+
+def _decision_ref_for_domain(
+    domain: str,
+) -> str | None:
+    """
+    Return a stable reference to the current stored decision if available.
+    """
+
+    record = get_decision_record(domain)
+    if record is None:
+        return None
+    created_at = record.get("created_at", "")
+    return f"decision:{domain}:{created_at}"
 
 
 def _promote_feedback(

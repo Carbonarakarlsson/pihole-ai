@@ -684,11 +684,11 @@ def _unvalidated_executable_target(
         executable_path=executable,
         invocation=[str(interpreter), "-m", "pihole_ai.cli"],
         interpreter_path=interpreter,
-        package_importable=False,
+        package_importable=True,
         version=None,
         source=source,
-        stable=False,
-        reason="not validated",
+        stable=True,
+        reason="not validated for metadata-only lifecycle command",
         references_checkout=_path_references_checkout(interpreter),
         references_developer_venv=_path_references_developer_venv(interpreter),
     )
@@ -748,7 +748,7 @@ def run_preflight(
 
     _check_executable_target(plan, issues)
 
-    if not plan.python_path.exists():
+    if plan.executable_target.source != "metadata_only" and not plan.python_path.exists():
         issues.append(
             _preflight_issue(
                 "install.python.missing",
@@ -1490,6 +1490,7 @@ def service_install(
     env_file: str | Path | None = None,
     runtime_db_path: str | Path | None = None,
     runtime_log_path: str | Path | None = None,
+    runtime_dir: str | Path | None = None,
 ) -> InstallResult:
     """
     Install PiHole-AI systemd services.
@@ -1502,7 +1503,7 @@ def service_install(
         events_db=Path(runtime_db_path or Path(data_dir) / "events.db"),
         log_dir=Path(log_dir),
         log_file=Path(runtime_log_path or Path(log_dir) / "pihole-ai.log"),
-        runtime_dir=RUNTIME_STATE_DIR,
+        runtime_dir=Path(runtime_dir or RUNTIME_STATE_DIR),
         systemd_dir=Path(systemd_dir),
         wrapper_path=Path(wrapper_path),
     )
@@ -1641,8 +1642,17 @@ def service_install(
     if dry_run:
         print("Dry-run complete. No systemd files were changed.")
 
+    elif enable_services and start_services:
+        print("Install complete. Services are enabled and started.")
+
+    elif enable_services and not start_services:
+        print("Install complete. Run 'pihole-ai start' when ready.")
+
+    elif start_services:
+        print("Install complete. Services were started. Run 'pihole-ai enable' to start at boot.")
+
     else:
-        print("Install complete. Run 'pihole-ai enable' and 'pihole-ai start' next.")
+        print("Install complete. Run 'pihole-ai enable' and 'pihole-ai start' when ready.")
 
     result = InstallResult(
         command="install",
@@ -1664,8 +1674,15 @@ def service_uninstall(
     purge: bool = False,
     confirm_purge: bool = False,
     systemd_dir: str | Path = SYSTEMD_DIR,
+    python_path: str | None = None,
     project_dir: str | Path | None = None,
     wrapper_path: str | Path = WRAPPER_PATH,
+    config_dir: str | Path = CONFIG_DIR,
+    data_dir: str | Path = RUNTIME_DATA_DIR,
+    log_dir: str | Path = RUNTIME_LOG_DIR,
+    env_file: str | Path | None = None,
+    runtime_db_path: str | Path | None = None,
+    runtime_dir: str | Path | None = None,
 ) -> InstallResult:
     """
     Stop, disable, and remove PiHole-AI systemd services.
@@ -1680,8 +1697,16 @@ def service_uninstall(
         )
 
     plan = build_install_plan(
+        python_path=python_path,
         project_dir=project_dir,
         layout=InstallationLayout(
+            config_dir=Path(config_dir),
+            config_file=Path(env_file or Path(config_dir) / "pihole-ai.env"),
+            data_dir=Path(data_dir),
+            events_db=Path(runtime_db_path or Path(data_dir) / "events.db"),
+            log_dir=Path(log_dir),
+            log_file=Path(log_dir) / "pihole-ai.log",
+            runtime_dir=Path(runtime_dir or RUNTIME_STATE_DIR),
             systemd_dir=Path(systemd_dir),
             wrapper_path=Path(wrapper_path),
         ),
@@ -1693,9 +1718,9 @@ def service_uninstall(
     actions: list[str] = []
     removed: list[str] = []
     preserved = [
-        str(CONFIG_FILE),
-        str(RUNTIME_DB_PATH),
-        str(RUNTIME_DATA_DIR),
+        str(plan.layout.config_file),
+        str(plan.layout.events_db),
+        str(plan.layout.data_dir),
     ]
 
     with lifecycle_lock("uninstall", layout=plan.layout, dry_run=dry_run):
@@ -1730,7 +1755,7 @@ def service_uninstall(
         actions.append("systemctl daemon-reload")
 
         if purge:
-            for path in (RUNTIME_LOG_DIR,):
+            for path in (plan.layout.log_dir,):
                 if dry_run:
                     print(f"Would purge {path}.")
                 elif path.exists():
@@ -1760,6 +1785,14 @@ def service_upgrade(
     systemd_dir: str | Path = SYSTEMD_DIR,
     python_path: str | None = None,
     project_dir: str | Path | None = None,
+    wrapper_path: str | Path = WRAPPER_PATH,
+    config_dir: str | Path = CONFIG_DIR,
+    data_dir: str | Path = RUNTIME_DATA_DIR,
+    log_dir: str | Path = RUNTIME_LOG_DIR,
+    env_file: str | Path | None = None,
+    runtime_db_path: str | Path | None = None,
+    runtime_log_path: str | Path | None = None,
+    runtime_dir: str | Path | None = None,
 ) -> InstallResult:
     """
     Safely refresh managed units and apply pending DB migrations.
@@ -1768,7 +1801,17 @@ def service_upgrade(
     plan = build_install_plan(
         python_path=python_path,
         project_dir=project_dir,
-        layout=InstallationLayout(systemd_dir=Path(systemd_dir)),
+        layout=InstallationLayout(
+            config_dir=Path(config_dir),
+            config_file=Path(env_file or Path(config_dir) / "pihole-ai.env"),
+            data_dir=Path(data_dir),
+            events_db=Path(runtime_db_path or Path(data_dir) / "events.db"),
+            log_dir=Path(log_dir),
+            log_file=Path(runtime_log_path or Path(log_dir) / "pihole-ai.log"),
+            runtime_dir=Path(runtime_dir or RUNTIME_STATE_DIR),
+            systemd_dir=Path(systemd_dir),
+            wrapper_path=Path(wrapper_path),
+        ),
         enable_services=False,
         start_services=False,
     )
@@ -2232,12 +2275,20 @@ def _repair_config_permissions(
     """
 
     _reject_symlink(config_dir)
-    _reject_symlink(env_file)
+    env_file_accessible = True
+    try:
+        _reject_symlink(env_file)
+    except PermissionError:
+        if not dry_run:
+            raise
+        env_file_accessible = False
 
     if dry_run:
         print(f"Would set {config_dir} to root:{group} {CONFIG_DIR_MODE:o}.")
-        if env_file.exists():
+        if env_file_accessible and env_file.exists():
             print(f"Would set {env_file} to root:{group} {CONFIG_FILE_MODE:o}.")
+        elif not env_file_accessible:
+            print(f"Would verify access to {env_file}.")
         return
 
     try:

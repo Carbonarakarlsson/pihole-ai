@@ -8,11 +8,13 @@ from collections import defaultdict
 
 from engine.evidence import (
     DecisionResult,
+    EVIDENCE_POLICY_VERSION,
     EvidenceCollection,
     EvidenceItem,
     EvidencePolarity,
 )
 from engine.models import AnalysisResult, DomainCategory
+from pihole_ai.version import get_version
 
 
 LOW_RISK_MAX = 29
@@ -110,6 +112,9 @@ class DecisionEngine:
             evidence=collection,
             decisive_evidence_ids=tuple(evidence.evidence_id for evidence in decisive),
             classifier_trace=trace,
+            conflicts=tuple(self._conflicts(collection.items)),
+            policy_version=EVIDENCE_POLICY_VERSION,
+            application_version=get_version(),
         )
 
     def _aggregate_decision(
@@ -162,6 +167,9 @@ class DecisionEngine:
             explanation=explanation,
             evidence=collection,
             classifier_trace=trace,
+            conflicts=tuple(self._conflicts(collection.items)),
+            policy_version=EVIDENCE_POLICY_VERSION,
+            application_version=get_version(),
         )
 
     def _category_from_evidence(
@@ -225,3 +233,13 @@ class DecisionEngine:
         else:
             prefix = "Only neutral evidence was available."
         return f"{prefix} Final risk {risk}/100 with confidence {confidence:.2f}."
+
+    def _conflicts(
+        self,
+        items: tuple[EvidenceItem, ...],
+    ) -> list[str]:
+        risk_count = sum(1 for item in items if item.polarity == EvidencePolarity.RISK)
+        safety_count = sum(1 for item in items if item.polarity == EvidencePolarity.SAFETY)
+        if risk_count and safety_count:
+            return ["Risk evidence conflicts with safety evidence."]
+        return []

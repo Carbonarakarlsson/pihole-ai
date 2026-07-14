@@ -17,7 +17,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from time import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from engine.evidence import DecisionResult
 
 
 # ============================================================================
@@ -72,6 +75,8 @@ class AnalysisResult:
     analyzed_at: float = field(default_factory=time)
 
     cached: bool = False
+
+    decision: "DecisionResult | None" = None
 
 
 # ============================================================================
