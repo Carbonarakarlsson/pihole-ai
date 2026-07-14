@@ -1,0 +1,56 @@
+# Database
+
+PiHole-AI stores runtime state in its own SQLite database. It reads the Pi-hole
+FTL database as an external read-only input.
+
+## Current Schema
+
+Latest supported schema version: `4`.
+
+Registered migrations:
+
+| Version | Name |
+| --- | --- |
+| 1 | `baseline_current_schema` |
+| 2 | `decision_evidence` |
+| 3 | `decision_records` |
+| 4 | `action_audit_decision_ref` |
+
+The migration registry lives in `core/migrations.py`. Versions must be unique,
+ascending, non-empty, and contiguous unless a gap is explicitly documented.
+
+## PiHole-AI Tables
+
+- `events`: normalized DNS query events copied from Pi-hole.
+- `domain_memory`: observed domain history.
+- `analysis`: compatibility table for latest per-domain analysis.
+- `decision_records`: latest structured final decision per domain.
+- `decision_evidence`: bounded supporting evidence for explainability.
+- `action_audit`: actions, feedback, and decision references.
+- `domain_rules`: manual allow/block rules.
+- `domain_reputation`: learned local reputation.
+- `threat_intel`: imported local threat-intelligence indicators.
+- `schema_migrations`: applied migration history.
+- `app_state`: small runtime state values.
+
+## Migration Behavior
+
+Migrations run transactionally. Future schema versions are rejected rather than
+downgraded. Lifecycle rollback does not automatically downgrade database
+schemas.
+
+## Evidence And Legacy Behavior
+
+Fresh v0.5 decisions persist one latest decision record per domain and a bounded
+set of evidence items. Legacy rows in `analysis` remain readable; explain output
+marks them as legacy when no structured decision record exists.
+
+Current limitation: immutable full per-decision history is not implemented yet.
+Feedback can link to the stored decision visible at submission time, but older
+decision rows are not retained indefinitely.
+
+## Backup
+
+Back up `/var/lib/pihole-ai/events.db` before upgrade, purge, or manual schema
+experiments. PiHole-AI does not currently provide an automatic backup/restore
+command.
