@@ -18,6 +18,7 @@ from core.db import (
 )
 from core.logger import get_logger
 
+from engine.evidence import EvidenceItem, EvidencePolarity
 from engine.models import (
     AnalysisRequest,
     AnalysisResult,
@@ -129,6 +130,53 @@ class AIClassifier(BaseClassifier):
             self._start_cooldown(time.time())
 
         return result
+
+    def collect_evidence(
+        self,
+        request: AnalysisRequest,
+    ) -> list[EvidenceItem]:
+        result = self.classify(request)
+        if result is None:
+            return []
+
+        if result.risk > 50:
+            polarity = EvidencePolarity.RISK
+            score = result.risk
+        elif result.risk < 50:
+            polarity = EvidencePolarity.SAFETY
+            score = -100 + result.risk
+        else:
+            polarity = EvidencePolarity.NEUTRAL
+            score = 0
+
+        evidence_type = "ai_result"
+        if result.reason in {
+            "ai_disabled",
+            "ai_rate_limited",
+            "ai_cooldown",
+            "ai_timeout",
+            "AI returned invalid response",
+        }:
+            evidence_type = "ai_skipped"
+
+        return [
+            EvidenceItem(
+                evidence_id=f"ai:{request.domain.lower()}:{evidence_type}",
+                classifier="ai",
+                evidence_type=evidence_type,
+                polarity=polarity,
+                score=score,
+                confidence=result.confidence / 100.0,
+                summary=result.reason,
+                metadata={
+                    "category": result.category,
+                    "model": result.model,
+                    "skip_reason": (
+                        result.reason if evidence_type == "ai_skipped" else ""
+                    ),
+                },
+            )
+        ]
 
     # ------------------------------------------------------------------
     # Rate Limiting

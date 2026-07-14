@@ -1,8 +1,10 @@
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -26,9 +28,15 @@ PRIMARY_IMPORTS = [
 ]
 
 
+def project_version() -> str:
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    return str(data["project"]["version"])
+
+
 class ReleaseHardeningTests(unittest.TestCase):
     def test_pyproject_version_is_authoritative_in_checkout(self):
-        self.assertEqual(get_version(), "0.4.0rc3")
+        self.assertEqual(get_version(), project_version())
 
     def test_cli_version_outputs_metadata_version(self):
         with patch("sys.stdout") as stdout:
@@ -37,7 +45,31 @@ class ReleaseHardeningTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 0)
         written = "".join(call.args[0] for call in stdout.write.call_args_list)
-        self.assertIn("0.4.0rc3", written)
+        self.assertIn(project_version(), written)
+
+    def test_readme_wheel_examples_use_project_version(self):
+        root = Path(__file__).resolve().parents[1]
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        wheel_versions = set(
+            re.findall(r"dist/pihole_ai-([0-9][A-Za-z0-9.+-]*)-py3-none-any\.whl", readme)
+        )
+
+        self.assertTrue(wheel_versions)
+        self.assertEqual(wheel_versions, {project_version()})
+
+    def test_active_release_tests_do_not_hardcode_conflicting_versions(self):
+        root = Path(__file__).resolve().parents[1]
+        expected = project_version()
+        version_pattern = re.compile(r"\b\d+\.\d+\.\d+rc\d+\b")
+        conflicting: list[str] = []
+
+        for path in (root / "tests").glob("test_*.py"):
+            content = path.read_text(encoding="utf-8")
+            for match in version_pattern.findall(content):
+                if match != expected:
+                    conflicting.append(f"{path.name}: {match}")
+
+        self.assertEqual(conflicting, [])
 
     def test_primary_imports_do_not_mutate_runtime_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -90,9 +122,10 @@ class ReleaseHardeningTests(unittest.TestCase):
         self.assertTrue(any("forbidden" in error for error in errors))
 
     def test_documented_json_commands_emit_json_when_mocked(self):
+        version = project_version()
         commands = [
-            (["health", "--json"], {"overall_status": "healthy", "checks": [], "version": "0.4.0rc3", "checked_at": 1}),
-            (["doctor", "--json"], {"overall_status": "healthy", "diagnostics": [], "version": "0.4.0rc3"}),
+            (["health", "--json"], {"overall_status": "healthy", "checks": [], "version": version, "checked_at": 1}),
+            (["doctor", "--json"], {"overall_status": "healthy", "diagnostics": [], "version": version}),
         ]
 
         for argv, payload in commands:
@@ -100,12 +133,12 @@ class ReleaseHardeningTests(unittest.TestCase):
                 if argv[0] == "health":
                     from pihole_ai.health import HealthReport
 
-                    with patch("pihole_ai.health.run_health_checks", return_value=HealthReport("healthy", [], "0.4.0rc3", 1)):
+                    with patch("pihole_ai.health.run_health_checks", return_value=HealthReport("healthy", [], version, 1)):
                         exit_code = cli.main(argv)
                 else:
                     from pihole_ai.doctor import DoctorReport
 
-                    with patch("pihole_ai.doctor.run_doctor", return_value=DoctorReport("healthy", [], "0.4.0rc3")):
+                    with patch("pihole_ai.doctor.run_doctor", return_value=DoctorReport("healthy", [], version)):
                         exit_code = cli.main(argv)
                 written = "".join(call.args[0] for call in stdout.write.call_args_list)
                 decoded = json.loads(written)

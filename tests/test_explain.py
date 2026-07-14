@@ -52,6 +52,9 @@ class ExplainTests(unittest.TestCase):
             "pihole_ai.explain.get_analysis",
             return_value=None,
         ), patch(
+            "pihole_ai.explain.get_decision_evidence",
+            return_value=[],
+        ), patch(
             "pihole_ai.explain.get_domain_metadata",
             return_value={
                 "domain": "bad.example",
@@ -89,6 +92,64 @@ class ExplainTests(unittest.TestCase):
         )
         self.assertEqual(len(explanation["actions"]), 1)
 
+    def test_explain_domain_includes_stored_decision_evidence(self) -> None:
+        with patch(
+            "pihole_ai.explain.get_domain_rule",
+            return_value=None,
+        ), patch(
+            "pihole_ai.explain.get_threat_intel",
+            return_value=None,
+        ), patch(
+            "pihole_ai.explain.get_domain_reputation",
+            return_value=None,
+        ), patch(
+            "pihole_ai.explain.get_analysis",
+            return_value={
+                "domain": "bad.example",
+                "risk": 100,
+                "confidence": 95,
+                "category": "malware",
+                "reason": "Threat intel hit.",
+                "model": "threat-intel",
+            },
+        ), patch(
+            "pihole_ai.explain.get_decision_evidence",
+            return_value=[
+                {
+                    "domain": "bad.example",
+                    "evidence_id": "threat-intel:bad.example:feed",
+                    "classifier": "threat-intel",
+                    "evidence_type": "feed_hit",
+                    "polarity": "risk",
+                    "score": 95,
+                    "confidence": 0.95,
+                    "summary": "Threat intel hit.",
+                    "details": "",
+                    "metadata": {"category": "malware"},
+                    "decisive": True,
+                    "created_at": 1.0,
+                }
+            ],
+        ), patch(
+            "pihole_ai.explain.get_domain_metadata",
+            return_value={
+                "domain": "bad.example",
+                "query_count": 2,
+            },
+        ), patch(
+            "pihole_ai.explain.get_recent_actions",
+            return_value=[],
+        ):
+            explanation = explain_domain("bad.example")
+
+        self.assertEqual(explanation["decision"]["risk"], 100)
+        self.assertEqual(explanation["decision"]["evidence_count"], 1)
+        self.assertEqual(len(explanation["decisive_evidence"]), 1)
+        self.assertEqual(
+            explanation["summary"],
+            "decisive evidence from threat-intel",
+        )
+
     def test_print_explanation_outputs_json(self) -> None:
         with patch(
             "pihole_ai.explain.explain_domain",
@@ -99,6 +160,10 @@ class ExplainTests(unittest.TestCase):
                 "threat_intel": None,
                 "reputation": None,
                 "analysis": None,
+                "evidence": [],
+                "decision": None,
+                "decisive_evidence": [],
+                "legacy_analysis": False,
                 "metadata": {},
                 "actions": [],
             },

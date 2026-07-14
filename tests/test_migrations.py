@@ -35,7 +35,10 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(result.version_after, migrations.LATEST_SUPPORTED_SCHEMA_VERSION)
         self.assertIn("events", tables)
         self.assertIn("analysis", tables)
-        self.assertEqual(history, [(1, "baseline_current_schema")])
+        self.assertEqual(
+            history,
+            [(migration.version, migration.name) for migration in migrations.MIGRATIONS],
+        )
 
     def test_repeated_migration_is_noop(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -232,7 +235,10 @@ class DatabaseCLITests(unittest.TestCase):
 
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
-        self.assertEqual(payload["current_schema_version"], 1)
+        self.assertEqual(
+            payload["current_schema_version"],
+            migrations.LATEST_SUPPORTED_SCHEMA_VERSION,
+        )
         self.assertEqual(payload["pending_migration_count"], 0)
         self.assertTrue(payload["compatible"])
 
@@ -250,7 +256,10 @@ class DatabaseCLITests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertTrue(payload["changed"])
-        self.assertEqual(payload["version_after"], 1)
+        self.assertEqual(
+            payload["version_after"],
+            migrations.LATEST_SUPPORTED_SCHEMA_VERSION,
+        )
 
     def test_db_status_incompatible_schema_exits_two(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

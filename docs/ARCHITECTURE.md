@@ -9,9 +9,10 @@ PiHole-AI is a local appliance-style companion for Pi-hole. It reads Pi-hole FTL
 - `dashboard`: Flask application for authenticated inspection, explanation, feedback, rules, setup, and health views.
 - `pihole-ai` CLI: operational entrypoint for runtime commands, diagnostics, setup, lifecycle management, and auth bootstrap.
 
-## Classifier Pipeline
+## Evidence-Based Decision Pipeline
 
-The pipeline is deterministic first:
+The classifier pipeline is deterministic first, evidence-based, and centrally
+decided:
 
 1. Manual/domain rules
 2. Learned reputation
@@ -19,7 +20,26 @@ The pipeline is deterministic first:
 4. Heuristics
 5. Optional Ollama AI fallback
 
-Only domains that remain unresolved after local classifiers reach Ollama.
+Classifiers contribute structured evidence instead of independently owning the
+final verdict. Evidence records include polarity, score, confidence, summary,
+safe metadata, and optional decisive precedence. The central `DecisionEngine`
+then produces the final compatible analysis result.
+
+Decisive evidence wins by precedence:
+
+- manual block
+- manual allow
+- local infrastructure
+- high-confidence threat intelligence
+
+Non-decisive evidence is aggregated with diminishing weight for repeated
+signals from the same classifier/type. AI-only decisions have a confidence
+ceiling, and AI is skipped when local deterministic evidence is decisive or
+sufficient.
+
+Fresh decisions persist their supporting evidence in `decision_evidence`.
+Legacy rows in `analysis` remain readable, and explain views mark them as legacy
+when no stored evidence is available.
 
 ## Configuration
 
@@ -35,6 +55,11 @@ Appliance defaults:
 ## SQLite And Migrations
 
 PiHole-AI writes only to its own events database. The Pi-hole FTL database is read-only input. Schema state is tracked in `schema_migrations`; migrations are transactional and are not downgraded during lifecycle rollback.
+
+Current appliance schema includes:
+
+- v1 baseline runtime tables
+- v2 `decision_evidence` for explainable decision traces
 
 ## Health, Doctor, And Setup
 

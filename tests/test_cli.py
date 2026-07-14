@@ -198,6 +198,37 @@ class CLITests(unittest.TestCase):
             dry_run=True,
         )
 
+    def test_install_no_start_keeps_enablement_enabled(self) -> None:
+        with patch("pihole_ai.service.service_install") as service_install:
+            exit_code = cli.main(["install", "--no-start"])
+
+        self.assertEqual(exit_code, 0)
+        service_install.assert_called_once_with(
+            dry_run=False,
+            start_services=False,
+        )
+
+    def test_install_no_enable_disables_only_boot_enablement(self) -> None:
+        with patch("pihole_ai.service.service_install") as service_install:
+            exit_code = cli.main(["install", "--no-enable"])
+
+        self.assertEqual(exit_code, 0)
+        service_install.assert_called_once_with(
+            dry_run=False,
+            enable_services=False,
+        )
+
+    def test_install_no_enable_no_start_maps_both_flags(self) -> None:
+        with patch("pihole_ai.service.service_install") as service_install:
+            exit_code = cli.main(["install", "--no-enable", "--no-start"])
+
+        self.assertEqual(exit_code, 0)
+        service_install.assert_called_once_with(
+            dry_run=False,
+            enable_services=False,
+            start_services=False,
+        )
+
     def test_service_uninstall_dispatches_with_dry_run(self) -> None:
         with patch("pihole_ai.service.service_uninstall") as service_uninstall:
             exit_code = cli.main(

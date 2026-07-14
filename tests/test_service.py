@@ -33,12 +33,13 @@ from pihole_ai.service import (
     service_uninstall,
     service_upgrade,
 )
+from pihole_ai.version import get_version
 
 
 class ServiceTests(unittest.TestCase):
     def _valid_python_check(self, interpreter, args, capture=False):
         if capture:
-            return SimpleCompletedProcess(returncode=0, stdout="pihole-ai 0.4.0rc3\n")
+            return SimpleCompletedProcess(returncode=0, stdout=f"pihole-ai {get_version()}\n")
         return True
 
     def _invalid_python_check(self, interpreter, args, capture=False):
@@ -1148,6 +1149,30 @@ class ServiceTests(unittest.TestCase):
                     group="pihole-ai",
                     dry_run=False,
                 )
+
+    def test_config_permission_dry_run_tolerates_unreadable_env_file(self) -> None:
+        config_dir = Path("/etc/pihole-ai")
+        env_file = config_dir / "pihole-ai.env"
+
+        def fake_lstat(path: Path):
+            if path == config_dir:
+                return SimpleNamespace(st_mode=service_module.stat.S_IFDIR | 0o750)
+            if path == env_file:
+                raise PermissionError("permission denied")
+            raise FileNotFoundError(path)
+
+        with patch("pathlib.Path.lstat", fake_lstat), patch(
+            "sys.stdout",
+            io.StringIO(),
+        ) as stdout:
+            service_module._repair_config_permissions(
+                config_dir=config_dir,
+                env_file=env_file,
+                group="pihole-ai",
+                dry_run=True,
+            )
+
+        self.assertIn("Would verify access", stdout.getvalue())
 
     def test_config_access_failure_blocks_before_service_start(self) -> None:
         issue = service_module._preflight_issue(

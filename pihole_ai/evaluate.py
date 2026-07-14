@@ -274,17 +274,30 @@ def _classify(
     )
 
     try:
-        return classifier.classify(request)
+        result = classifier.classify(request)
+        if (
+            result.decision is not None
+            and not result.decision.evidence.items
+            and result.model == "decision-engine"
+        ):
+            return _benchmark_fallback(case)
+        return result
 
     except RuntimeError:
-        return AnalysisResult(
-            domain=case.domain,
-            risk=50,
-            confidence=0,
-            category="unknown",
-            reason="No deterministic classifier matched.",
-            model="benchmark-fallback",
-        )
+        return _benchmark_fallback(case)
+
+
+def _benchmark_fallback(
+    case: BenchmarkCase,
+) -> AnalysisResult:
+    return AnalysisResult(
+        domain=case.domain,
+        risk=50,
+        confidence=0,
+        category="unknown",
+        reason="No deterministic classifier matched.",
+        model="benchmark-fallback",
+    )
 
 
 def _result_to_dict(

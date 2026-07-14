@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+v0.5 development:
+
+- Added structured evidence models and a central decision engine.
+- Classifiers can now contribute risk, safety, neutral, or decisive evidence.
+- Manual rules and high-confidence threat intelligence are resolved by decisive
+  precedence before lower-priority classifiers run.
+- Fresh decisions persist supporting evidence in `decision_evidence` for
+  `pihole-ai explain` and dashboard/API consumers.
+
 ## v0.4.0rc1
 
 Release-candidate hardening for PiHole-AI as a local Pi-hole companion appliance.

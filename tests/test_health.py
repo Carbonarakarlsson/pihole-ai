@@ -154,7 +154,10 @@ class HealthTests(unittest.TestCase):
                 check = check_events_database()
 
         self.assertEqual(check.status, HealthStatus.HEALTHY.value)
-        self.assertEqual(check.details["current_schema_version"], 1)
+        self.assertEqual(
+            check.details["current_schema_version"],
+            migrations.LATEST_SUPPORTED_SCHEMA_VERSION,
+        )
         self.assertEqual(check.details["pending_migration_count"], 0)
 
     def test_events_database_health_does_not_migrate(self) -> None:

@@ -44,6 +44,7 @@ from core.db import (
     mark_processed_by_domain,
     record_action,
     save_analysis,
+    save_decision_evidence,
 )
 from core.logger import get_logger
 
@@ -182,6 +183,11 @@ class AnalysisEngine:
                     model=result.model,
                     analyzed_at=result.analyzed_at,
                 )
+                if result.decision is not None:
+                    save_decision_evidence(
+                        result.domain,
+                        result.decision,
+                    )
 
                 if _is_ai_parse_error(result):
                     record_action(

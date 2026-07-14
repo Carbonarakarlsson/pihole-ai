@@ -438,6 +438,113 @@ def get_analysis(
         """,
         (domain,),
     )
+
+
+def save_decision_evidence(
+    domain: str,
+    decision: Any,
+) -> None:
+    """
+    Persist structured evidence for the latest decision on a domain.
+    """
+
+    items = getattr(getattr(decision, "evidence", None), "items", ())
+
+    with transaction() as conn:
+        conn.execute(
+            """
+            DELETE FROM decision_evidence
+
+            WHERE domain = ?
+            """,
+            (domain,),
+        )
+
+        conn.executemany(
+            """
+            INSERT INTO decision_evidence
+            (
+                domain,
+                evidence_id,
+                classifier,
+                evidence_type,
+                polarity,
+                score,
+                confidence,
+                summary,
+                details,
+                metadata_json,
+                decisive,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    domain,
+                    item.evidence_id,
+                    item.classifier,
+                    item.evidence_type,
+                    item.polarity.value,
+                    item.score,
+                    item.confidence,
+                    item.summary,
+                    item.details,
+                    json.dumps(item.metadata, sort_keys=True),
+                    1 if item.decisive else 0,
+                    item.created_at,
+                )
+                for item in items
+            ],
+        )
+
+
+def get_decision_evidence(
+    domain: str,
+) -> list[dict[str, Any]]:
+    """
+    Return stored decision evidence for a domain.
+    """
+
+    rows = query_all(
+        """
+        SELECT
+            id,
+            domain,
+            evidence_id,
+            classifier,
+            evidence_type,
+            polarity,
+            score,
+            confidence,
+            summary,
+            details,
+            metadata_json,
+            decisive,
+            created_at
+
+        FROM decision_evidence
+
+        WHERE domain = ?
+
+        ORDER BY decisive DESC, ABS(score) DESC, confidence DESC, id ASC
+        """,
+        (domain,),
+    )
+
+    evidence = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        except json.JSONDecodeError:
+            item["metadata"] = {}
+        item["decisive"] = bool(item["decisive"])
+        evidence.append(item)
+
+    return evidence
+
+
 def analysis_exists(
     domain: str,
 ) -> bool:

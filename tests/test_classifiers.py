@@ -20,6 +20,7 @@ from engine.classifiers.pipeline import ClassifierPipeline
 from engine.classifiers.reputation import ReputationClassifier
 from engine.classifiers.rule_engine import RuleEngine
 from engine.classifiers.threat_intel import ThreatIntelClassifier
+from engine.evidence import EvidenceItem, EvidencePolarity
 from engine.models import (
     AnalysisRequest,
     AnalysisResult,
@@ -105,6 +106,25 @@ class FakeClassifier(BaseClassifier):
     ) -> AnalysisResult | None:
         self.calls += 1
         return self.result
+
+
+class EvidenceClassifier(BaseClassifier):
+    def __init__(self, evidence: list[EvidenceItem]) -> None:
+        self.evidence = evidence
+        self.calls = 0
+
+    def classify(
+        self,
+        request: AnalysisRequest,
+    ) -> AnalysisResult | None:
+        return None
+
+    def collect_evidence(
+        self,
+        request: AnalysisRequest,
+    ) -> list[EvidenceItem]:
+        self.calls += 1
+        return self.evidence
 
 
 class RuleEngineTests(unittest.TestCase):
@@ -194,6 +214,20 @@ class HeuristicsEngineTests(unittest.TestCase):
             result.reason,
         )
 
+    def test_collect_evidence_returns_individual_signals(self) -> None:
+        evidence = self.engine.collect_evidence(
+            AnalysisRequest(
+                domain="login-secure-wallet-verify-123456789.xyz",
+            ),
+        )
+
+        evidence_types = {item.evidence_type for item in evidence}
+        self.assertIn("suspicious_tld", evidence_types)
+        self.assertIn("many_digits", evidence_types)
+        self.assertTrue(
+            all(item.classifier == "heuristics" for item in evidence)
+        )
+
 
 class ReputationClassifierTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -278,6 +312,43 @@ class ReputationClassifierTests(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_low_reputation_score_returns_safety_evidence(self) -> None:
+        with patch(
+            "engine.classifiers.reputation.get_domain_rule",
+            return_value=None,
+        ), patch(
+            "engine.classifiers.reputation.get_domain_reputation",
+            return_value={
+                "score": 10,
+                "confidence": 90,
+                "signals": '["quiet locally"]',
+            },
+        ):
+            evidence = self.classifier.collect_evidence(
+                AnalysisRequest(domain="quiet.example"),
+            )
+
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0].classifier, "local-reputation")
+        self.assertEqual(evidence[0].polarity, EvidencePolarity.SAFETY)
+        self.assertLess(evidence[0].score, 0)
+
+    def test_manual_block_returns_decisive_evidence(self) -> None:
+        with patch(
+            "engine.classifiers.reputation.get_domain_rule",
+            return_value={
+                "decision": "block",
+                "reason": "Confirmed unwanted.",
+            },
+        ):
+            evidence = self.classifier.collect_evidence(
+                AnalysisRequest(domain="bad.example"),
+            )
+
+        self.assertEqual(len(evidence), 1)
+        self.assertTrue(evidence[0].decisive)
+        self.assertEqual(evidence[0].classifier, "manual-rule")
+
 
 class ThreatIntelClassifierTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -333,6 +404,24 @@ class ThreatIntelClassifierTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.risk, 70)
         self.assertEqual(result.category, DomainCategory.SUSPICIOUS.value)
+
+    def test_high_confidence_feed_hit_is_decisive_evidence(self) -> None:
+        with patch(
+            "engine.classifiers.threat_intel.get_threat_intel",
+            return_value={
+                "domain": "bad.example",
+                "source": "test-feed",
+                "category": DomainCategory.MALWARE.value,
+                "confidence": 95,
+            },
+        ):
+            evidence = self.classifier.collect_evidence(
+                AnalysisRequest(domain="bad.example"),
+            )
+
+        self.assertEqual(len(evidence), 1)
+        self.assertTrue(evidence[0].decisive)
+        self.assertEqual(evidence[0].metadata["precedence"], 30)
 
 
 class DomainMetadataTests(unittest.TestCase):
@@ -437,42 +526,91 @@ class ClassifierPipelineTests(unittest.TestCase):
 
         self.assertEqual(result.model, "threat-intel")
         self.assertEqual(result.category, DomainCategory.MALWARE.value)
-        self.assertEqual(result.risk, 95)
+        self.assertEqual(result.risk, 100)
 
-    def test_stops_at_first_classifier_with_result(self) -> None:
-        first = FakeClassifier(None)
-        expected = AnalysisResult(
-            domain="example.com",
-            risk=5,
-            confidence=80,
-            category=DomainCategory.BENIGN.value,
-            reason="Known safe test result.",
-            model="fake",
+    def test_collects_evidence_before_deciding(self) -> None:
+        first = EvidenceClassifier(
+            [
+                EvidenceItem(
+                    evidence_id="test:safety",
+                    classifier="test-safety",
+                    evidence_type="known_safe",
+                    polarity=EvidencePolarity.SAFETY,
+                    score=-80,
+                    confidence=0.9,
+                    summary="Known safe.",
+                )
+            ]
         )
-        second = FakeClassifier(expected)
-        third = FakeClassifier(
-            AnalysisResult(
-                domain="example.com",
-                risk=90,
-                confidence=90,
-                category=DomainCategory.MALWARE.value,
-                reason="Should not be reached.",
-                model="fake",
-            )
+        second = EvidenceClassifier(
+            [
+                EvidenceItem(
+                    evidence_id="test:risk",
+                    classifier="test-risk",
+                    evidence_type="suspicious",
+                    polarity=EvidencePolarity.RISK,
+                    score=70,
+                    confidence=0.8,
+                    summary="Suspicious.",
+                )
+            ]
         )
 
         pipeline = ClassifierPipeline.__new__(ClassifierPipeline)
         pipeline.logger = DummyLogger()
-        pipeline.classifiers = [first, second, third]
+        pipeline.classifiers = [first, second]
+        from engine.decision_engine import DecisionEngine
+
+        pipeline.decision_engine = DecisionEngine()
 
         result = pipeline.classify(
             AnalysisRequest(domain="example.com"),
         )
 
-        self.assertIs(result, expected)
         self.assertEqual(first.calls, 1)
         self.assertEqual(second.calls, 1)
-        self.assertEqual(third.calls, 0)
+        self.assertIsNotNone(result.decision)
+        self.assertEqual(len(result.decision.evidence.items), 2)
+
+    def test_decisive_evidence_skips_remaining_classifiers(self) -> None:
+        decisive = EvidenceClassifier(
+            [
+                EvidenceItem(
+                    evidence_id="test:block",
+                    classifier="manual-rule",
+                    evidence_type="manual_block",
+                    polarity=EvidencePolarity.RISK,
+                    score=100,
+                    confidence=0.95,
+                    summary="Manual block.",
+                    metadata={
+                        "decisive": True,
+                        "precedence": 10,
+                        "category": DomainCategory.SUSPICIOUS.value,
+                    },
+                )
+            ]
+        )
+        later = EvidenceClassifier([])
+
+        pipeline = ClassifierPipeline.__new__(ClassifierPipeline)
+        pipeline.logger = DummyLogger()
+        pipeline.classifiers = [decisive, later]
+        from engine.decision_engine import DecisionEngine
+
+        pipeline.decision_engine = DecisionEngine()
+
+        result = pipeline.classify(
+            AnalysisRequest(domain="example.com"),
+        )
+
+        self.assertEqual(result.risk, 100)
+        self.assertEqual(decisive.calls, 1)
+        self.assertEqual(later.calls, 0)
+        self.assertEqual(
+            result.decision.classifier_trace[-1]["status"],
+            "skipped",
+        )
 
 
 class AIClassifierParsingTests(unittest.TestCase):

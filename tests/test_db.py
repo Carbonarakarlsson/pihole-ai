@@ -6,7 +6,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core import db
+from core import migrations
 from core.migrations import IncompatibleSchema
+from engine.decision_engine import DecisionEngine
+from engine.evidence import EvidenceCollection, EvidenceItem, EvidencePolarity
 
 
 class DatabaseTests(unittest.TestCase):
@@ -58,7 +61,7 @@ class DatabaseTests(unittest.TestCase):
             "SELECT version, name FROM schema_migrations ORDER BY version DESC LIMIT 1"
         )
         self.assertIsNotNone(migration)
-        self.assertEqual(migration["version"], 1)
+        self.assertEqual(migration["version"], migrations.LATEST_SUPPORTED_SCHEMA_VERSION)
 
     def test_insert_event_updates_domain_memory(self) -> None:
         db.insert_event(
@@ -142,6 +145,51 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(analysis["reason"], "Fallback result.")
         self.assertEqual(analysis["model"], "ollama")
         self.assertEqual(analysis["analyzed_at"], 200.0)
+
+    def test_save_decision_evidence_replaces_existing_rows(self) -> None:
+        engine = DecisionEngine()
+        first = engine.decide(
+            EvidenceCollection(
+                domain="example.com",
+                items=(
+                    EvidenceItem(
+                        evidence_id="first",
+                        classifier="heuristics",
+                        evidence_type="signal",
+                        polarity=EvidencePolarity.RISK,
+                        score=40,
+                        confidence=0.8,
+                        summary="Suspicious.",
+                    ),
+                ),
+            )
+        )
+        second = engine.decide(
+            EvidenceCollection(
+                domain="example.com",
+                items=(
+                    EvidenceItem(
+                        evidence_id="second",
+                        classifier="manual-rule",
+                        evidence_type="manual_block",
+                        polarity=EvidencePolarity.RISK,
+                        score=100,
+                        confidence=0.95,
+                        summary="Manual block.",
+                        metadata={"decisive": True, "precedence": 10},
+                    ),
+                ),
+            )
+        )
+
+        db.save_decision_evidence("example.com", first)
+        db.save_decision_evidence("example.com", second)
+
+        evidence = db.get_decision_evidence("example.com")
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["evidence_id"], "second")
+        self.assertTrue(evidence[0]["decisive"])
+        self.assertEqual(evidence[0]["metadata"]["precedence"], 10)
 
     def test_state_values_are_upserted(self) -> None:
         db.set_state("collector.last_query_id", "10")

@@ -6,7 +6,8 @@ PiHole-AI reads Pi-hole query events, stores them in a local SQLite database, cl
 
 ## Current Status
 
-The project is in an active v0.4 appliance hardening phase.
+The project is entering the v0.5 evidence-based decision-engine phase after
+the v0.4 appliance hardening work.
 
 Working today:
 
@@ -16,6 +17,8 @@ Working today:
 - classifier pipeline with a shared `BaseClassifier`
 - deterministic rule engine
 - local reputation classifier
+- threat-intelligence classifier
+- evidence-based decision engine
 - heuristic classifier
 - Ollama-backed AI fallback
 - AI response validation and safe fallback handling
@@ -56,6 +59,9 @@ ClassifierPipeline
         +--> AIClassifier (Ollama)
         |
         v
+DecisionEngine
+        |
+        v
 analysis cache
         |
         v
@@ -65,7 +71,10 @@ action audit
 ui/dashboard.py
 ```
 
-Only domains that are not handled by deterministic classifiers reach Ollama.
+Classifiers contribute structured evidence. `DecisionEngine` applies decisive
+precedence, balances contradictory evidence, and returns the final compatible
+`AnalysisResult`. Ollama is skipped when local evidence is decisive or already
+sufficient.
 
 ## Classifier Pipeline
 
@@ -86,7 +95,23 @@ Current order:
    Scores suspicious patterns such as punycode, long domains, high entropy, suspicious TLDs, phishing keywords, repeated hyphens, deep subdomains, random-looking hostnames, and high query frequency.
 
 5. `AIClassifier`
-   Uses Ollama for domains that remain unknown after deterministic checks.
+   Uses Ollama for domains that remain unknown after deterministic checks and
+   are not already resolved by sufficient local evidence.
+
+The classifier contract is evidence-first. Each classifier can return
+`EvidenceItem` objects with:
+
+- risk, safety, or neutral polarity
+- confidence
+- short explanation text
+- safe metadata
+- optional decisive precedence
+
+Manual block rules, manual allow rules, local infrastructure rules, and
+high-confidence threat-intel hits are decisive. Decisive evidence short-circuits
+lower-priority classifiers according to documented precedence. Non-decisive
+evidence is aggregated centrally instead of letting the first classifier
+response win.
 
 ## Database
 
@@ -106,6 +131,7 @@ Tables:
 - `domain_rules`
 - `domain_reputation`
 - `threat_intel`
+- `decision_evidence`
 - `schema_migrations`
 
 The collector stores the last processed Pi-hole query ID in `app_state` as:
@@ -115,7 +141,8 @@ collector.last_query_id
 ```
 
 PiHole-AI uses ordered SQLite schema migrations. `schema_migrations`
-records the applied versions, and the current baseline schema is version `1`.
+records the applied versions, and the current supported schema includes the
+v2 `decision_evidence` table.
 Migrations are transactional and apply only to the PiHole-AI events database;
 the Pi-hole FTL database is read as an input source and is never migrated.
 
@@ -147,6 +174,10 @@ Analysis results include:
 - `reason`
 - `model`
 - `analyzed_at`
+
+For fresh v0.5 decisions, structured supporting evidence is also persisted in
+`decision_evidence` so `pihole-ai explain <domain>` and the dashboard can show
+why a decision happened without reconstructing it from current state alone.
 
 Cache policy:
 
@@ -209,7 +240,10 @@ Current learning signals include:
 - entropy and suspicious TLDs
 - manual allow/block rules
 
-High learned scores are used by `ReputationClassifier` before Ollama is called. Lower scores remain visible as reputation data and audit signals.
+High learned scores contribute risk evidence before Ollama is called. Lower
+scores contribute safety evidence and remain visible as reputation data and
+audit signals. Manual rules are decisive and are not treated as learned AI
+evidence unless promoted explicitly by the user.
 
 ## Categories
 
@@ -741,6 +775,14 @@ sudo /opt/pihole-ai/venv/bin/pihole-ai install --no-start
 sudo /opt/pihole-ai/venv/bin/pihole-ai install --no-enable
 ```
 
+Install lifecycle behavior is explicit:
+
+```text
+pihole-ai install            install files, enable services, start services
+pihole-ai install --no-start install files, enable services, do not start services
+pihole-ai install --no-enable install files, do not enable services, start services unless --no-start is also used
+```
+
 Install creates `/etc/pihole-ai`, `/var/lib/pihole-ai`, and `/var/log/pihole-ai`.
 If `/etc/pihole-ai/pihole-ai.env` does not exist, it is created from
 `.env.example` plus the runtime database and log paths. If `data/events.db`
@@ -857,7 +899,6 @@ sudo python3 -m venv /opt/pihole-ai/venv
 sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-0.4.0rc3-py3-none-any.whl
 sudo /opt/pihole-ai/venv/bin/pihole-ai install --no-start
 sudo /usr/local/bin/pihole-ai dashboard auth set-password
-sudo /usr/local/bin/pihole-ai enable
 sudo /usr/local/bin/pihole-ai start
 ```
 

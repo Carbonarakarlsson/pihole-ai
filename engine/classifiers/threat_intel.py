@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 
 from core.db import get_threat_intel
+from engine.evidence import EvidenceItem, EvidencePolarity
 from engine.classifiers.base import BaseClassifier
 from engine.models import (
     AnalysisRequest,
@@ -68,3 +69,43 @@ class ThreatIntelClassifier(BaseClassifier):
             analyzed_at=time.time(),
             cached=False,
         )
+
+    def collect_evidence(
+        self,
+        request: AnalysisRequest,
+    ) -> list[EvidenceItem]:
+        domain = request.domain.lower()
+        hit = get_threat_intel(domain)
+        if hit is None:
+            return []
+
+        category = INTEL_CATEGORY_MAP.get(
+            str(hit["category"]).lower(),
+            DomainCategory.SUSPICIOUS.value,
+        )
+        confidence = int(hit["confidence"] or 0)
+        decisive = confidence >= 70
+        return [
+            EvidenceItem(
+                evidence_id=f"threat-intel:{domain}:{hit['source']}",
+                classifier="threat-intel",
+                evidence_type="feed_hit",
+                polarity=EvidencePolarity.RISK,
+                score=max(70, min(100, confidence)),
+                confidence=confidence / 100.0,
+                summary=(
+                    f"Matched threat-intel feed '{hit['source']}' "
+                    f"as {hit['category']}."
+                ),
+                metadata={
+                    "decisive": decisive,
+                    "precedence": 30,
+                    "policy_reason": "high-confidence threat-intelligence hit",
+                    "source": "threat-intel",
+                    "feed_source": hit["source"],
+                    "feed_category": hit["category"],
+                    "feed_confidence": confidence,
+                    "category": category,
+                },
+            )
+        ]

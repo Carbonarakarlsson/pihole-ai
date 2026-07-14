@@ -9,6 +9,7 @@ from typing import Any
 
 from core.db import (
     get_analysis,
+    get_decision_evidence,
     get_domain_metadata,
     get_domain_reputation,
     get_domain_rule,
@@ -104,16 +105,56 @@ def explain_domain(
         "analysis": row_to_dict(
             get_analysis(normalized),
         ),
+        "evidence": get_decision_evidence(normalized),
         "metadata": get_domain_metadata(
             normalized,
         ),
         "actions": actions,
     }
+    explanation["decision"] = summarize_decision(explanation)
+    explanation["decisive_evidence"] = [
+        item
+        for item in explanation["evidence"]
+        if item.get("decisive")
+    ]
+    explanation["legacy_analysis"] = (
+        explanation["analysis"] is not None
+        and not explanation["evidence"]
+    )
     explanation["summary"] = summarize_explanation(
         explanation,
     )
 
     return explanation
+
+
+def summarize_decision(
+    explanation: dict[str, Any],
+) -> dict[str, Any] | None:
+    """
+    Summarize the latest stored decision in a stable API shape.
+    """
+
+    analysis = explanation["analysis"]
+    if analysis is None:
+        return None
+
+    evidence = explanation["evidence"]
+    decisive = [
+        item["evidence_id"]
+        for item in evidence
+        if item.get("decisive")
+    ]
+
+    return {
+        "risk": analysis["risk"],
+        "confidence": analysis["confidence"],
+        "category": analysis["category"],
+        "source": analysis["model"],
+        "explanation": analysis["reason"],
+        "evidence_count": len(evidence),
+        "decisive_evidence_ids": decisive,
+    }
 
 
 def summarize_explanation(
@@ -144,6 +185,19 @@ def summarize_explanation(
     analysis = explanation["analysis"]
 
     if analysis is not None:
+        evidence = explanation.get("evidence", [])
+        if evidence:
+            decisive = [
+                item
+                for item in evidence
+                if item.get("decisive")
+            ]
+            if decisive:
+                return f"decisive evidence from {decisive[0]['classifier']}"
+            return (
+                f"stored decision risk {analysis['risk']} "
+                f"from {len(evidence)} evidence item(s)"
+            )
         return (
             f"cached analysis risk {analysis['risk']} "
             f"category {analysis['category']}"
@@ -181,6 +235,16 @@ def print_explanation(
     print(f"PiHole-AI explanation for {explanation['domain']}")
     print(f"  summary: {explanation['summary']}")
 
+    decision = explanation.get("decision")
+    if decision is not None:
+        print("  decision:")
+        print(
+            "    "
+            f"risk={decision['risk']} confidence={decision['confidence']} "
+            f"category={decision['category']} source={decision['source']}"
+        )
+        print(f"    explanation: {decision['explanation']}")
+
     _print_section(
         "rule",
         explanation["rule"],
@@ -196,6 +260,9 @@ def print_explanation(
     _print_section(
         "analysis",
         explanation["analysis"],
+    )
+    _print_evidence(
+        explanation.get("evidence", []),
     )
     _print_section(
         "metadata",
@@ -235,3 +302,26 @@ def _print_section(
 
     for key, value in values.items():
         print(f"    {key}: {value}")
+
+
+def _print_evidence(
+    evidence: list[dict[str, Any]],
+) -> None:
+    """
+    Print stored decision evidence.
+    """
+
+    print("  evidence:")
+
+    if not evidence:
+        print("    none")
+        return
+
+    for item in evidence:
+        marker = " decisive" if item.get("decisive") else ""
+        print(
+            "    "
+            f"{item['classifier']}:{item['evidence_type']}{marker} "
+            f"{item['polarity']} score={item['score']} "
+            f"confidence={item['confidence']:.2f} - {item['summary']}"
+        )

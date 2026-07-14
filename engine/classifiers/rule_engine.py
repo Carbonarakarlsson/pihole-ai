@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 
+from engine.evidence import EvidenceItem, EvidencePolarity
 from engine.models import (
     AnalysisRequest,
     AnalysisResult,
@@ -91,6 +92,31 @@ class RuleEngine(BaseClassifier):
         #
 
         return None
+
+    def collect_evidence(
+        self,
+        request: AnalysisRequest,
+    ) -> list[EvidenceItem]:
+        result = self.classify(request)
+        if result is None:
+            return []
+        return [
+            EvidenceItem(
+                evidence_id=f"rule-engine:{result.domain}:infrastructure",
+                classifier="rule-engine",
+                evidence_type="local_infrastructure",
+                polarity=EvidencePolarity.SAFETY,
+                score=-90,
+                confidence=0.98,
+                summary=result.reason,
+                metadata={
+                    "decisive": True,
+                    "precedence": 40,
+                    "source": "rule-engine",
+                    "category": result.category,
+                },
+            )
+        ]
 
     # ------------------------------------------------------------------
 
