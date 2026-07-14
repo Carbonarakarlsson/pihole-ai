@@ -2,12 +2,10 @@
 
 ## Unreleased
 
-v0.5 development:
+### Added
 
 - Added structured evidence models and a central decision engine.
 - Classifiers can now contribute risk, safety, neutral, or decisive evidence.
-- Manual rules and high-confidence threat intelligence are resolved by decisive
-  precedence before lower-priority classifiers run.
 - Fresh decisions persist supporting evidence in `decision_evidence` for
   `pihole-ai explain` and dashboard/API consumers.
 - Added `decision_records` persistence and a polished dashboard Explain panel
@@ -15,6 +13,34 @@ v0.5 development:
   decisions.
 - Added feedback audit provenance linking feedback to the stored decision
   visible at submission time.
+- Added repository cleanup, repository audit, CLI, configuration, database,
+  security, operations, development, and technical-debt documentation.
+
+### Changed
+
+- Manual rules and high-confidence threat intelligence are resolved by decisive
+  precedence before lower-priority classifiers run.
+- Current active installation examples now use version-neutral wheel patterns.
+
+### Fixed
+
+- Fixed setup readiness classification so warning-only operational systems are
+  degraded-ready instead of installed-unconfigured.
+- Fixed packaged alert-log defaults to use `/var/log/pihole-ai/alerts.log`.
+- Modernized package license metadata to avoid setuptools license-table
+  deprecation warnings.
+
+### Security
+
+- Documented the protected appliance configuration model, dashboard
+  authentication, CSRF, session, proxy-trust, and exposure guidance.
+
+### Known Limitations
+
+- Fresh v0.5 decisions store the latest structured decision per domain; immutable
+  full per-decision history is still deferred.
+- Database backup/restore commands and long-term retention policy are not yet
+  implemented.
 
 ## v0.4.0rc1
 

@@ -27,6 +27,9 @@ jobs:
       - name: Run ResourceWarning-sensitive tests
         run: python -W error::ResourceWarning -m unittest discover -s tests
 
+      - name: Check repository cleanup dry-run
+        run: python scripts/clean.py --dry-run
+
       - name: Build wheel and source distribution
         run: python -m build
 
@@ -38,6 +41,9 @@ jobs:
 
       - name: Smoke-test built wheel
         run: python scripts/smoke_wheel.py dist/*.whl
+
+      - name: Audit repository hygiene
+        run: python scripts/repository_audit.py
 
       - name: Upload package artifacts
         uses: actions/upload-artifact@v4

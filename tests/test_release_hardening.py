@@ -54,8 +54,8 @@ class ReleaseHardeningTests(unittest.TestCase):
             re.findall(r"dist/pihole_ai-([0-9][A-Za-z0-9.+-]*)-py3-none-any\.whl", readme)
         )
 
-        self.assertTrue(wheel_versions)
-        self.assertEqual(wheel_versions, {project_version()})
+        self.assertEqual(wheel_versions - {project_version()}, set())
+        self.assertIn("dist/pihole_ai-*-py3-none-any.whl", readme)
 
     def test_active_release_tests_do_not_hardcode_conflicting_versions(self):
         root = Path(__file__).resolve().parents[1]

@@ -10,7 +10,12 @@
 - [ ] `python -m twine check dist/*`
 - [ ] `python scripts/package_audit.py dist/*`
 - [ ] `python scripts/smoke_wheel.py dist/*.whl`
+- [ ] `python scripts/repository_audit.py`
+- [ ] `python scripts/clean.py --dry-run`
 - [ ] Package content inspection confirms no `.env`, databases, logs, caches, `.git`, local venvs, or secrets
+- [ ] Configuration defaults, docs, and examples are synchronized
+- [ ] CLI reference matches the parser tree
+- [ ] Migration registry versions are unique, ascending, and current
 - [ ] Dashboard login and CSRF regression tests pass
 - [ ] Non-loopback auth-disabled validation test passes
 - [ ] Lifecycle preflight failure test passes
