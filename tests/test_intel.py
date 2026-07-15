@@ -6,10 +6,12 @@ from unittest.mock import patch
 
 from pihole_ai.intel import (
     add_source,
+    intel_update_lock,
     import_hosts_file,
     normalize_domain,
     parse_hosts_domains,
     print_intel,
+    update_sources,
 )
 from pihole_ai.intel_feeds import (
     ERROR_INSECURE_URL,
@@ -145,6 +147,25 @@ class ThreatIntelTests(unittest.TestCase):
         self.assertEqual(source.source_id, "malware-feed")
         self.assertEqual(source.url, "https://feeds.example/hosts.txt")
         save_intel_source.assert_called_once()
+
+    def test_update_lock_uses_exclusive_file_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lock_path = Path(tmpdir) / "run" / "pihole-ai" / "intel-update.lock"
+            with intel_update_lock(lock_path):
+                with self.assertRaises(RuntimeError):
+                    with intel_update_lock(lock_path):
+                        pass
+            self.assertTrue(lock_path.exists())
+
+    def test_automatic_update_respects_auto_update_setting(self) -> None:
+        with patch("pihole_ai.intel.settings.intel_auto_update_enabled", False), \
+             patch("pihole_ai.intel.intel_update_lock") as intel_lock:
+            results = update_sources(all_sources=True, automatic=True)
+
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].success)
+        self.assertEqual(results[0].error_code, "intel.auto_update.disabled")
+        intel_lock.assert_not_called()
 
 
 if __name__ == "__main__":

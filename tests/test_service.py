@@ -11,6 +11,7 @@ from pihole_ai import service as service_module
 from pihole_ai.service import (
     INTEL_UPDATE_SERVICE_NAME,
     INTEL_UPDATE_TIMER_NAME,
+    ENABLE_UNIT_NAMES,
     InstallationLayout,
     MANAGED_UNIT_NAMES,
     SERVICE_NAMES,
@@ -70,6 +71,7 @@ class ServiceTests(unittest.TestCase):
             unit,
         )
         self.assertIn("Restart=always", unit)
+        self.assertIn("TimeoutStartSec=300", unit)
         self.assertIn("WantedBy=multi-user.target", unit)
 
     def test_dashboard_unit_uses_appliance_dashboard_command(self) -> None:
@@ -287,6 +289,8 @@ class ServiceTests(unittest.TestCase):
 
         self.assertIn("[Timer]", timer)
         self.assertIn("OnUnitActiveSec=3600", timer)
+        self.assertIn("RandomizedDelaySec=15min", timer)
+        self.assertIn("Persistent=true", timer)
         self.assertIn(f"Unit={INTEL_UPDATE_SERVICE_NAME}", timer)
         self.assertIn("WantedBy=timers.target", timer)
 
@@ -685,11 +689,11 @@ class ServiceTests(unittest.TestCase):
         run.assert_has_calls(
             [
                 call(
-                    ["systemctl", "enable", *SERVICE_NAMES],
+                    ["systemctl", "enable", *ENABLE_UNIT_NAMES],
                     check=True,
                 ),
                 call(
-                    ["systemctl", "disable", *SERVICE_NAMES],
+                    ["systemctl", "disable", *ENABLE_UNIT_NAMES],
                     check=True,
                 ),
             ]

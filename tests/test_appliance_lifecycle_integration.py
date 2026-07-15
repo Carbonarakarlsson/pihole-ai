@@ -20,6 +20,7 @@ from pihole_ai.service import (
     CONFIG_DIR_MODE,
     DEFAULT_SERVICE_GROUP,
     DEFAULT_SERVICE_USER,
+    ENABLE_UNIT_NAMES,
     ExecutableTarget,
     InstallationLayout,
     SERVICE_NAMES,
@@ -237,7 +238,7 @@ class ApplianceLifecycleIntegrationTests(unittest.TestCase):
 
             commands = [command for command, _kwargs in harness.commands]
             self.assertIn(["systemctl", "daemon-reload"], commands)
-            self.assertIn(["systemctl", "enable", *SERVICE_NAMES], commands)
+            self.assertIn(["systemctl", "enable", *ENABLE_UNIT_NAMES], commands)
             self.assertIn(["systemctl", "start", *START_ORDER], commands)
             self.assertIn(["chown", "pihole-ai:pihole-ai", str(harness.layout.data_dir)], commands)
             self.assertIn(["chown", "pihole-ai:pihole-ai", str(harness.layout.log_dir)], commands)
@@ -261,7 +262,7 @@ class ApplianceLifecycleIntegrationTests(unittest.TestCase):
                 )
 
             commands = [command for command, _kwargs in harness.commands]
-            self.assertIn(["systemctl", "enable", *SERVICE_NAMES], commands)
+            self.assertIn(["systemctl", "enable", *ENABLE_UNIT_NAMES], commands)
             self.assertNotIn(["systemctl", "start", *START_ORDER], commands)
             self.assertFalse(any(command[:2] == ["systemctl", "start"] for command in commands))
             self.assertIn("Install complete. Run 'pihole-ai start' when ready.", stdout.getvalue())
@@ -278,7 +279,7 @@ class ApplianceLifecycleIntegrationTests(unittest.TestCase):
                 )
 
             commands = [command for command, _kwargs in harness.commands]
-            self.assertNotIn(["systemctl", "enable", *SERVICE_NAMES], commands)
+            self.assertNotIn(["systemctl", "enable", *ENABLE_UNIT_NAMES], commands)
             self.assertIn(["systemctl", "start", *START_ORDER], commands)
             self.assertIn(
                 "Install complete. Services were started. Run 'pihole-ai enable' to start at boot.",
@@ -297,7 +298,7 @@ class ApplianceLifecycleIntegrationTests(unittest.TestCase):
                 )
 
             commands = [command for command, _kwargs in harness.commands]
-            self.assertNotIn(["systemctl", "enable", *SERVICE_NAMES], commands)
+            self.assertNotIn(["systemctl", "enable", *ENABLE_UNIT_NAMES], commands)
             self.assertNotIn(["systemctl", "start", *START_ORDER], commands)
             self.assertIn(
                 "Install complete. Run 'pihole-ai enable' and 'pihole-ai start' when ready.",
@@ -421,8 +422,8 @@ class ApplianceLifecycleIntegrationTests(unittest.TestCase):
                 service_module.service_action("restart")
 
             commands = [command for command, _kwargs in harness.commands]
-            self.assertEqual(commands[0], ["systemctl", "enable", *SERVICE_NAMES])
-            self.assertEqual(commands[1], ["systemctl", "disable", *SERVICE_NAMES])
+            self.assertEqual(commands[0], ["systemctl", "enable", *ENABLE_UNIT_NAMES])
+            self.assertEqual(commands[1], ["systemctl", "disable", *ENABLE_UNIT_NAMES])
             self.assertEqual(commands[2:5], [["systemctl", "start", name] for name in START_ORDER])
             self.assertEqual(commands[5:8], [["systemctl", "stop", name] for name in STOP_ORDER])
             self.assertEqual(commands[8], ["systemctl", "restart", *SERVICE_NAMES])

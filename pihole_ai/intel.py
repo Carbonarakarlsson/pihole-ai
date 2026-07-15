@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 import fcntl
 import json
+import os
 import time
 import uuid
 from contextlib import contextmanager
@@ -51,7 +52,12 @@ BLOCKLIST_IPS = {
     "127.0.0.1",
     "::",
 }
-LOCK_PATH = Path("/tmp/pihole-ai-intel-update.lock")
+LOCK_PATH = Path(
+    os.getenv(
+        "PIHOLE_AI_INTEL_LOCK_PATH",
+        "/run/pihole-ai/intel-update.lock",
+    )
+)
 SOURCE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 
 
@@ -324,7 +330,19 @@ def update_sources(
     *,
     all_sources: bool = False,
     dry_run: bool = False,
+    automatic: bool = False,
 ) -> list[FeedUpdateResult]:
+    if automatic and not settings.intel_auto_update_enabled:
+        return [
+            FeedUpdateResult(
+                source_id="automatic",
+                success=True,
+                changed=False,
+                error_code="intel.auto_update.disabled",
+                error_summary="Automatic threat-intelligence updates are disabled.",
+                warnings=["auto_update_disabled"],
+            )
+        ]
     with intel_update_lock():
         if source_id:
             return [update_source(source_id, dry_run=dry_run)]

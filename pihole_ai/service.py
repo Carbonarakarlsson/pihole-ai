@@ -72,6 +72,10 @@ MANAGED_UNIT_NAMES = [
     *SERVICE_NAMES,
     *INTEL_UNIT_NAMES,
 ]
+ENABLE_UNIT_NAMES = [
+    *SERVICE_NAMES,
+    INTEL_UPDATE_TIMER_NAME,
+]
 START_ORDER = SERVICE_NAMES
 STOP_ORDER = list(reversed(SERVICE_NAMES))
 
@@ -334,6 +338,7 @@ def generate_unit_file(
     read_only_paths = "/etc/pihole" if service.name == "pihole-ai-collector.service" else ""
     hardening = [
         "TimeoutStopSec=30",
+        "TimeoutStartSec=300",
         "NoNewPrivileges=true",
         "PrivateTmp=true",
         "PrivateDevices=true",
@@ -405,6 +410,7 @@ def generate_timer_file(
             "[Timer]",
             "OnBootSec=5min",
             f"OnUnitActiveSec={interval_seconds}",
+            "RandomizedDelaySec=15min",
             "Persistent=true",
             f"Unit={service_name}",
             "",
@@ -1683,7 +1689,7 @@ def service_install(
 
         if enable_services:
             _run_systemctl(
-                ["enable", *SERVICE_NAMES],
+                ["enable", *ENABLE_UNIT_NAMES],
                 dry_run=dry_run,
             )
             actions.append("enabled services")
@@ -1987,7 +1993,7 @@ def service_enable(
 
     with lifecycle_lock("enable", layout=plan.layout, dry_run=dry_run):
         _run_systemctl(
-            ["enable", *SERVICE_NAMES],
+            ["enable", *ENABLE_UNIT_NAMES],
             dry_run=dry_run,
         )
 
@@ -2009,7 +2015,7 @@ def service_disable(
 
     with lifecycle_lock("disable", layout=plan.layout, dry_run=dry_run):
         _run_systemctl(
-            ["disable", *SERVICE_NAMES],
+            ["disable", *ENABLE_UNIT_NAMES],
             dry_run=dry_run,
         )
 

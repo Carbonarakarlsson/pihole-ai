@@ -1407,6 +1407,7 @@ def main(
                     source_id=args.source or None,
                     all_sources=args.all,
                     dry_run=args.dry_run,
+                    automatic=bool(args.non_interactive and args.all and not args.source),
                 )
             except RuntimeError as exc:
                 print(str(exc))
