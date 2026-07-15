@@ -1,0 +1,4 @@
+# PiHole-AI controlled field-test feed
+fieldtest-risk-one.example
+fieldtest-risk-two.example
+fieldtest-risk-two.example
