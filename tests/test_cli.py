@@ -12,6 +12,7 @@ sys.modules.setdefault(
 )
 
 from pihole_ai import cli
+from pihole_ai.intel_models import FeedUpdateResult
 
 
 class CLITests(unittest.TestCase):
@@ -492,7 +493,90 @@ class CLITests(unittest.TestCase):
             search="bad",
             source="test-feed",
             category="malware",
+            generation="",
         )
+
+    def test_intel_update_dry_run_output_does_not_claim_activation(self) -> None:
+        result = FeedUpdateResult(
+            source_id="feed-a",
+            success=True,
+            changed=True,
+            accepted_entries=2,
+            dry_run=True,
+            would_activate=True,
+            proposed_generation_id="gen_preview",
+            current_active_generation="gen_current",
+        )
+        with patch("pihole_ai.intel.update_sources", return_value=[result]), \
+             patch("sys.stdout", io.StringIO()) as stdout:
+            exit_code = cli.main(["intel", "update", "--source", "feed-a", "--dry-run"])
+
+        self.assertEqual(exit_code, 0)
+        output = stdout.getvalue()
+        self.assertIn("would activate generation gen_preview", output)
+        self.assertNotIn("active=gen_preview", output)
+
+    def test_intel_confidence_help_documents_range_and_units(self) -> None:
+        with patch("sys.stdout", io.StringIO()) as stdout:
+            with self.assertRaises(SystemExit):
+                cli.main(["intel", "source", "add", "--help"])
+
+        self.assertIn("Source confidence percentage, 0-100.", stdout.getvalue())
+
+    def test_intel_confidence_rejects_out_of_range_values(self) -> None:
+        with patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            cli.main(
+                [
+                    "intel",
+                    "source",
+                    "add",
+                    "feed-a",
+                    "--name",
+                    "Feed A",
+                    "--url",
+                    "https://feeds.example/a.txt",
+                    "--confidence",
+                    "101",
+                ]
+            )
+
+    def test_intel_source_list_read_only_does_not_migrate(self) -> None:
+        with patch("core.db.migrate_database") as migrate_database, \
+             patch("core.db.list_intel_sources", return_value=[]), \
+             patch("sys.stdout", io.StringIO()):
+            exit_code = cli.main(["intel", "source", "list"])
+
+        self.assertEqual(exit_code, 0)
+        migrate_database.assert_not_called()
+
+    def test_read_only_cli_commands_do_not_migrate(self) -> None:
+        cases = [
+            (["intel", "source", "show", "feed-a"], "core.db.get_intel_source", {"source_id": "feed-a"}),
+            (["intel", "status"], "pihole_ai.intel.source_status", []),
+            (["intel", "audit"], "core.db.list_intel_update_audit", []),
+            (["intel", "list"], "pihole_ai.intel.print_intel", 0),
+            (["explain", "example.com"], "pihole_ai.explain.print_explanation", None),
+        ]
+        for command, target, return_value in cases:
+            with self.subTest(command=command), \
+                 patch("core.db.migrate_database") as migrate_database, \
+                 patch(target, return_value=return_value), \
+                 patch("sys.stdout", io.StringIO()):
+                exit_code = cli.main(command)
+
+            self.assertEqual(exit_code, 0)
+            migrate_database.assert_not_called()
+
+    def test_intel_read_only_outdated_schema_prints_migration_guidance(self) -> None:
+        from core.db import ReadOnlyMigrationRequired
+
+        with patch("core.db.list_intel_sources", side_effect=ReadOnlyMigrationRequired(5)), \
+             patch("sys.stdout", io.StringIO()) as stdout:
+            exit_code = cli.main(["intel", "source", "list"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("migration required", stdout.getvalue())
+        self.assertIn("sudo pihole-ai db migrate", stdout.getvalue())
 
     def test_rules_list_dispatches_with_options(self) -> None:
         with patch("pihole_ai.rules.print_rules", return_value=1) as print_rules, \

@@ -11,6 +11,8 @@ from core import migrations
 from core.migrations import IncompatibleSchema
 from engine.decision_engine import DecisionEngine
 from engine.evidence import EvidenceCollection, EvidenceItem, EvidencePolarity
+from pihole_ai.intel import update_source
+from pihole_ai.intel_feeds import FetchResult
 from pihole_ai.intel_models import FeedSource
 
 
@@ -740,6 +742,89 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(restored, "gen_old")
         self.assertIsNotNone(db.get_active_threat_intel("old.example"))
         self.assertIsNone(db.get_active_threat_intel("new.example"))
+
+    def test_threat_intel_update_dry_run_does_not_mutate_generation_state_or_audit(self) -> None:
+        db.save_intel_source(
+            FeedSource(
+                source_id="feed-a",
+                name="Feed A",
+                url="https://feeds.example/a.txt",
+            )
+        )
+
+        with patch(
+            "pihole_ai.intel.fetch_feed",
+            return_value=FetchResult(
+                status_code=200,
+                content=b"bad.example\nother.example\n",
+                etag="etag-a",
+                last_modified="Mon, 01 Jan 2024 00:00:00 GMT",
+                downloaded_bytes=26,
+            ),
+        ):
+            result = update_source("feed-a", dry_run=True)
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.dry_run)
+        self.assertTrue(result.would_activate)
+        self.assertEqual(result.active_generation, "")
+        self.assertTrue(result.proposed_generation_id.startswith("gen_"))
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generations")["count"],
+            0,
+        )
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generation_entries")["count"],
+            0,
+        )
+        state = db.get_intel_source_state("feed-a")
+        self.assertEqual(state["active_generation"], "")
+        self.assertEqual(state["etag"], "")
+        self.assertEqual(db.list_intel_update_audit(), [])
+
+    def test_identical_successful_update_does_not_activate_duplicate_generation(self) -> None:
+        content = b"bad.example\nother.example\n"
+        db.save_intel_source(
+            FeedSource(
+                source_id="feed-a",
+                name="Feed A",
+                url="https://feeds.example/a.txt",
+            )
+        )
+
+        with patch(
+            "pihole_ai.intel.fetch_feed",
+            return_value=FetchResult(
+                status_code=200,
+                content=content,
+                etag="etag-a",
+                downloaded_bytes=len(content),
+            ),
+        ):
+            first = update_source("feed-a")
+        with patch(
+            "pihole_ai.intel.fetch_feed",
+            return_value=FetchResult(
+                status_code=200,
+                content=content,
+                etag="etag-b",
+                downloaded_bytes=len(content),
+            ),
+        ):
+            second = update_source("feed-a")
+
+        self.assertTrue(first.changed)
+        self.assertFalse(second.changed)
+        self.assertTrue(second.not_modified)
+        self.assertEqual(second.active_generation, first.active_generation)
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generations")["count"],
+            1,
+        )
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generation_entries")["count"],
+            2,
+        )
 
 
 class DatabaseMigrationTests(unittest.TestCase):

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from pihole_ai.intel import (
     add_source,
+    get_intel_rows,
     intel_update_lock,
     import_hosts_file,
     normalize_domain,
@@ -84,10 +85,18 @@ class ThreatIntelTests(unittest.TestCase):
     def test_print_intel_outputs_rows(self) -> None:
         rows = [
             {
-                "domain": "bad.example",
-                "source": "test-feed",
-                "category": "malware",
-                "confidence": 90,
+                "source_type": "manual",
+                "source_id": "test-feed",
+                "generation_id": "",
+                "active": True,
+                "entries": [
+                    {
+                        "domain": "bad.example",
+                        "source": "test-feed",
+                        "category": "malware",
+                        "confidence": 90,
+                    }
+                ],
             }
         ]
 
@@ -97,6 +106,32 @@ class ThreatIntelTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
         self.assertIn("bad.example", stdout.getvalue())
+
+    def test_get_intel_rows_includes_managed_active_generation_entries(self) -> None:
+        with patch(
+            "pihole_ai.intel.get_intel_source",
+            return_value={"source_id": "managed-feed"},
+        ), patch(
+            "pihole_ai.intel.list_managed_threat_intel_entries",
+            return_value=[
+                {
+                    "domain": "bad.example",
+                    "source_id": "managed-feed",
+                    "source_name": "Managed Feed",
+                    "generation_id": "gen_active",
+                    "active": 1,
+                    "category": "malware",
+                    "confidence": 90,
+                }
+            ],
+        ):
+            rows = get_intel_rows(source="managed-feed")
+
+        self.assertEqual(rows[0]["source_type"], "managed")
+        self.assertEqual(rows[0]["source_id"], "managed-feed")
+        self.assertEqual(rows[0]["generation_id"], "gen_active")
+        self.assertTrue(rows[0]["active"])
+        self.assertEqual(rows[0]["entries"][0]["domain"], "bad.example")
 
     def test_parse_feed_deduplicates_and_rejects_invalid_domains(self) -> None:
         source = FeedSource(

@@ -32,6 +32,7 @@ from typing import Any, Iterator
 from core.config import settings
 from core.migrations import (
     LATEST_SUPPORTED_SCHEMA_VERSION,
+    current_schema_version,
     migrate_database,
     open_database_readonly,
 )
@@ -45,11 +46,22 @@ from pihole_ai.intel_models import FeedSource, FeedState, FeedStatus, FeedUpdate
 
 DATABASE_PATH: Path | None = None
 _initialized_database_paths: set[Path] = set()
+_readonly_database_mode = False
 DEFAULT_DECISION_HISTORY_LIMIT = 20
 MAX_DECISION_HISTORY_LIMIT = 100
 DECISION_ID_PREFIX = "dec_"
 LEGACY_INTEL_SOURCE_ID = "legacy-manual"
 LEGACY_INTEL_GENERATION_ID = "gen_legacy_manual"
+
+
+class ReadOnlyMigrationRequired(RuntimeError):
+    """
+    Raised when a read-only command sees a database that needs migration.
+    """
+
+    def __init__(self, current_version: int) -> None:
+        self.current_version = current_version
+        super().__init__("migration required")
 
 
 def _database_path() -> Path:
@@ -103,6 +115,14 @@ def get_connection() -> sqlite3.Connection:
     """
 
     database_path = _database_path()
+    if _readonly_database_mode:
+        conn = open_database_readonly(database_path)
+        version = current_schema_version(conn)
+        if version < LATEST_SUPPORTED_SCHEMA_VERSION:
+            conn.close()
+            raise ReadOnlyMigrationRequired(version)
+        return conn
+
     _ensure_database_initialized(database_path)
     database_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -136,6 +156,21 @@ def transaction() -> Iterator[sqlite3.Connection]:
 
     finally:
         conn.close()
+
+
+@contextmanager
+def readonly_database() -> Iterator[None]:
+    """
+    Force query helpers to use read-only SQLite connections without migration.
+    """
+
+    global _readonly_database_mode
+    previous = _readonly_database_mode
+    _readonly_database_mode = True
+    try:
+        yield
+    finally:
+        _readonly_database_mode = previous
 
 
 # ============================================================================
@@ -192,6 +227,24 @@ def query_all(
         return cursor.fetchall()
 
 
+def query_all_readonly(
+    sql: str,
+    parameters: tuple[Any, ...] = (),
+    database_path: str | Path | None = None,
+) -> list[sqlite3.Row]:
+    """
+    Execute a SELECT query against an existing database without mutation.
+    """
+
+    path = Path(database_path) if database_path is not None else _database_path()
+    with closing(open_database_readonly(path)) as conn:
+        version = current_schema_version(conn)
+        if version < LATEST_SUPPORTED_SCHEMA_VERSION:
+            raise ReadOnlyMigrationRequired(version)
+        cursor = conn.execute(sql, parameters)
+        return cursor.fetchall()
+
+
 def query_one(
     sql: str,
     parameters: tuple[Any, ...] = (),
@@ -218,6 +271,9 @@ def query_one_readonly(
 
     path = Path(database_path) if database_path is not None else _database_path()
     with closing(open_database_readonly(path)) as conn:
+        version = current_schema_version(conn)
+        if version < LATEST_SUPPORTED_SCHEMA_VERSION:
+            raise ReadOnlyMigrationRequired(version)
         cursor = conn.execute(sql, parameters)
         return cursor.fetchone()
 
@@ -2439,6 +2495,64 @@ def get_active_threat_intel(domain: str) -> sqlite3.Row | None:
         LIMIT 1
         """,
         (domain,),
+    )
+
+
+def list_managed_threat_intel_entries(
+    *,
+    limit: int = 100,
+    search: str = "",
+    source_id: str = "",
+    category: str = "",
+    generation_id: str = "",
+) -> list[sqlite3.Row]:
+    where = ["s.source_id != ?"]
+    params: list[Any] = [LEGACY_INTEL_SOURCE_ID]
+
+    if source_id:
+        where.append("s.source_id = ?")
+        params.append(source_id)
+
+    if generation_id:
+        where.append("g.generation_id = ?")
+        params.append(generation_id)
+    else:
+        where.append("g.status = 'active'")
+        where.append("st.active_generation = g.generation_id")
+
+    if search:
+        where.append("e.domain LIKE ?")
+        params.append(f"%{search}%")
+
+    if category:
+        where.append("e.category = ?")
+        params.append(category)
+
+    return query_all(
+        f"""
+        SELECT
+            e.domain,
+            e.source_id,
+            s.name AS source_name,
+            e.generation_id,
+            g.status AS generation_status,
+            CASE WHEN st.active_generation = e.generation_id THEN 1 ELSE 0 END AS active,
+            e.category,
+            e.confidence,
+            e.first_seen,
+            e.last_seen
+        FROM threat_intel_generation_entries e
+        JOIN threat_intel_generations g
+            ON g.generation_id = e.generation_id
+        JOIN threat_intel_sources s
+            ON s.source_id = e.source_id
+        LEFT JOIN threat_intel_source_state st
+            ON st.source_id = s.source_id
+        WHERE {" AND ".join(where)}
+        ORDER BY e.last_seen DESC, e.domain ASC
+        LIMIT ?
+        """,
+        tuple(params + [limit]),
     )
 
 

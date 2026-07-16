@@ -9,6 +9,21 @@ import argparse
 from pihole_ai.version import get_version
 
 
+def confidence_percentage(value: str) -> int:
+    try:
+        confidence = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer percentage, 0-100") from exc
+    if confidence < 0 or confidence > 100:
+        raise argparse.ArgumentTypeError("must be between 0 and 100")
+    return confidence
+
+
+def print_migration_required() -> None:
+    print("migration required")
+    print("run: sudo pihole-ai db migrate")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """
     Build the PiHole-AI CLI parser.
@@ -601,9 +616,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     intel_import.add_argument(
         "--confidence",
-        type=int,
+        type=confidence_percentage,
         default=90,
-        help="Confidence assigned to imported indicators.",
+        metavar="INTEGER",
+        help="Source confidence percentage, 0-100.",
     )
 
     intel_list = intel_commands.add_parser(
@@ -632,6 +648,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter by category.",
     )
     intel_list.add_argument(
+        "--generation",
+        default="",
+        help="Inspect one managed generation ID.",
+    )
+    intel_list.add_argument(
         "--json",
         action="store_true",
         help="Print rows as JSON.",
@@ -656,7 +677,13 @@ def build_parser() -> argparse.ArgumentParser:
     intel_source_add.add_argument("--url", required=True)
     intel_source_add.add_argument("--format", choices=["hosts", "domains", "text"], default="hosts")
     intel_source_add.add_argument("--category", default="malware")
-    intel_source_add.add_argument("--confidence", type=int, default=90)
+    intel_source_add.add_argument(
+        "--confidence",
+        type=confidence_percentage,
+        default=90,
+        metavar="INTEGER",
+        help="Source confidence percentage, 0-100.",
+    )
     intel_source_add.add_argument("--disabled", action="store_true")
     intel_source_add.add_argument("--allow-http", action="store_true")
     intel_source_add.add_argument("--json", action="store_true", help="Print JSON.")
@@ -1063,15 +1090,21 @@ def main(
             return 0
 
     if args.command == "explain":
+        from core.db import ReadOnlyMigrationRequired, readonly_database
         from pihole_ai.explain import print_explanation
 
-        print_explanation(
-            domain=args.domain,
-            as_json=args.json,
-            history=args.history,
-            decision_id=args.decision,
-            compare=tuple(args.compare) if args.compare else None,
-        )
+        try:
+            with readonly_database():
+                print_explanation(
+                    domain=args.domain,
+                    as_json=args.json,
+                    history=args.history,
+                    decision_id=args.decision,
+                    compare=tuple(args.compare) if args.compare else None,
+                )
+        except ReadOnlyMigrationRequired:
+            print_migration_required()
+            return 1
         return 0
 
     if args.command == "feedback":
@@ -1308,9 +1341,11 @@ def main(
         import json
 
         from core.db import (
+            ReadOnlyMigrationRequired,
             get_intel_source,
             list_intel_sources,
             list_intel_update_audit,
+            readonly_database,
             remove_intel_source,
             set_intel_source_enabled,
         )
@@ -1337,20 +1372,43 @@ def main(
             return 0
 
         if args.intel_command == "list":
-            if args.json:
-                print(json.dumps(get_intel_rows(args.limit, args.q, args.source, args.category), sort_keys=True))
-            else:
-                print_intel(
-                    limit=args.limit,
-                    search=args.q,
-                    source=args.source,
-                    category=args.category,
-                )
+            try:
+                with readonly_database():
+                    if args.json:
+                        try:
+                            rows = get_intel_rows(
+                                args.limit,
+                                args.q,
+                                args.source,
+                                args.category,
+                                args.generation,
+                            )
+                        except ValueError as exc:
+                            print(str(exc))
+                            return 1
+                        print(json.dumps(rows, sort_keys=True))
+                    else:
+                        printed = print_intel(
+                            limit=args.limit,
+                            search=args.q,
+                            source=args.source,
+                            category=args.category,
+                            generation=args.generation,
+                        )
+                        return 1 if printed < 0 else 0
+            except ReadOnlyMigrationRequired:
+                print_migration_required()
+                return 1
             return 0
 
         if args.intel_command == "source":
             if args.intel_source_command == "list":
-                rows = list_intel_sources()
+                try:
+                    with readonly_database():
+                        rows = list_intel_sources()
+                except ReadOnlyMigrationRequired:
+                    print_migration_required()
+                    return 1
                 if args.json:
                     print(json.dumps(rows, sort_keys=True))
                 else:
@@ -1359,7 +1417,12 @@ def main(
                         print(f"{row['source_id']} {enabled} {row['format']} {row['url']}")
                 return 0
             if args.intel_source_command == "show":
-                row = get_intel_source(args.source_id)
+                try:
+                    with readonly_database():
+                        row = get_intel_source(args.source_id)
+                except ReadOnlyMigrationRequired:
+                    print_migration_required()
+                    return 1
                 if row is None:
                     print("Feed source not found.")
                     return 1
@@ -1418,14 +1481,26 @@ def main(
             else:
                 for result in results:
                     status = "ok" if result.success else result.error_code
-                    print(
-                        f"{result.source_id}: {status} changed={result.changed} "
-                        f"accepted={result.accepted_entries} active={result.active_generation}"
-                    )
+                    if result.dry_run and result.would_activate:
+                        print(
+                            f"{result.source_id}: {status} dry-run changed={result.changed} "
+                            f"accepted={result.accepted_entries} would activate generation "
+                            f"{result.proposed_generation_id} current={result.current_active_generation}"
+                        )
+                    else:
+                        print(
+                            f"{result.source_id}: {status} changed={result.changed} "
+                            f"accepted={result.accepted_entries} active={result.active_generation}"
+                        )
             return 0 if all(result.success for result in results) else 1
 
         if args.intel_command == "status":
-            rows = source_status()
+            try:
+                with readonly_database():
+                    rows = source_status()
+            except ReadOnlyMigrationRequired:
+                print_migration_required()
+                return 1
             if args.json:
                 print(json.dumps(rows, sort_keys=True))
             else:
@@ -1454,7 +1529,12 @@ def main(
             return 0
 
         if args.intel_command == "audit":
-            rows = list_intel_update_audit(limit=args.limit, source_id=args.source)
+            try:
+                with readonly_database():
+                    rows = list_intel_update_audit(limit=args.limit, source_id=args.source)
+            except ReadOnlyMigrationRequired:
+                print_migration_required()
+                return 1
             if args.json:
                 print(json.dumps(rows, sort_keys=True))
             else:

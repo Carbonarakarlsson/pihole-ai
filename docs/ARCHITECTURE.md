@@ -104,7 +104,7 @@ diagnostics should be reviewed.
 
 ## Lifecycle
 
-`pihole_ai.service` owns appliance lifecycle APIs. It builds install plans, performs preflight checks, writes managed systemd units, handles dedicated service identity, takes lifecycle locks, and preserves configuration/data by default. The managed systemd set includes the collector, engine, dashboard, and threat-intelligence update service/timer units.
+`pihole_ai.service` owns appliance lifecycle APIs. It builds install plans, performs preflight checks, writes managed systemd units, handles dedicated service identity, takes lifecycle locks, and preserves configuration/data by default. The managed systemd set includes the collector, engine, dashboard, and threat-intelligence update service/timer units. Enable/disable lifecycle commands include the updater timer, while runtime start/stop/restart commands remain scoped to the three long-running daemons. Timer-triggered unattended updates honor `PIHOLE_AI_INTEL_AUTO_UPDATE_ENABLED`.
 
 Mutating lifecycle actions stay in the CLI. The dashboard does not perform privileged installation or service management without sudo guidance.
 

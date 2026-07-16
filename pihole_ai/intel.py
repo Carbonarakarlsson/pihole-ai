@@ -23,6 +23,7 @@ from core.db import (
     list_intel_source_status,
     list_intel_sources,
     list_intel_update_audit,
+    list_managed_threat_intel_entries,
     mark_intel_update_failed,
     mark_intel_update_not_modified,
     record_intel_update_audit,
@@ -208,6 +209,9 @@ def add_source(
     source_id = source_id.strip().lower()
     if not SOURCE_ID_PATTERN.match(source_id):
         raise ValueError("invalid source id")
+    confidence = int(confidence)
+    if confidence < 0 or confidence > 100:
+        raise ValueError("confidence must be between 0 and 100")
     allow_http = settings.intel_allow_http if allow_http is None else allow_http
     validate_feed_url(url, allow_http=allow_http)
     now = time.time()
@@ -218,7 +222,7 @@ def add_source(
         format=feed_format,
         enabled=enabled,
         category=category,
-        confidence=max(0, min(int(confidence), 100)),
+        confidence=confidence,
         refresh_interval_seconds=settings.intel_update_interval_seconds,
         stale_after_seconds=settings.intel_stale_after_seconds,
         timeout_seconds=settings.intel_http_timeout_seconds,
@@ -286,9 +290,37 @@ def update_source(
             previous_count=int(state.get("entry_count") or 0),
         )
         sha = content_sha256(fetched.content)
-        generation_id = f"gen_{uuid.uuid4().hex}"
         previous = str(state.get("active_generation") or "")
-        active = generation_id
+        if previous and str(state.get("content_sha256") or "") == sha:
+            result = FeedUpdateResult(
+                source_id=source_id,
+                success=True,
+                changed=False,
+                not_modified=True,
+                downloaded_bytes=fetched.downloaded_bytes,
+                parsed_entries=parsed.parsed_entries,
+                accepted_entries=len(parsed.accepted_entries),
+                rejected_entries=parsed.rejected_count,
+                duplicate_entries=parsed.duplicate_count,
+                previous_generation=previous,
+                active_generation=previous,
+                current_active_generation=previous,
+                duration_ms=int((time.time() - started) * 1000),
+                warnings=warnings + parsed.warnings,
+            )
+            if not dry_run:
+                mark_intel_update_not_modified(source_id, fetched.etag, fetched.last_modified)
+                record_intel_update_audit(result, http_status=fetched.status_code)
+            else:
+                result = FeedUpdateResult(
+                    **{
+                        **result.to_dict(),
+                        "dry_run": True,
+                    }
+                )
+            return result
+        generation_id = f"gen_{uuid.uuid4().hex}"
+        active = "" if dry_run else generation_id
         if not dry_run:
             previous, active = activate_intel_generation(
                 source_id=source_id,
@@ -311,6 +343,10 @@ def update_source(
             duplicate_entries=parsed.duplicate_count,
             previous_generation=previous,
             active_generation=active,
+            dry_run=dry_run,
+            would_activate=dry_run,
+            proposed_generation_id=generation_id if dry_run else "",
+            current_active_generation=previous,
             duration_ms=int((time.time() - started) * 1000),
             warnings=warnings + parsed.warnings,
         )
@@ -391,20 +427,68 @@ def get_intel_rows(
     search: str = "",
     source: str = "",
     category: str = "",
+    generation: str = "",
 ) -> list[dict[str, Any]]:
     """
-    Return threat-intel rows as dictionaries.
+    Return threat-intel groups as dictionaries.
     """
 
-    return [
-        dict(row)
-        for row in list_threat_intel(
-            limit=limit,
-            search=search,
-            source=source,
-            category=category,
+    groups: list[dict[str, Any]] = []
+    managed_source = get_intel_source(source) if source else None
+    legacy_rows = []
+    if not generation and managed_source is None:
+        legacy_rows = [
+            dict(row)
+            for row in list_threat_intel(
+                limit=limit,
+                search=search,
+                source=source,
+                category=category,
+            )
+        ]
+    if source and managed_source is None and not legacy_rows:
+        raise ValueError(f"Unknown threat-intel source: {source}")
+    legacy_by_source: dict[str, list[dict[str, Any]]] = {}
+    for row in legacy_rows:
+        legacy_by_source.setdefault(str(row["source"]), []).append(row)
+    for source_id, entries in legacy_by_source.items():
+        groups.append(
+            {
+                "source_type": "manual",
+                "source_id": source_id,
+                "generation_id": "",
+                "active": True,
+                "entries": entries,
+            }
         )
-    ]
+
+    managed_rows = []
+    if not source or managed_source is not None:
+        managed_rows = [
+            dict(row)
+            for row in list_managed_threat_intel_entries(
+                limit=limit,
+                search=search,
+                source_id=source if managed_source is not None else "",
+                category=category,
+                generation_id=generation,
+            )
+        ]
+    managed_by_generation: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in managed_rows:
+        key = (str(row["source_id"]), str(row["generation_id"]))
+        managed_by_generation.setdefault(key, []).append(row)
+    for (source_id, generation_id), entries in managed_by_generation.items():
+        groups.append(
+            {
+                "source_type": "managed",
+                "source_id": source_id,
+                "generation_id": generation_id,
+                "active": bool(entries[0].get("active")),
+                "entries": entries,
+            }
+        )
+    return groups
 
 
 def print_intel(
@@ -412,26 +496,47 @@ def print_intel(
     search: str = "",
     source: str = "",
     category: str = "",
+    generation: str = "",
 ) -> int:
     """
     Print threat-intel rows and return the number printed.
     """
 
-    rows = get_intel_rows(
-        limit=limit,
-        search=search,
-        source=source,
-        category=category,
-    )
+    try:
+        rows = get_intel_rows(
+            limit=limit,
+            search=search,
+            source=source,
+            category=category,
+            generation=generation,
+        )
+    except ValueError as exc:
+        print(str(exc))
+        return -1
 
+    if not rows and source:
+        print(f"No active threat-intel entries found for source {source}.")
+        return 0
     if not rows:
         print("No threat-intel rows found.")
         return 0
 
-    for row in rows:
-        print(
-            f"{row['domain']} source={row['source']} "
-            f"category={row['category']} confidence={row['confidence']}"
-        )
+    count = 0
+    for group in rows:
+        entries = group["entries"]
+        if not entries:
+            continue
+        for row in entries:
+            generation_text = (
+                f" generation={group['generation_id']}"
+                if group["generation_id"]
+                else ""
+            )
+            print(
+                f"{row['domain']} source={group['source_id']}"
+                f"{generation_text} category={row['category']} "
+                f"confidence={row['confidence']}"
+            )
+            count += 1
 
-    return len(rows)
+    return count

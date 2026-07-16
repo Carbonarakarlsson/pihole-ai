@@ -80,6 +80,10 @@ class FeedUpdateResult:
     duplicate_entries: int = 0
     previous_generation: str = ""
     active_generation: str = ""
+    dry_run: bool = False
+    would_activate: bool = False
+    proposed_generation_id: str = ""
+    current_active_generation: str = ""
     duration_ms: int = 0
     warnings: list[str] = field(default_factory=list)
     error_code: str = ""
