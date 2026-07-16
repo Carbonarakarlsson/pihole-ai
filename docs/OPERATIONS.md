@@ -102,6 +102,24 @@ Back up before upgrade or purge:
 
 PiHole-AI does not currently include a first-class backup/restore command.
 
+## Threat-Intelligence Source Edits
+
+Use supported CLI edits instead of direct SQLite changes:
+
+```bash
+pihole-ai intel source update SOURCE_ID --url https://example.test/feed.txt
+```
+
+The command preserves the source ID, active generation, prior generations,
+entries, and audit history. It does not fetch content or activate a new
+generation. URL and fetch-setting changes clear ETag/Last-Modified validators;
+display-only changes preserve validators. Run `pihole-ai intel update --source
+SOURCE_ID` separately when ready.
+
+For deterministic field tests, prefer immutable URLs such as commit-pinned raw
+files. Branch-based raw URLs can be cached upstream and may not reflect the
+expected fixture generation immediately.
+
 ## Diagnostics
 
 ```bash

@@ -31,6 +31,9 @@
   history for fresh v0.5 decisions.
 - Threat-intelligence classification now reads enabled sources through active
   feed generations while preserving manual import compatibility.
+- Managed feed sources can now be edited in place with
+  `pihole-ai intel source update`, preserving active/prior generations and
+  resetting validators only for URL or fetch-setting changes.
 
 ### Fixed
 

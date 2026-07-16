@@ -92,6 +92,16 @@ pihole-ai intel source add SOURCE_ID --name NAME --url URL
                             [--format hosts|domains|text]
                             [--category NAME] [--confidence 0-100]
                             [--disabled] [--allow-http]
+pihole-ai intel source update SOURCE_ID [--name NAME] [--url URL]
+                               [--format hosts|domains|text]
+                               [--category NAME] [--confidence 0-100]
+                               [--refresh-interval-seconds N]
+                               [--stale-after-seconds N]
+                               [--timeout-seconds N]
+                               [--max-download-bytes N]
+                               [--expected-content-type MIME]
+                               [--allow-http|--disallow-http]
+                               [--enable|--disable] [--json]
 pihole-ai intel source remove SOURCE_ID
 pihole-ai intel source enable SOURCE_ID
 pihole-ai intel source disable SOURCE_ID
@@ -119,6 +129,17 @@ pihole-ai learn [--limit N] [--min-score N] [--no-audit]
 - `db status`/`db migrate`: `2` incompatible schema, `3` access error, `1`
   migration failure.
 - lifecycle commands: `1` for preflight or system command failures.
+
+## Threat-Intel Source Updates
+
+`intel source update` is a partial metadata edit. Only provided fields change.
+It preserves the source ID, active generation, previous generations, entries,
+update audit history, and immutable decisions. It does not fetch content,
+activate a generation, or delete entries.
+
+Changing `--url` or fetch-related settings clears ETag and Last-Modified
+validators so the next explicit `intel update` refetches safely. Display-only
+changes such as `--name` preserve validators and the active source state.
 
 ## Security-Sensitive Input
 

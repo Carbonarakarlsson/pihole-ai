@@ -12,6 +12,7 @@ from pihole_ai.intel import (
     normalize_domain,
     parse_hosts_domains,
     print_intel,
+    update_source_config,
     update_sources,
 )
 from pihole_ai.intel_feeds import (
@@ -182,6 +183,95 @@ class ThreatIntelTests(unittest.TestCase):
         self.assertEqual(source.source_id, "malware-feed")
         self.assertEqual(source.url, "https://feeds.example/hosts.txt")
         save_intel_source.assert_called_once()
+
+    def test_update_source_config_validates_and_persists_partial_changes(self) -> None:
+        with patch(
+            "pihole_ai.intel.get_intel_source",
+            return_value={"source_id": "feed-a", "url": "https://feeds.example/a.txt", "allow_http": False},
+        ), patch("pihole_ai.intel.validate_feed_url") as validate_url, \
+             patch("pihole_ai.intel.update_threat_intel_source", return_value={"source_id": "feed-a"}) as update_source:
+            result = update_source_config(
+                "feed-a",
+                {
+                    "url": "https://feeds.example/b.txt",
+                    "confidence": 0,
+                    "timeout_seconds": 10,
+                },
+            )
+
+        self.assertEqual(result["source_id"], "feed-a")
+        validate_url.assert_called_once_with("https://feeds.example/b.txt", allow_http=False)
+        update_source.assert_called_once_with(
+            "feed-a",
+            {
+                "url": "https://feeds.example/b.txt",
+                "confidence": 0,
+                "timeout_seconds": 10,
+            },
+        )
+
+    def test_update_source_config_accepts_confidence_100(self) -> None:
+        with patch(
+            "pihole_ai.intel.update_threat_intel_source",
+            return_value={"source_id": "feed-a"},
+        ) as update_source:
+            update_source_config("feed-a", {"confidence": 100})
+
+        update_source.assert_called_once_with("feed-a", {"confidence": 100})
+
+    def test_update_source_config_rejects_invalid_values(self) -> None:
+        invalid_changes = [
+            {"confidence": -1},
+            {"confidence": 101},
+            {"refresh_interval_seconds": 0},
+            {"max_download_bytes": -1},
+            {"format": "csv"},
+        ]
+        for changes in invalid_changes:
+            with self.subTest(changes=changes):
+                with self.assertRaises(ValueError):
+                    update_source_config("feed-a", changes)
+
+    def test_update_source_config_rejects_url_credentials_and_http_by_default(self) -> None:
+        for url in (
+            "https://user:pass@feeds.example/a.txt",
+            "http://feeds.example/a.txt",
+        ):
+            with self.subTest(url=url):
+                with patch(
+                    "pihole_ai.intel.get_intel_source",
+                    return_value={
+                        "source_id": "feed-a",
+                        "url": "https://feeds.example/a.txt",
+                        "allow_http": False,
+                    },
+                ), self.assertRaises(FeedError):
+                    update_source_config("feed-a", {"url": url})
+
+    def test_update_source_config_allows_http_when_explicitly_enabled(self) -> None:
+        with patch(
+            "pihole_ai.intel.get_intel_source",
+            return_value={
+                "source_id": "feed-a",
+                "url": "https://feeds.example/a.txt",
+                "allow_http": False,
+            },
+        ), patch(
+            "pihole_ai.intel.validate_feed_url",
+            return_value=None,
+        ) as validate_url, patch(
+            "pihole_ai.intel.update_threat_intel_source",
+            return_value={"source_id": "feed-a"},
+        ):
+            update_source_config(
+                "feed-a",
+                {
+                    "url": "http://feeds.example/a.txt",
+                    "allow_http": True,
+                },
+            )
+
+        validate_url.assert_called_once_with("http://feeds.example/a.txt", allow_http=True)
 
     def test_update_lock_uses_exclusive_file_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

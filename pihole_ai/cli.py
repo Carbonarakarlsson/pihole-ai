@@ -19,6 +19,16 @@ def confidence_percentage(value: str) -> int:
     return confidence
 
 
+def positive_integer(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def print_migration_required() -> None:
     print("migration required")
     print("run: sudo pihole-ai db migrate")
@@ -687,6 +697,31 @@ def build_parser() -> argparse.ArgumentParser:
     intel_source_add.add_argument("--disabled", action="store_true")
     intel_source_add.add_argument("--allow-http", action="store_true")
     intel_source_add.add_argument("--json", action="store_true", help="Print JSON.")
+    intel_source_update = intel_source_commands.add_parser(
+        "update",
+        help="Partially update a feed source without touching generations.",
+    )
+    intel_source_update.add_argument("source_id")
+    intel_source_update.add_argument("--name")
+    intel_source_update.add_argument("--url")
+    intel_source_update.add_argument("--format", choices=["hosts", "domains", "text"])
+    intel_source_update.add_argument("--category")
+    intel_source_update.add_argument(
+        "--confidence",
+        type=confidence_percentage,
+        metavar="INTEGER",
+        help="Source confidence percentage, 0-100.",
+    )
+    intel_source_update.add_argument("--refresh-interval-seconds", type=positive_integer)
+    intel_source_update.add_argument("--stale-after-seconds", type=positive_integer)
+    intel_source_update.add_argument("--timeout-seconds", type=positive_integer)
+    intel_source_update.add_argument("--max-download-bytes", type=positive_integer)
+    intel_source_update.add_argument("--expected-content-type")
+    intel_source_update.add_argument("--allow-http", action="store_true")
+    intel_source_update.add_argument("--disallow-http", action="store_true")
+    intel_source_update.add_argument("--enable", action="store_true")
+    intel_source_update.add_argument("--disable", action="store_true")
+    intel_source_update.add_argument("--json", action="store_true", help="Print JSON.")
     for source_action in ("remove", "enable", "disable"):
         parser_source_action = intel_source_commands.add_parser(
             source_action,
@@ -1357,6 +1392,7 @@ def main(
             rollback_source,
             source_status,
             update_sources,
+            update_source_config,
         )
 
         if args.intel_command == "import-hosts":
@@ -1447,6 +1483,64 @@ def main(
                     print(json.dumps(source.to_dict(), sort_keys=True))
                 else:
                     print(f"Saved feed source {source.source_id}.")
+                return 0
+            if args.intel_source_command == "update":
+                if args.enable and args.disable:
+                    print("Cannot use --enable and --disable together.")
+                    return 1
+                if args.allow_http and args.disallow_http:
+                    print("Cannot use --allow-http and --disallow-http together.")
+                    return 1
+                changes = {}
+                option_map = {
+                    "name": "name",
+                    "url": "url",
+                    "format": "format",
+                    "category": "category",
+                    "confidence": "confidence",
+                    "refresh_interval_seconds": "refresh_interval_seconds",
+                    "stale_after_seconds": "stale_after_seconds",
+                    "timeout_seconds": "timeout_seconds",
+                    "max_download_bytes": "max_download_bytes",
+                    "expected_content_type": "expected_content_type",
+                }
+                for arg_name, field in option_map.items():
+                    value = getattr(args, arg_name)
+                    if value is not None:
+                        changes[field] = value
+                if args.enable:
+                    changes["enabled"] = True
+                if args.disable:
+                    changes["enabled"] = False
+                if args.allow_http:
+                    changes["allow_http"] = True
+                if args.disallow_http:
+                    changes["allow_http"] = False
+                if not changes:
+                    print("No source changes provided.")
+                    return 1
+                try:
+                    result = update_source_config(args.source_id, changes)
+                except ValueError as exc:
+                    print(str(exc))
+                    return 1
+                if result is None:
+                    print("Feed source not found.")
+                    return 1
+                payload = {
+                    "source": result,
+                    "changed_fields": result["changed_fields"],
+                    "validators_cleared": result["validators_cleared"],
+                    "active_generation": result["active_generation"],
+                    "generations_preserved": result["generations_preserved"],
+                    "updated_at": result["updated_at"],
+                }
+                if args.json:
+                    print(json.dumps(payload, sort_keys=True))
+                else:
+                    print(f"Updated source {args.source_id}.")
+                    print(f"Changed fields: {', '.join(result['changed_fields'])}")
+                    print(f"Active generation unchanged: {result['active_generation']}")
                 return 0
             if args.intel_source_command == "remove":
                 removed = remove_intel_source(args.source_id)

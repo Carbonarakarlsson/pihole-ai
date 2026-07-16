@@ -826,6 +826,109 @@ class DatabaseTests(unittest.TestCase):
             2,
         )
 
+    def test_source_update_preserves_generations_and_clears_validators_for_url_change(self) -> None:
+        db.save_intel_source(
+            FeedSource(
+                source_id="feed-a",
+                name="Feed A",
+                url="https://feeds.example/a.txt",
+            )
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value="sha-a",
+            entries=["a.example"],
+            category="malware",
+            confidence=80,
+            etag="etag-a",
+            last_modified="Mon, 01 Jan 2024 00:00:00 GMT",
+        )
+        before = db.get_intel_source("feed-a")
+
+        updated = db.update_threat_intel_source(
+            "feed-a",
+            {"url": "https://feeds.example/b.txt"},
+        )
+
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated["source_id"], "feed-a")
+        self.assertEqual(updated["active_generation"], "gen_a")
+        self.assertTrue(updated["generations_preserved"])
+        self.assertTrue(updated["validators_cleared"])
+        self.assertGreater(updated["updated_at"], before["updated_at"])
+        state = db.get_intel_source_state("feed-a")
+        self.assertEqual(state["active_generation"], "gen_a")
+        self.assertEqual(state["etag"], "")
+        self.assertEqual(state["last_modified"], "")
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generations")["count"],
+            1,
+        )
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generation_entries")["count"],
+            1,
+        )
+
+    def test_source_update_preserves_validators_for_display_metadata_change(self) -> None:
+        db.save_intel_source(
+            FeedSource(
+                source_id="feed-a",
+                name="Feed A",
+                url="https://feeds.example/a.txt",
+            )
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value="sha-a",
+            entries=["a.example"],
+            category="malware",
+            confidence=80,
+            etag="etag-a",
+            last_modified="Mon, 01 Jan 2024 00:00:00 GMT",
+        )
+
+        updated = db.update_threat_intel_source("feed-a", {"name": "Feed Alpha"})
+
+        self.assertFalse(updated["validators_cleared"])
+        state = db.get_intel_source_state("feed-a")
+        self.assertEqual(state["etag"], "etag-a")
+        self.assertEqual(state["last_modified"], "Mon, 01 Jan 2024 00:00:00 GMT")
+        self.assertEqual(db.get_intel_source("feed-a")["name"], "Feed Alpha")
+
+    def test_source_update_keeps_rollback_working(self) -> None:
+        db.save_intel_source(
+            FeedSource(
+                source_id="feed-a",
+                name="Feed A",
+                url="https://feeds.example/a.txt",
+            )
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value="sha-a",
+            entries=["a.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_b",
+            content_sha256_value="sha-b",
+            entries=["b.example"],
+            category="malware",
+            confidence=80,
+        )
+
+        db.update_threat_intel_source("feed-a", {"url": "https://feeds.example/b.txt"})
+        restored = db.rollback_intel_generation("feed-a")
+
+        self.assertEqual(restored, "gen_a")
+        self.assertEqual(db.get_intel_source("feed-a")["url"], "https://feeds.example/b.txt")
+        self.assertIsNotNone(db.get_active_threat_intel("a.example"))
+
 
 class DatabaseMigrationTests(unittest.TestCase):
     def test_init_db_rejects_malformed_legacy_analysis_table(self) -> None:

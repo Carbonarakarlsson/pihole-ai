@@ -32,6 +32,7 @@ from core.db import (
     save_intel_source,
     rollback_intel_generation,
     set_intel_source_enabled,
+    update_threat_intel_source,
 )
 from pihole_ai.intel_feeds import (
     FeedError,
@@ -60,6 +61,12 @@ LOCK_PATH = Path(
     )
 )
 SOURCE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+POSITIVE_INT_FIELDS = {
+    "refresh_interval_seconds",
+    "stale_after_seconds",
+    "timeout_seconds",
+    "max_download_bytes",
+}
 
 
 def normalize_domain(
@@ -233,6 +240,60 @@ def add_source(
     )
     save_intel_source(source)
     return source
+
+
+def update_source_config(
+    source_id: str,
+    changes: dict[str, Any],
+) -> dict[str, Any] | None:
+    source_id = source_id.strip().lower()
+    if not SOURCE_ID_PATTERN.match(source_id):
+        raise ValueError("invalid source id")
+    if not changes:
+        raise ValueError("No source changes provided.")
+
+    normalized = dict(changes)
+    if "confidence" in normalized:
+        confidence = int(normalized["confidence"])
+        if confidence < 0 or confidence > 100:
+            raise ValueError("confidence must be between 0 and 100")
+        normalized["confidence"] = confidence
+    if "format" in normalized and normalized["format"] not in {
+        FeedFormat.HOSTS.value,
+        FeedFormat.DOMAINS.value,
+        FeedFormat.TEXT.value,
+    }:
+        raise ValueError("invalid feed format")
+    for field in POSITIVE_INT_FIELDS:
+        if field in normalized:
+            value = int(normalized[field])
+            if value <= 0:
+                raise ValueError(f"{field} must be positive")
+            normalized[field] = value
+    if "url" in normalized:
+        allow_http = bool(normalized.get("allow_http", settings.intel_allow_http))
+        current = get_intel_source(source_id)
+        if current is not None and "allow_http" not in normalized:
+            allow_http = bool(current["allow_http"])
+        validate_feed_url(str(normalized["url"]), allow_http=allow_http)
+        normalized["url"] = str(normalized["url"]).strip()
+    elif "allow_http" in normalized:
+        current = get_intel_source(source_id)
+        if current is None:
+            return None
+        validate_feed_url(str(current["url"]), allow_http=bool(normalized["allow_http"]))
+    if "name" in normalized:
+        normalized["name"] = str(normalized["name"]).strip()
+        if not normalized["name"]:
+            raise ValueError("name must not be empty")
+    if "category" in normalized:
+        normalized["category"] = str(normalized["category"]).strip()
+        if not normalized["category"]:
+            raise ValueError("category must not be empty")
+    if "expected_content_type" in normalized:
+        normalized["expected_content_type"] = str(normalized["expected_content_type"]).strip()
+
+    return update_threat_intel_source(source_id, normalized)
 
 
 def source_status() -> list[dict[str, Any]]:

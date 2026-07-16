@@ -107,9 +107,20 @@ activation, rollback, and update audit history. Classification only uses enabled
 sources with an active generation, so failed downloads do not replace the last
 known-good feed.
 
-The appliance installer writes a managed `pihole-ai-intel-update.service` and
-`pihole-ai-intel-update.timer`; automatic updates are opt-in through
-`PIHOLE_AI_INTEL_AUTO_UPDATE_ENABLED`.
+Use `pihole-ai intel source update <source-id>` to edit a configured source
+without deleting its generations. URL or fetch-setting changes clear HTTP
+validators so the next explicit update refetches content, but the active
+generation, prior generations, entries, and rollback history remain intact until
+`pihole-ai intel update` or `pihole-ai intel rollback` is run.
+
+For deterministic field tests, prefer immutable feed URLs such as commit-pinned
+raw files rather than branch URLs, which can be cached by upstream providers.
+
+The appliance installer writes managed `pihole-ai-intel-update.service` and
+`pihole-ai-intel-update.timer` units and includes the timer in enable/disable
+lifecycle commands. Unattended timer updates are still opt-in through
+`PIHOLE_AI_INTEL_AUTO_UPDATE_ENABLED`; manual `pihole-ai intel update` commands
+remain operator-controlled.
 
 ## Ollama Optionality
 

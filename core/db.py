@@ -2284,6 +2284,105 @@ def remove_intel_source(source_id: str) -> bool:
         return True
 
 
+SOURCE_UPDATE_COLUMNS = {
+    "name",
+    "url",
+    "format",
+    "enabled",
+    "category",
+    "confidence",
+    "refresh_interval_seconds",
+    "stale_after_seconds",
+    "timeout_seconds",
+    "max_download_bytes",
+    "expected_content_type",
+    "allow_http",
+}
+SOURCE_FETCH_SETTING_COLUMNS = {
+    "url",
+    "format",
+    "timeout_seconds",
+    "max_download_bytes",
+    "expected_content_type",
+    "allow_http",
+}
+
+
+def update_threat_intel_source(
+    source_id: str,
+    changes: dict[str, Any],
+) -> dict[str, Any] | None:
+    """
+    Partially update one configured feed source without touching generations.
+    """
+
+    unknown = sorted(set(changes) - SOURCE_UPDATE_COLUMNS)
+    if unknown:
+        raise ValueError(f"Unsupported source field(s): {', '.join(unknown)}")
+    if not changes:
+        raise ValueError("No source changes provided.")
+
+    now = time.time()
+    changed_fields = sorted(changes)
+    validators_cleared = bool(SOURCE_FETCH_SETTING_COLUMNS.intersection(changes))
+    assignments = ", ".join(f"{field} = ?" for field in changed_fields)
+    values = [
+        int(value) if field in {"enabled", "allow_http"} else value
+        for field, value in ((field, changes[field]) for field in changed_fields)
+    ]
+
+    with transaction() as conn:
+        existing = conn.execute(
+            """
+            SELECT s.*, st.active_generation
+            FROM threat_intel_sources s
+            LEFT JOIN threat_intel_source_state st
+                ON st.source_id = s.source_id
+            WHERE s.source_id = ?
+            """,
+            (source_id,),
+        ).fetchone()
+        if existing is None:
+            return None
+        conn.execute(
+            f"""
+            UPDATE threat_intel_sources
+            SET {assignments}, updated_at = ?
+            WHERE source_id = ?
+            """,
+            tuple(values + [now, source_id]),
+        )
+        if validators_cleared:
+            conn.execute(
+                """
+                UPDATE threat_intel_source_state
+                SET etag = '',
+                    last_modified = ''
+                WHERE source_id = ?
+                """,
+                (source_id,),
+            )
+        result = conn.execute(
+            """
+            SELECT s.*, st.active_generation, st.etag, st.last_modified
+            FROM threat_intel_sources s
+            LEFT JOIN threat_intel_source_state st
+                ON st.source_id = s.source_id
+            WHERE s.source_id = ?
+            """,
+            (source_id,),
+        ).fetchone()
+        active_generation = existing["active_generation"] or ""
+
+    updated = _source_row_to_dict(result)
+    updated["active_generation"] = active_generation
+    updated["changed_fields"] = changed_fields
+    updated["validators_cleared"] = validators_cleared
+    updated["generations_preserved"] = True
+    updated["updated_at"] = now
+    return updated
+
+
 def set_intel_source_enabled(source_id: str, enabled: bool) -> bool:
     rowid = execute(
         """

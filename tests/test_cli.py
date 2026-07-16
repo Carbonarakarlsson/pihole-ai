@@ -578,6 +578,94 @@ class CLITests(unittest.TestCase):
         self.assertIn("migration required", stdout.getvalue())
         self.assertIn("sudo pihole-ai db migrate", stdout.getvalue())
 
+    def test_intel_source_update_dispatches_partial_changes(self) -> None:
+        result = {
+            "source_id": "feed-a",
+            "changed_fields": ["url"],
+            "validators_cleared": True,
+            "active_generation": "gen_a",
+            "generations_preserved": True,
+            "updated_at": 123.0,
+        }
+        with patch("pihole_ai.intel.update_source_config", return_value=result) as update_source, \
+             patch("sys.stdout", io.StringIO()) as stdout:
+            exit_code = cli.main(
+                [
+                    "intel",
+                    "source",
+                    "update",
+                    "feed-a",
+                    "--url",
+                    "https://feeds.example/b.txt",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        update_source.assert_called_once_with(
+            "feed-a",
+            {"url": "https://feeds.example/b.txt"},
+        )
+        self.assertIn("Changed fields: url", stdout.getvalue())
+        self.assertIn("Active generation unchanged: gen_a", stdout.getvalue())
+
+    def test_intel_source_update_json_contract(self) -> None:
+        result = {
+            "source_id": "feed-a",
+            "changed_fields": ["name", "confidence"],
+            "validators_cleared": False,
+            "active_generation": "gen_a",
+            "generations_preserved": True,
+            "updated_at": 123.0,
+        }
+        with patch("pihole_ai.intel.update_source_config", return_value=result), \
+             patch("sys.stdout", io.StringIO()) as stdout:
+            exit_code = cli.main(
+                [
+                    "intel",
+                    "source",
+                    "update",
+                    "feed-a",
+                    "--name",
+                    "Feed A",
+                    "--confidence",
+                    "100",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        payload = __import__("json").loads(stdout.getvalue())
+        self.assertEqual(payload["changed_fields"], ["name", "confidence"])
+        self.assertFalse(payload["validators_cleared"])
+        self.assertTrue(payload["generations_preserved"])
+        self.assertEqual(payload["active_generation"], "gen_a")
+
+    def test_intel_source_update_rejects_noop_and_conflicts(self) -> None:
+        for command in (
+            ["intel", "source", "update", "feed-a"],
+            ["intel", "source", "update", "feed-a", "--enable", "--disable"],
+            ["intel", "source", "update", "feed-a", "--allow-http", "--disallow-http"],
+        ):
+            with self.subTest(command=command), patch("sys.stdout", io.StringIO()):
+                self.assertEqual(cli.main(command), 1)
+
+    def test_intel_source_update_reports_unknown_source(self) -> None:
+        with patch("pihole_ai.intel.update_source_config", return_value=None), \
+             patch("sys.stdout", io.StringIO()) as stdout:
+            exit_code = cli.main(["intel", "source", "update", "missing", "--name", "Missing"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Feed source not found.", stdout.getvalue())
+
+    def test_intel_source_update_help_lists_editable_options(self) -> None:
+        with patch("sys.stdout", io.StringIO()) as stdout, self.assertRaises(SystemExit):
+            cli.main(["intel", "source", "update", "--help"])
+
+        help_text = stdout.getvalue()
+        self.assertIn("--url URL", help_text)
+        self.assertIn("--disallow-http", help_text)
+        self.assertIn("--max-download-bytes", help_text)
+
     def test_rules_list_dispatches_with_options(self) -> None:
         with patch("pihole_ai.rules.print_rules", return_value=1) as print_rules, \
              patch("sys.stdout", io.StringIO()):
