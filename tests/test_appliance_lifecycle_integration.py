@@ -514,8 +514,10 @@ class ApplianceLifecycleIntegrationTests(unittest.TestCase):
 
     def test_readme_no_start_example_matches_enabled_but_stopped_contract(self):
         readme = Path("README.md").read_text(encoding="utf-8")
+        self.assertIn("`pihole-ai install` installs files, enables services", readme)
         self.assertIn(
-            "pihole-ai install --no-start install files, enable services, do not start services",
+            "`pihole-ai install --no-start` installs files and enables\n"
+            "services without starting them",
             readme,
         )
         self.assertIn("sudo /usr/local/bin/pihole-ai start", readme)

@@ -712,6 +712,95 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(hit["generation_id"], "gen_a")
         self.assertEqual(hit["confidence"], 92)
 
+    def test_threat_intel_integrity_helper_reports_clean_state(self) -> None:
+        db.save_intel_source(
+            FeedSource(
+                source_id="feed-a",
+                name="Feed A",
+                url="https://feeds.example/a.txt",
+            )
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value="sha-a",
+            entries=["bad.example"],
+            category="malware",
+            confidence=80,
+            etag="etag-a",
+        )
+
+        self.assertEqual(db.check_threat_intel_integrity(), [])
+
+    def test_threat_intel_integrity_helper_is_read_only(self) -> None:
+        with patch("core.db.migrate_database", side_effect=AssertionError("mutated")):
+            self.assertEqual(db.check_threat_intel_integrity(), [])
+
+    def test_threat_intel_integrity_helper_reports_corruption(self) -> None:
+        db.save_intel_source(
+            FeedSource(
+                source_id="feed-a",
+                name="Feed A",
+                url="https://feeds.example/a.txt",
+            )
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value="sha-a",
+            entries=["bad.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.execute(
+            """
+            INSERT INTO threat_intel_generations
+            (
+                generation_id,
+                source_id,
+                status,
+                content_sha256,
+                entry_count,
+                created_at,
+                activated_at,
+                previous_generation
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("gen_b", "feed-a", "active", "sha-b", 1, 1.0, 1.0, "missing"),
+        )
+        db.execute(
+            """
+            UPDATE threat_intel_source_state
+            SET remote_generation_id = ?, etag = ?
+            WHERE source_id = ?
+            """,
+            ("missing-remote", "etag-a", "feed-a"),
+        )
+        db.execute(
+            """
+            INSERT INTO threat_intel_update_audit
+            (
+                source_id,
+                attempted_at,
+                result,
+                active_generation,
+                previous_generation
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("feed-a", 1.0, "success", "missing-active", "missing-previous"),
+        )
+
+        codes = {issue["code"] for issue in db.check_threat_intel_integrity()}
+
+        self.assertIn("intel.integrity.multiple_active_generations", codes)
+        self.assertIn("intel.integrity.remote_generation_missing", codes)
+        self.assertIn("intel.integrity.generation_entry_count_mismatch", codes)
+        self.assertIn("intel.integrity.rollback_pointer_missing", codes)
+        self.assertIn("intel.integrity.audit_active_generation_missing", codes)
+        self.assertIn("intel.integrity.audit_previous_generation_missing", codes)
+
     def test_threat_intel_generation_rollback_restores_previous_active_set(self) -> None:
         db.save_intel_source(
             FeedSource(

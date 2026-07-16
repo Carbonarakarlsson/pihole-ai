@@ -95,3 +95,14 @@ is parsed into a new generation, quality checks run before activation, and only
 the active generation for enabled sources participates in classification.
 Manual `intel import-hosts` remains supported and is mirrored into a managed
 legacy generation so older workflows continue to work.
+
+Source state intentionally separates `active_generation` from
+`remote_generation_id`. The active generation is what classifiers read; the
+remote generation is the last successfully fetched representation described by
+HTTP validators. This allows rollback to a prior generation and later
+HTTP-304 reactivation of the unchanged remote generation without duplicating
+rows.
+
+`core.db.check_threat_intel_integrity()` inspects managed feed state through a
+read-only database connection. It is available for diagnostics and future
+doctor integration; it does not initialize, migrate, repair, or mutate data.

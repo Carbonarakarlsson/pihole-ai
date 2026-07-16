@@ -60,7 +60,9 @@ class ReleaseHardeningTests(unittest.TestCase):
     def test_active_release_tests_do_not_hardcode_conflicting_versions(self):
         root = Path(__file__).resolve().parents[1]
         expected = project_version()
-        version_pattern = re.compile(r"\b\d+\.\d+\.\d+rc\d+\b")
+        version_pattern = re.compile(
+            r"\b\d+\.\d+\.\d+(?:(?:a|b|rc)\d+|\.dev\d+)\b"
+        )
         conflicting: list[str] = []
 
         for path in (root / "tests").glob("test_*.py"):

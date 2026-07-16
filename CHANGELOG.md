@@ -21,6 +21,9 @@
 - Added managed threat-intelligence feed sources with safe fetching,
   generation-based activation, rollback, update audit history, CLI management,
   dashboard status, and updater systemd units.
+- Added typed threat-intelligence source models, managed source registry,
+  source status APIs, source update CLI, rollback, audit records, and
+  generation-aware classifier evidence.
 
 ### Changed
 
@@ -40,6 +43,8 @@
   generation separately from the classifier-active generation.
 - Threat-intelligence remote-generation repair now prefers latest successful
   HTTP 200 update history over rollback-active state.
+- Read-only threat-intelligence commands now use read-only database access.
+- Source confidence CLI input is standardized as integer percentage `0-100`.
 
 ### Fixed
 
@@ -53,6 +58,9 @@
   rollback generation unchanged.
 - Fixed migration backfill for rolled-back sources so `remote_generation_id`
   is repaired from fetch history instead of the currently active generation.
+- Fixed misleading dry-run generation output, managed-source listing gaps,
+  unchanged-content duplicate suppression, updater lock path, timer lifecycle
+  integration, and automatic-disabled timer behavior.
 - Modernized package license metadata to avoid setuptools license-table
   deprecation warnings.
 

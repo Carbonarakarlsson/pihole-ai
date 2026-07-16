@@ -77,6 +77,9 @@ Current appliance schema includes:
   immutable history
 - v6 generation-based threat-intelligence feed sources, update state, active
   generations, entries, and audit history
+- v7 explicit reactivation audit fields for reused generations
+- v8 remote-generation identity in source state
+- v9 repair of legacy remote-generation identity after rollback workflows
 
 Evidence persistence is bounded. PiHole-AI stores the most influential evidence
 items first, redacts secret-bearing metadata, truncates oversized fields
@@ -106,6 +109,13 @@ Migration repair reconstructs missing or suspect remote-generation identity from
 the latest successful HTTP 200 update audit before falling back to stored remote
 content hash. It does not infer the remote generation from active state alone
 when rollback evidence exists.
+
+`core.db.check_threat_intel_integrity()` provides a read-only generation-chain
+integrity helper for diagnostics. It reports stable issue codes for broken
+active pointers, remote-generation pointers, audit references, entry-count
+mismatches, duplicate generation rows, and validator state problems without
+initializing or migrating the database. Wiring those checks into the broader
+doctor command is tracked as follow-up operational debt.
 
 Source metadata edits are separate from feed updates:
 `intel source update` preserves active/prior generations and clears validators

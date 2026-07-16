@@ -2981,6 +2981,201 @@ def list_intel_update_audit(limit: int = 100, source_id: str = "") -> list[dict[
     return result
 
 
+def check_threat_intel_integrity(
+    database_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Inspect managed threat-intelligence generation state without mutation.
+    """
+
+    issues: list[dict[str, Any]] = []
+
+    def add(code: str, **details: Any) -> None:
+        issues.append({"code": code, **details})
+
+    def select(sql: str) -> list[sqlite3.Row]:
+        return query_all_readonly(sql, database_path=database_path)
+
+    for row in select(
+        """
+        SELECT source_id, COUNT(*) AS count
+        FROM threat_intel_generations
+        WHERE status = 'active'
+        GROUP BY source_id
+        HAVING COUNT(*) > 1
+        """
+    ):
+        add("intel.integrity.multiple_active_generations", source_id=row["source_id"], count=row["count"])
+
+    for row in select(
+        """
+        SELECT st.source_id, st.active_generation
+        FROM threat_intel_source_state st
+        LEFT JOIN threat_intel_generations g
+            ON g.generation_id = st.active_generation
+        WHERE st.active_generation != ''
+          AND g.generation_id IS NULL
+        """
+    ):
+        add("intel.integrity.active_generation_missing", source_id=row["source_id"], generation_id=row["active_generation"])
+
+    for row in select(
+        """
+        SELECT st.source_id, st.active_generation, g.source_id AS generation_source
+        FROM threat_intel_source_state st
+        JOIN threat_intel_generations g
+            ON g.generation_id = st.active_generation
+        WHERE st.active_generation != ''
+          AND g.source_id != st.source_id
+        """
+    ):
+        add(
+            "intel.integrity.active_generation_wrong_source",
+            source_id=row["source_id"],
+            generation_id=row["active_generation"],
+            generation_source=row["generation_source"],
+        )
+
+    for row in select(
+        """
+        SELECT st.source_id, st.remote_generation_id
+        FROM threat_intel_source_state st
+        LEFT JOIN threat_intel_generations g
+            ON g.generation_id = st.remote_generation_id
+        WHERE st.remote_generation_id != ''
+          AND g.generation_id IS NULL
+        """
+    ):
+        add("intel.integrity.remote_generation_missing", source_id=row["source_id"], generation_id=row["remote_generation_id"])
+
+    for row in select(
+        """
+        SELECT st.source_id, st.remote_generation_id, g.source_id AS generation_source
+        FROM threat_intel_source_state st
+        JOIN threat_intel_generations g
+            ON g.generation_id = st.remote_generation_id
+        WHERE st.remote_generation_id != ''
+          AND g.source_id != st.source_id
+        """
+    ):
+        add(
+            "intel.integrity.remote_generation_wrong_source",
+            source_id=row["source_id"],
+            generation_id=row["remote_generation_id"],
+            generation_source=row["generation_source"],
+        )
+
+    for row in select(
+        """
+        SELECT g.source_id, g.generation_id, g.entry_count, COUNT(e.id) AS actual_count
+        FROM threat_intel_generations g
+        LEFT JOIN threat_intel_generation_entries e
+            ON e.generation_id = g.generation_id
+        GROUP BY g.source_id, g.generation_id, g.entry_count
+        HAVING actual_count != g.entry_count
+        """
+    ):
+        add(
+            "intel.integrity.generation_entry_count_mismatch",
+            source_id=row["source_id"],
+            generation_id=row["generation_id"],
+            expected=row["entry_count"],
+            actual=row["actual_count"],
+        )
+
+    for row in select(
+        """
+        SELECT generation_id, domain, COUNT(*) AS count
+        FROM threat_intel_generation_entries
+        GROUP BY generation_id, domain
+        HAVING COUNT(*) > 1
+        """
+    ):
+        add("intel.integrity.duplicate_generation_domain", generation_id=row["generation_id"], domain=row["domain"], count=row["count"])
+
+    for row in select(
+        """
+        SELECT g.source_id, g.generation_id, g.previous_generation
+        FROM threat_intel_generations g
+        LEFT JOIN threat_intel_generations previous
+            ON previous.generation_id = g.previous_generation
+        WHERE g.previous_generation IS NOT NULL
+          AND g.previous_generation != ''
+          AND previous.generation_id IS NULL
+        """
+    ):
+        add(
+            "intel.integrity.rollback_pointer_missing",
+            source_id=row["source_id"],
+            generation_id=row["generation_id"],
+            previous_generation=row["previous_generation"],
+        )
+
+    for row in select(
+        """
+        SELECT source_id, active_generation
+        FROM threat_intel_update_audit audit
+        WHERE active_generation != ''
+          AND NOT EXISTS (
+              SELECT 1
+              FROM threat_intel_generations g
+              WHERE g.source_id = audit.source_id
+                AND g.generation_id = audit.active_generation
+          )
+        """
+    ):
+        add("intel.integrity.audit_active_generation_missing", source_id=row["source_id"], generation_id=row["active_generation"])
+
+    for row in select(
+        """
+        SELECT source_id, previous_generation
+        FROM threat_intel_update_audit audit
+        WHERE previous_generation != ''
+          AND NOT EXISTS (
+              SELECT 1
+              FROM threat_intel_generations g
+              WHERE g.source_id = audit.source_id
+                AND g.generation_id = audit.previous_generation
+          )
+        """
+    ):
+        add("intel.integrity.audit_previous_generation_missing", source_id=row["source_id"], generation_id=row["previous_generation"])
+
+    for row in select(
+        """
+        SELECT source_id, etag, last_modified
+        FROM threat_intel_source_state
+        WHERE (etag != '' OR last_modified != '')
+          AND (remote_generation_id = '' OR content_sha256 = '')
+        """
+    ):
+        add("intel.integrity.invalid_source_state_validators", source_id=row["source_id"])
+
+    for row in select(
+        """
+        SELECT st.source_id, st.active_generation, g.status
+        FROM threat_intel_source_state st
+        JOIN threat_intel_generations g
+            ON g.generation_id = st.active_generation
+        WHERE st.active_generation != ''
+          AND g.status != 'active'
+        """
+    ):
+        add("intel.integrity.active_pointer_not_active_status", source_id=row["source_id"], generation_id=row["active_generation"], status=row["status"])
+
+    for row in select(
+        """
+        SELECT source_id, generation_id, status
+        FROM threat_intel_generations
+        WHERE status = 'active'
+          AND activated_at IS NULL
+        """
+    ):
+        add("intel.integrity.active_generation_not_activated", source_id=row["source_id"], generation_id=row["generation_id"], status=row["status"])
+
+    return issues
+
+
 def mark_intel_update_not_modified(
     source_id: str,
     etag: str = "",

@@ -5,8 +5,9 @@ query history, stores normalized events in its own SQLite database, classifies
 domains with deterministic evidence first, and uses local Ollama AI only as an
 optional fallback.
 
-The project is entering the v0.5 evidence-based decision-engine phase. The
-current release baseline is `0.4.0rc3`; v0.5 work is tracked under
+The project is preparing the `0.5.0b1` milestone after completing the
+evidence-based decision engine and physically validating managed
+threat-intelligence feed lifecycles. Remaining v0.5 work is tracked under
 `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
 
 ## Supported Target
@@ -40,11 +41,9 @@ sudo /opt/pihole-ai/venv/bin/pihole-ai install --no-start
 ```
 
 Lifecycle contract: `pihole-ai install` installs files, enables services, and
-starts services. `pihole-ai install --no-start` install files, enable services,
-do not start services. `pihole-ai install --no-enable` installs files without
-boot enablement.
-
-pihole-ai install --no-start install files, enable services, do not start services.
+starts services. `pihole-ai install --no-start` installs files and enables
+services without starting them. `pihole-ai install --no-enable` installs files
+without boot enablement.
 
 Bootstrap the dashboard administrator password:
 

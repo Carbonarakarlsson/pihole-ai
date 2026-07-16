@@ -140,6 +140,14 @@ activate a generation, or delete entries.
 Changing `--url` or fetch-related settings clears ETag and Last-Modified
 validators so the next explicit `intel update` refetches safely. Display-only
 changes such as `--name` preserve validators and the active source state.
+Source URL credentials are rejected. HTTP URLs are denied by default unless
+`--allow-http` is used for an explicitly trusted local/test feed.
+
+`--confidence` is an integer percentage from `0` to `100`. Decimal, negative,
+and above-range values are rejected.
+
+Dry-run updates preview the proposed generation and do not mutate source state,
+generations, validators, entries, or audit rows.
 
 `intel update` reports whether downloaded content left the active generation
 unchanged, reactivated an existing inactive generation, or created a new
@@ -147,6 +155,15 @@ generation. JSON output includes `content_unchanged`, `reused_generation`, and
 `created_generation`; 304 reactivation output also includes `not_modified`,
 `trigger=http_not_modified`, and `remote_generation`. Text output names the
 reactivated generation and previous active generation when reuse occurs.
+
+Rollback changes the classifier-active generation but preserves the remote
+generation represented by current validators, so a later HTTP 304 may reactivate
+an inactive historical generation without creating duplicates.
+
+Read-only intel commands such as `source list`, `source show`, `status`,
+`audit`, and `list` use read-only database access and do not run migrations.
+Mutating commands such as `source add`, `source update`, `update`, `rollback`,
+and `source remove` may initialize or migrate the runtime database.
 
 ## Security-Sensitive Input
 
