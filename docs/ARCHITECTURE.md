@@ -90,7 +90,11 @@ while future classifications remain free to produce new decisions.
 Threat-intelligence feeds are imported as immutable generations. Classification
 looks only at enabled sources with an active generation, so failed or partial
 downloads never replace a working feed. Rollback reactivates the previous
-generation for the source. Source metadata edits are separate from feed updates:
+generation for the source. Successful updates distinguish active content
+unchanged, reactivation of a valid inactive historical generation with matching
+content, and activation of a newly created generation. Reactivation updates
+`previous_generation` as the current rollback pointer; it is not immutable
+creation provenance. Source metadata edits are separate from feed updates:
 `intel source update` preserves active/prior generations and clears validators
 only when URL or fetch settings change. Source-configuration edit auditing is
 follow-up debt; the current threat-intel audit table tracks feed update and

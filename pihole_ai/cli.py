@@ -1586,6 +1586,9 @@ def main(
                             f"{result.source_id}: {status} changed={result.changed} "
                             f"accepted={result.accepted_entries} active={result.active_generation}"
                         )
+                        if result.reused_generation:
+                            print(f"Reactivated existing generation {result.active_generation}.")
+                            print(f"Previous active generation: {result.previous_generation}.")
             return 0 if all(result.success for result in results) else 1
 
         if args.intel_command == "status":

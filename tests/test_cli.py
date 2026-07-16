@@ -516,6 +516,49 @@ class CLITests(unittest.TestCase):
         self.assertIn("would activate generation gen_preview", output)
         self.assertNotIn("active=gen_preview", output)
 
+    def test_intel_update_text_reports_reactivated_generation(self) -> None:
+        result = FeedUpdateResult(
+            source_id="feed-a",
+            success=True,
+            changed=True,
+            accepted_entries=3,
+            previous_generation="gen_a",
+            active_generation="gen_b",
+            reused_generation=True,
+        )
+        with patch("pihole_ai.intel.update_sources", return_value=[result]), \
+             patch("sys.stdout", io.StringIO()) as stdout:
+            exit_code = cli.main(["intel", "update", "--source", "feed-a"])
+
+        self.assertEqual(exit_code, 0)
+        output = stdout.getvalue()
+        self.assertIn("feed-a: ok changed=True accepted=3 active=gen_b", output)
+        self.assertIn("Reactivated existing generation gen_b.", output)
+        self.assertIn("Previous active generation: gen_a.", output)
+
+    def test_intel_update_json_reports_generation_outcome_flags(self) -> None:
+        result = FeedUpdateResult(
+            source_id="feed-a",
+            success=True,
+            changed=True,
+            accepted_entries=3,
+            previous_generation="gen_a",
+            active_generation="gen_b",
+            reused_generation=True,
+            created_generation=False,
+            content_unchanged=False,
+        )
+        with patch("pihole_ai.intel.update_sources", return_value=[result]), \
+             patch("sys.stdout", io.StringIO()) as stdout:
+            exit_code = cli.main(["intel", "update", "--source", "feed-a", "--json"])
+
+        self.assertEqual(exit_code, 0)
+        payload = __import__("json").loads(stdout.getvalue())
+        self.assertTrue(payload[0]["changed"])
+        self.assertTrue(payload[0]["reused_generation"])
+        self.assertFalse(payload[0]["created_generation"])
+        self.assertFalse(payload[0]["content_unchanged"])
+
     def test_intel_confidence_help_documents_range_and_units(self) -> None:
         with patch("sys.stdout", io.StringIO()) as stdout:
             with self.assertRaises(SystemExit):

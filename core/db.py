@@ -2565,6 +2565,167 @@ def activate_intel_generation(
     return previous, generation_id
 
 
+def find_reusable_threat_intel_generation(
+    source_id: str,
+    content_sha256_value: str,
+) -> dict[str, Any] | None:
+    row = query_one(
+        """
+        SELECT
+            g.generation_id,
+            g.source_id,
+            g.status,
+            g.content_sha256,
+            g.entry_count,
+            g.activated_at,
+            COUNT(e.id) AS stored_entry_count
+        FROM threat_intel_generations g
+        LEFT JOIN threat_intel_generation_entries e
+            ON e.generation_id = g.generation_id
+        WHERE g.source_id = ?
+          AND g.content_sha256 = ?
+          AND g.status = 'inactive'
+          AND g.activated_at IS NOT NULL
+        GROUP BY
+            g.generation_id,
+            g.source_id,
+            g.status,
+            g.content_sha256,
+            g.entry_count,
+            g.activated_at
+        HAVING stored_entry_count = g.entry_count
+        ORDER BY g.activated_at DESC, g.created_at DESC
+        LIMIT 1
+        """,
+        (source_id, content_sha256_value),
+    )
+    return dict(row) if row is not None else None
+
+
+def activate_existing_threat_intel_generation(
+    *,
+    source_id: str,
+    generation_id: str,
+    previous_generation_id: str = "",
+    etag: str = "",
+    last_modified: str = "",
+) -> tuple[str, str]:
+    now = time.time()
+    with transaction() as conn:
+        state = conn.execute(
+            "SELECT active_generation FROM threat_intel_source_state WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+        previous = state["active_generation"] if state and state["active_generation"] else ""
+        if previous_generation_id and previous_generation_id != previous:
+            raise ValueError("active generation changed before reactivation")
+        generation = conn.execute(
+            """
+            SELECT
+                g.generation_id,
+                g.source_id,
+                g.status,
+                g.content_sha256,
+                g.entry_count,
+                g.activated_at,
+                COUNT(e.id) AS stored_entry_count
+            FROM threat_intel_generations g
+            LEFT JOIN threat_intel_generation_entries e
+                ON e.generation_id = g.generation_id
+            WHERE g.generation_id = ?
+            GROUP BY
+                g.generation_id,
+                g.source_id,
+                g.status,
+                g.content_sha256,
+                g.entry_count,
+                g.activated_at
+            """,
+            (generation_id,),
+        ).fetchone()
+        if generation is None:
+            raise ValueError("generation not found")
+        if generation["source_id"] != source_id:
+            raise ValueError("generation belongs to another source")
+        if generation["status"] != "inactive" or generation["activated_at"] is None:
+            raise ValueError("generation is not reusable")
+        if int(generation["stored_entry_count"]) != int(generation["entry_count"]):
+            raise ValueError("generation entries are incomplete")
+
+        conn.execute(
+            """
+            UPDATE threat_intel_generations
+            SET status = 'inactive'
+            WHERE source_id = ?
+              AND status = 'active'
+            """,
+            (source_id,),
+        )
+        conn.execute(
+            """
+            UPDATE threat_intel_generations
+            SET status = 'active',
+                activated_at = ?,
+                previous_generation = ?
+            WHERE generation_id = ?
+            """,
+            (now, previous, generation_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO threat_intel_source_state
+            (
+                source_id,
+                status,
+                last_attempt_at,
+                last_success_at,
+                next_update_at,
+                etag,
+                last_modified,
+                content_sha256,
+                entry_count,
+                active_generation,
+                last_error_code,
+                last_error_summary,
+                consecutive_failures
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+            ON CONFLICT(source_id)
+
+            DO UPDATE SET
+                status = excluded.status,
+                last_attempt_at = excluded.last_attempt_at,
+                last_success_at = excluded.last_success_at,
+                next_update_at = excluded.next_update_at,
+                etag = excluded.etag,
+                last_modified = excluded.last_modified,
+                content_sha256 = excluded.content_sha256,
+                entry_count = excluded.entry_count,
+                active_generation = excluded.active_generation,
+                last_error_code = '',
+                last_error_summary = '',
+                consecutive_failures = 0
+            """,
+            (
+                source_id,
+                FeedStatus.ACTIVE.value,
+                now,
+                now,
+                None,
+                etag,
+                last_modified,
+                generation["content_sha256"],
+                generation["entry_count"],
+                generation_id,
+                "",
+                "",
+                0,
+            ),
+        )
+    return previous, generation_id
+
+
 def get_active_threat_intel(domain: str) -> sqlite3.Row | None:
     return query_one(
         """
@@ -2680,9 +2841,13 @@ def record_intel_update_audit(
             duration_ms,
             warnings_json,
             error_code,
-            error_summary
+            error_summary,
+            operation,
+            reused_generation,
+            created_generation,
+            content_unchanged
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             result.source_id,
@@ -2702,6 +2867,10 @@ def record_intel_update_audit(
             json.dumps(result.warnings),
             result.error_code,
             result.error_summary,
+            "reactivate" if result.reused_generation else "update",
+            1 if result.reused_generation else 0,
+            1 if result.created_generation else 0,
+            1 if result.content_unchanged else 0,
         ),
     )
 
@@ -2731,6 +2900,9 @@ def list_intel_update_audit(limit: int = 100, source_id: str = "") -> list[dict[
             item["warnings"] = []
         item["changed"] = bool(item["changed"])
         item["not_modified"] = bool(item["not_modified"])
+        item["reused_generation"] = bool(item.get("reused_generation", 0))
+        item["created_generation"] = bool(item.get("created_generation", 0))
+        item["content_unchanged"] = bool(item.get("content_unchanged", 0))
         result.append(item)
     return result
 

@@ -34,12 +34,16 @@
 - Managed feed sources can now be edited in place with
   `pihole-ai intel source update`, preserving active/prior generations and
   resetting validators only for URL or fetch-setting changes.
+- Threat-intelligence updates now distinguish unchanged active content,
+  reactivated historical generations, and newly created generations.
 
 ### Fixed
 
 - Fixed setup readiness classification so warning-only operational systems are
   degraded-ready instead of installed-unconfigured.
 - Fixed packaged alert-log defaults to use `/var/log/pihole-ai/alerts.log`.
+- Fixed A -> B -> rollback A -> update B feed cycles so matching inactive
+  generations are reactivated instead of reported unchanged or duplicated.
 - Modernized package license metadata to avoid setuptools license-table
   deprecation warnings.
 

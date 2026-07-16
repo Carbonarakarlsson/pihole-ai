@@ -12,7 +12,7 @@ from core.migrations import IncompatibleSchema
 from engine.decision_engine import DecisionEngine
 from engine.evidence import EvidenceCollection, EvidenceItem, EvidencePolarity
 from pihole_ai.intel import update_source
-from pihole_ai.intel_feeds import FetchResult
+from pihole_ai.intel_feeds import FetchResult, content_sha256
 from pihole_ai.intel_models import FeedSource
 
 
@@ -816,6 +816,8 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(first.changed)
         self.assertFalse(second.changed)
         self.assertTrue(second.not_modified)
+        self.assertTrue(second.content_unchanged)
+        self.assertFalse(second.reused_generation)
         self.assertEqual(second.active_generation, first.active_generation)
         self.assertEqual(
             db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generations")["count"],
@@ -824,6 +826,237 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(
             db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generation_entries")["count"],
             2,
+        )
+
+    def test_update_reactivates_inactive_generation_with_matching_content(self) -> None:
+        content_a = b"a-one.example\na-two.example\n"
+        content_b = b"b-one.example\nb-two.example\nb-three.example\n"
+        db.save_intel_source(
+            FeedSource(
+                source_id="feed-a",
+                name="Feed A",
+                url="https://feeds.example/a.txt",
+            )
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value=content_sha256(content_a),
+            entries=["a-one.example", "a-two.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_b",
+            content_sha256_value=content_sha256(content_b),
+            entries=["b-one.example", "b-two.example", "b-three.example"],
+            category="malware",
+            confidence=80,
+        )
+        self.assertEqual(db.rollback_intel_generation("feed-a"), "gen_a")
+
+        with patch(
+            "pihole_ai.intel.fetch_feed",
+            return_value=FetchResult(
+                status_code=200,
+                content=content_b,
+                etag="etag-b2",
+                last_modified="Tue, 02 Jan 2024 00:00:00 GMT",
+                downloaded_bytes=len(content_b),
+            ),
+        ):
+            result = update_source("feed-a")
+
+        self.assertTrue(result.changed)
+        self.assertTrue(result.reused_generation)
+        self.assertFalse(result.created_generation)
+        self.assertFalse(result.not_modified)
+        self.assertEqual(result.previous_generation, "gen_a")
+        self.assertEqual(result.active_generation, "gen_b")
+        state = db.get_intel_source_state("feed-a")
+        self.assertEqual(state["active_generation"], "gen_b")
+        self.assertEqual(state["etag"], "etag-b2")
+        self.assertEqual(state["last_modified"], "Tue, 02 Jan 2024 00:00:00 GMT")
+        self.assertEqual(state["consecutive_failures"], 0)
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generations")["count"],
+            2,
+        )
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generation_entries")["count"],
+            5,
+        )
+        self.assertEqual(
+            db.query_one(
+                "SELECT COUNT(*) AS count FROM threat_intel_generations WHERE status = 'active'"
+            )["count"],
+            1,
+        )
+        self.assertEqual(
+            db.query_one("SELECT status FROM threat_intel_generations WHERE generation_id = 'gen_a'")[
+                "status"
+            ],
+            "inactive",
+        )
+        self.assertIsNotNone(db.get_active_threat_intel("b-three.example"))
+        self.assertIsNone(db.get_active_threat_intel("a-one.example"))
+        audit = db.list_intel_update_audit(limit=1, source_id="feed-a")[0]
+        self.assertEqual(audit["operation"], "reactivate")
+        self.assertTrue(audit["reused_generation"])
+        self.assertFalse(audit["created_generation"])
+        self.assertEqual(audit["previous_generation"], "gen_a")
+        self.assertEqual(audit["active_generation"], "gen_b")
+        self.assertEqual(audit["accepted_entries"], 3)
+
+    def test_repeated_ab_update_rollback_cycle_does_not_duplicate_generations(self) -> None:
+        content_a = b"a-one.example\na-two.example\n"
+        content_b = b"b-one.example\nb-two.example\nb-three.example\n"
+        db.save_intel_source(
+            FeedSource(
+                source_id="feed-a",
+                name="Feed A",
+                url="https://feeds.example/a.txt",
+            )
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value=content_sha256(content_a),
+            entries=["a-one.example", "a-two.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_b",
+            content_sha256_value=content_sha256(content_b),
+            entries=["b-one.example", "b-two.example", "b-three.example"],
+            category="malware",
+            confidence=80,
+        )
+
+        for _ in range(2):
+            self.assertEqual(db.rollback_intel_generation("feed-a"), "gen_a")
+            with patch(
+                "pihole_ai.intel.fetch_feed",
+                return_value=FetchResult(status_code=200, content=content_b, downloaded_bytes=len(content_b)),
+            ):
+                result = update_source("feed-a")
+            self.assertTrue(result.reused_generation)
+            self.assertEqual(result.active_generation, "gen_b")
+
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generations")["count"],
+            2,
+        )
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generation_entries")["count"],
+            5,
+        )
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generations WHERE status = 'active'")[
+                "count"
+            ],
+            1,
+        )
+        self.assertEqual(db.rollback_intel_generation("feed-a"), "gen_a")
+
+    def test_matching_generation_from_other_source_or_staging_is_ignored(self) -> None:
+        content_a = b"a.example\n"
+        content_b = b"b.example\n"
+        sha_b = content_sha256(content_b)
+        for source_id in ("feed-a", "feed-b"):
+            db.save_intel_source(
+                FeedSource(
+                    source_id=source_id,
+                    name=source_id,
+                    url=f"https://feeds.example/{source_id}.txt",
+                )
+            )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value=content_sha256(content_a),
+            entries=["a.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.activate_intel_generation(
+            source_id="feed-b",
+            generation_id="gen_other",
+            content_sha256_value=sha_b,
+            entries=["b.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.execute(
+            """
+            INSERT INTO threat_intel_generations
+            (
+                generation_id,
+                source_id,
+                status,
+                content_sha256,
+                entry_count,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("gen_staging", "feed-a", "staging", sha_b, 1, 1.0),
+        )
+
+        with patch(
+            "pihole_ai.intel.fetch_feed",
+            return_value=FetchResult(status_code=200, content=content_b, downloaded_bytes=len(content_b)),
+        ):
+            result = update_source("feed-a")
+
+        self.assertTrue(result.changed)
+        self.assertFalse(result.reused_generation)
+        self.assertTrue(result.created_generation)
+        self.assertNotIn(result.active_generation, {"gen_other", "gen_staging"})
+
+    def test_reactivation_transaction_rollback_leaves_original_active(self) -> None:
+        db.save_intel_source(
+            FeedSource(
+                source_id="feed-a",
+                name="Feed A",
+                url="https://feeds.example/a.txt",
+            )
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value="sha-a",
+            entries=["a.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_b",
+            content_sha256_value="sha-b",
+            entries=["b.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.rollback_intel_generation("feed-a")
+
+        with self.assertRaises(ValueError):
+            db.activate_existing_threat_intel_generation(
+                source_id="feed-a",
+                generation_id="gen_b",
+                previous_generation_id="not-current",
+            )
+
+        state = db.get_intel_source_state("feed-a")
+        self.assertEqual(state["active_generation"], "gen_a")
+        self.assertEqual(
+            db.query_one("SELECT status FROM threat_intel_generations WHERE generation_id = 'gen_a'")[
+                "status"
+            ],
+            "active",
         )
 
     def test_source_update_preserves_generations_and_clears_validators_for_url_change(self) -> None:

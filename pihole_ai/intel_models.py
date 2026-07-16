@@ -73,6 +73,9 @@ class FeedUpdateResult:
     success: bool
     changed: bool = False
     not_modified: bool = False
+    content_unchanged: bool = False
+    reused_generation: bool = False
+    created_generation: bool = False
     downloaded_bytes: int = 0
     parsed_entries: int = 0
     accepted_entries: int = 0

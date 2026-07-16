@@ -29,12 +29,20 @@ class MigrationTests(unittest.TestCase):
                 history = conn.execute(
                     "SELECT version, name FROM schema_migrations"
                 ).fetchall()
+                audit_columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(threat_intel_update_audit)")
+                }
 
         self.assertTrue(result.changed)
         self.assertEqual(result.version_before, 0)
         self.assertEqual(result.version_after, migrations.LATEST_SUPPORTED_SCHEMA_VERSION)
         self.assertIn("events", tables)
         self.assertIn("analysis", tables)
+        self.assertIn("operation", audit_columns)
+        self.assertIn("reused_generation", audit_columns)
+        self.assertIn("created_generation", audit_columns)
+        self.assertIn("content_unchanged", audit_columns)
         self.assertEqual(
             history,
             [(migration.version, migration.name) for migration in migrations.MIGRATIONS],

@@ -713,6 +713,24 @@ def _apply_threat_intel_feed_management(conn: sqlite3.Connection) -> None:
         )
 
 
+def _apply_threat_intel_reactivation_audit(conn: sqlite3.Connection) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(threat_intel_update_audit)")
+    }
+    additions = {
+        "operation": "TEXT NOT NULL DEFAULT 'update'",
+        "reused_generation": "INTEGER NOT NULL DEFAULT 0",
+        "created_generation": "INTEGER NOT NULL DEFAULT 0",
+        "content_unchanged": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for column, definition in additions.items():
+        if column not in columns:
+            conn.execute(
+                f"ALTER TABLE threat_intel_update_audit ADD COLUMN {column} {definition}"
+            )
+
+
 MIGRATIONS = [
     Migration(
         version=1,
@@ -743,6 +761,11 @@ MIGRATIONS = [
         version=6,
         name="threat_intel_feed_management",
         apply=_apply_threat_intel_feed_management,
+    ),
+    Migration(
+        version=7,
+        name="threat_intel_reactivation_audit",
+        apply=_apply_threat_intel_reactivation_audit,
     ),
 ]
 

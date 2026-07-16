@@ -141,6 +141,12 @@ Changing `--url` or fetch-related settings clears ETag and Last-Modified
 validators so the next explicit `intel update` refetches safely. Display-only
 changes such as `--name` preserve validators and the active source state.
 
+`intel update` reports whether downloaded content left the active generation
+unchanged, reactivated an existing inactive generation, or created a new
+generation. JSON output includes `content_unchanged`, `reused_generation`, and
+`created_generation`; text output names the reactivated generation and previous
+active generation when reuse occurs.
+
 ## Security-Sensitive Input
 
 Use `dashboard auth set-password --password-stdin` for automation. Do not place

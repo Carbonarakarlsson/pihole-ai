@@ -16,7 +16,9 @@ from typing import Any, Iterable
 
 from core.config import settings
 from core.db import (
+    activate_existing_threat_intel_generation,
     activate_intel_generation,
+    find_reusable_threat_intel_generation,
     get_intel_source,
     get_intel_source_state,
     list_threat_intel,
@@ -336,6 +338,7 @@ def update_source(
                 success=True,
                 changed=False,
                 not_modified=True,
+                content_unchanged=True,
                 downloaded_bytes=fetched.downloaded_bytes,
                 previous_generation=str(state.get("active_generation") or ""),
                 active_generation=str(state.get("active_generation") or ""),
@@ -358,6 +361,7 @@ def update_source(
                 success=True,
                 changed=False,
                 not_modified=True,
+                content_unchanged=True,
                 downloaded_bytes=fetched.downloaded_bytes,
                 parsed_entries=parsed.parsed_entries,
                 accepted_entries=len(parsed.accepted_entries),
@@ -380,6 +384,40 @@ def update_source(
                     }
                 )
             return result
+        reusable = find_reusable_threat_intel_generation(source_id, sha)
+        if reusable is not None:
+            active = str(reusable["generation_id"])
+            entry_count = int(reusable["entry_count"])
+            if not dry_run:
+                previous, active = activate_existing_threat_intel_generation(
+                    source_id=source_id,
+                    generation_id=active,
+                    previous_generation_id=previous,
+                    etag=fetched.etag,
+                    last_modified=fetched.last_modified,
+                )
+            result = FeedUpdateResult(
+                source_id=source_id,
+                success=True,
+                changed=True,
+                reused_generation=True,
+                downloaded_bytes=fetched.downloaded_bytes,
+                parsed_entries=parsed.parsed_entries,
+                accepted_entries=entry_count,
+                rejected_entries=parsed.rejected_count,
+                duplicate_entries=parsed.duplicate_count,
+                previous_generation=previous,
+                active_generation=active if not dry_run else "",
+                dry_run=dry_run,
+                would_activate=dry_run,
+                proposed_generation_id=active if dry_run else "",
+                current_active_generation=previous,
+                duration_ms=int((time.time() - started) * 1000),
+                warnings=warnings + parsed.warnings,
+            )
+            if not dry_run:
+                record_intel_update_audit(result, http_status=fetched.status_code)
+            return result
         generation_id = f"gen_{uuid.uuid4().hex}"
         active = "" if dry_run else generation_id
         if not dry_run:
@@ -397,6 +435,7 @@ def update_source(
             source_id=source_id,
             success=True,
             changed=True,
+            created_generation=not dry_run,
             downloaded_bytes=fetched.downloaded_bytes,
             parsed_entries=parsed.parsed_entries,
             accepted_entries=len(parsed.accepted_entries),

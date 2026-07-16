@@ -107,6 +107,11 @@ activation, rollback, and update audit history. Classification only uses enabled
 sources with an active generation, so failed downloads do not replace the last
 known-good feed.
 
+Successful updates have three outcomes: active content unchanged, an existing
+inactive historical generation reactivated, or a newly created generation
+activated. When downloaded content matches a valid inactive generation, PiHole-AI
+reuses that generation instead of duplicating entries.
+
 Use `pihole-ai intel source update <source-id>` to edit a configured source
 without deleting its generations. URL or fetch-setting changes clear HTTP
 validators so the next explicit update refetches content, but the active
