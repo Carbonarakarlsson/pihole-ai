@@ -731,6 +731,68 @@ def _apply_threat_intel_reactivation_audit(conn: sqlite3.Connection) -> None:
             )
 
 
+def _apply_threat_intel_remote_generation_state(conn: sqlite3.Connection) -> None:
+    state_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(threat_intel_source_state)")
+    }
+    if "remote_generation_id" not in state_columns:
+        conn.execute(
+            """
+            ALTER TABLE threat_intel_source_state
+            ADD COLUMN remote_generation_id TEXT NOT NULL DEFAULT ''
+            """
+        )
+
+    audit_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(threat_intel_update_audit)")
+    }
+    if "trigger" not in audit_columns:
+        conn.execute(
+            """
+            ALTER TABLE threat_intel_update_audit
+            ADD COLUMN trigger TEXT NOT NULL DEFAULT ''
+            """
+        )
+
+    states = conn.execute(
+        """
+        SELECT source_id, content_sha256
+        FROM threat_intel_source_state
+        WHERE content_sha256 != ''
+          AND remote_generation_id = ''
+        """
+    ).fetchall()
+    for state in states:
+        matches = conn.execute(
+            """
+            SELECT
+                g.generation_id,
+                COUNT(e.id) AS stored_entry_count
+            FROM threat_intel_generations g
+            LEFT JOIN threat_intel_generation_entries e
+                ON e.generation_id = g.generation_id
+            WHERE g.source_id = ?
+              AND g.content_sha256 = ?
+              AND g.status IN ('active', 'inactive')
+              AND g.activated_at IS NOT NULL
+            GROUP BY g.generation_id, g.entry_count
+            HAVING stored_entry_count = g.entry_count
+            """,
+            (state["source_id"], state["content_sha256"]),
+        ).fetchall()
+        if len(matches) == 1:
+            conn.execute(
+                """
+                UPDATE threat_intel_source_state
+                SET remote_generation_id = ?
+                WHERE source_id = ?
+                """,
+                (matches[0]["generation_id"], state["source_id"]),
+            )
+
+
 MIGRATIONS = [
     Migration(
         version=1,
@@ -766,6 +828,11 @@ MIGRATIONS = [
         version=7,
         name="threat_intel_reactivation_audit",
         apply=_apply_threat_intel_reactivation_audit,
+    ),
+    Migration(
+        version=8,
+        name="threat_intel_remote_generation_state",
+        apply=_apply_threat_intel_remote_generation_state,
     ),
 ]
 

@@ -903,11 +903,254 @@ class DatabaseTests(unittest.TestCase):
         self.assertIsNone(db.get_active_threat_intel("a-one.example"))
         audit = db.list_intel_update_audit(limit=1, source_id="feed-a")[0]
         self.assertEqual(audit["operation"], "reactivate")
+        self.assertEqual(audit["trigger"], "")
         self.assertTrue(audit["reused_generation"])
         self.assertFalse(audit["created_generation"])
         self.assertEqual(audit["previous_generation"], "gen_a")
         self.assertEqual(audit["active_generation"], "gen_b")
         self.assertEqual(audit["accepted_entries"], 3)
+
+    def test_http_304_reactivates_remote_generation_after_rollback(self) -> None:
+        content_a = b"a-one.example\na-two.example\n"
+        content_b = b"b-one.example\nb-two.example\nb-three.example\n"
+        db.save_intel_source(
+            FeedSource(source_id="feed-a", name="Feed A", url="https://feeds.example/a.txt")
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value=content_sha256(content_a),
+            entries=["a-one.example", "a-two.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_b",
+            content_sha256_value=content_sha256(content_b),
+            entries=["b-one.example", "b-two.example", "b-three.example"],
+            category="malware",
+            confidence=80,
+            etag="etag-b",
+            last_modified="Tue, 02 Jan 2024 00:00:00 GMT",
+        )
+        self.assertEqual(db.rollback_intel_generation("feed-a"), "gen_a")
+        state_after_rollback = db.get_intel_source_state("feed-a")
+        self.assertEqual(state_after_rollback["active_generation"], "gen_a")
+        self.assertEqual(state_after_rollback["remote_generation_id"], "gen_b")
+        self.assertEqual(state_after_rollback["etag"], "etag-b")
+        self.assertEqual(state_after_rollback["content_sha256"], content_sha256(content_b))
+
+        with patch(
+            "pihole_ai.intel.fetch_feed",
+            return_value=FetchResult(
+                status_code=304,
+                content=b"",
+                not_modified=True,
+                etag="etag-b",
+                last_modified="Tue, 02 Jan 2024 00:00:00 GMT",
+                downloaded_bytes=0,
+            ),
+        ):
+            result = update_source("feed-a")
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.changed)
+        self.assertTrue(result.not_modified)
+        self.assertTrue(result.reused_generation)
+        self.assertFalse(result.created_generation)
+        self.assertFalse(result.content_unchanged)
+        self.assertEqual(result.previous_generation, "gen_a")
+        self.assertEqual(result.active_generation, "gen_b")
+        self.assertEqual(result.remote_generation, "gen_b")
+        state = db.get_intel_source_state("feed-a")
+        self.assertEqual(state["active_generation"], "gen_b")
+        self.assertEqual(state["remote_generation_id"], "gen_b")
+        self.assertEqual(state["etag"], "etag-b")
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generations")["count"],
+            2,
+        )
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generation_entries")["count"],
+            5,
+        )
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generations WHERE status = 'active'")[
+                "count"
+            ],
+            1,
+        )
+        self.assertIsNotNone(db.get_active_threat_intel("b-three.example"))
+        audit = db.list_intel_update_audit(limit=1, source_id="feed-a")[0]
+        self.assertEqual(audit["operation"], "reactivate")
+        self.assertEqual(audit["trigger"], "http_not_modified")
+        self.assertTrue(audit["changed"])
+        self.assertTrue(audit["not_modified"])
+        self.assertTrue(audit["reused_generation"])
+
+        self.assertEqual(db.rollback_intel_generation("feed-a"), "gen_a")
+        with patch(
+            "pihole_ai.intel.fetch_feed",
+            return_value=FetchResult(
+                status_code=304,
+                content=b"",
+                not_modified=True,
+                etag="etag-b",
+                last_modified="Tue, 02 Jan 2024 00:00:00 GMT",
+                downloaded_bytes=0,
+            ),
+        ):
+            repeated = update_source("feed-a")
+
+        self.assertTrue(repeated.reused_generation)
+        self.assertEqual(repeated.active_generation, "gen_b")
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generations")["count"],
+            2,
+        )
+        self.assertEqual(
+            db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generation_entries")["count"],
+            5,
+        )
+
+    def test_http_304_when_remote_generation_is_active_is_unchanged(self) -> None:
+        db.save_intel_source(
+            FeedSource(source_id="feed-a", name="Feed A", url="https://feeds.example/a.txt")
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value="sha-a",
+            entries=["a.example"],
+            category="malware",
+            confidence=80,
+            etag="etag-a",
+        )
+
+        with patch(
+            "pihole_ai.intel.fetch_feed",
+            return_value=FetchResult(status_code=304, content=b"", not_modified=True, etag="etag-a"),
+        ):
+            result = update_source("feed-a")
+
+        self.assertTrue(result.success)
+        self.assertFalse(result.changed)
+        self.assertTrue(result.not_modified)
+        self.assertTrue(result.content_unchanged)
+        self.assertFalse(result.reused_generation)
+        self.assertEqual(result.active_generation, "gen_a")
+        self.assertEqual(result.remote_generation, "gen_a")
+
+    def test_http_304_reactivation_can_infer_legacy_remote_generation_from_hash(self) -> None:
+        content_a = b"a.example\n"
+        content_b = b"b.example\n"
+        db.save_intel_source(
+            FeedSource(source_id="feed-a", name="Feed A", url="https://feeds.example/a.txt")
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value=content_sha256(content_a),
+            entries=["a.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_b",
+            content_sha256_value=content_sha256(content_b),
+            entries=["b.example"],
+            category="malware",
+            confidence=80,
+            etag="etag-b",
+        )
+        db.rollback_intel_generation("feed-a")
+        db.execute(
+            "UPDATE threat_intel_source_state SET remote_generation_id = '' WHERE source_id = ?",
+            ("feed-a",),
+        )
+
+        with patch(
+            "pihole_ai.intel.fetch_feed",
+            return_value=FetchResult(status_code=304, content=b"", not_modified=True, etag="etag-b"),
+        ):
+            result = update_source("feed-a")
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.reused_generation)
+        self.assertEqual(result.active_generation, "gen_b")
+
+    def test_http_304_missing_remote_reference_fails_safely(self) -> None:
+        db.save_intel_source(
+            FeedSource(source_id="feed-a", name="Feed A", url="https://feeds.example/a.txt")
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value="sha-a",
+            entries=["a.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.execute(
+            """
+            UPDATE threat_intel_source_state
+            SET remote_generation_id = '', content_sha256 = ''
+            WHERE source_id = ?
+            """,
+            ("feed-a",),
+        )
+
+        with patch(
+            "pihole_ai.intel.fetch_feed",
+            return_value=FetchResult(status_code=304, content=b"", not_modified=True),
+        ):
+            result = update_source("feed-a")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "intel.generation.remote_reference_missing")
+        self.assertEqual(db.get_intel_source_state("feed-a")["active_generation"], "gen_a")
+
+    def test_http_304_cross_source_remote_reference_is_rejected(self) -> None:
+        for source_id in ("feed-a", "feed-b"):
+            db.save_intel_source(
+                FeedSource(source_id=source_id, name=source_id, url=f"https://feeds.example/{source_id}.txt")
+            )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value="sha-a",
+            entries=["a.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.activate_intel_generation(
+            source_id="feed-b",
+            generation_id="gen_b",
+            content_sha256_value="sha-b",
+            entries=["b.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.execute(
+            """
+            UPDATE threat_intel_source_state
+            SET remote_generation_id = ?, content_sha256 = ?
+            WHERE source_id = ?
+            """,
+            ("gen_b", "sha-b", "feed-a"),
+        )
+
+        with patch(
+            "pihole_ai.intel.fetch_feed",
+            return_value=FetchResult(status_code=304, content=b"", not_modified=True),
+        ):
+            result = update_source("feed-a")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error_code, "intel.generation.remote_reference_missing")
+        self.assertEqual(db.get_intel_source_state("feed-a")["active_generation"], "gen_a")
 
     def test_repeated_ab_update_rollback_cycle_does_not_duplicate_generations(self) -> None:
         content_a = b"a-one.example\na-two.example\n"

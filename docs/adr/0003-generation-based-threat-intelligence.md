@@ -25,6 +25,12 @@ generation atomically; new content creates and activates a new generation. The
 `previous_generation` column is the current rollback pointer and may be updated
 during reactivation; it is not immutable creation provenance.
 
+HTTP validators describe the remote representation, not necessarily the
+classifier-active generation. Source state keeps `remote_generation_id` beside
+the validators and content hash. Rollback preserves that remote-generation
+identity while changing `active_generation`, allowing an HTTP 304 after rollback
+to reactivate the unchanged remote generation.
+
 Manual `intel import-hosts` remains supported through a managed legacy source
 and generation so existing workflows keep working.
 
@@ -35,4 +41,6 @@ and generation so existing workflows keep working.
 - Feed updates have an audit trail and safe rollback path.
 - A/B field-test cycles can reactivate stored generations without duplicating
   generation or entry rows.
+- Conditional HTTP 304 responses can reactivate the stored remote generation
+  after rollback without fetching or creating duplicate rows.
 - Storage grows with generations until a future retention policy is added.

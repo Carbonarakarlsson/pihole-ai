@@ -19,6 +19,7 @@ from core.db import (
     activate_existing_threat_intel_generation,
     activate_intel_generation,
     find_reusable_threat_intel_generation,
+    get_threat_intel_generation,
     get_intel_source,
     get_intel_source_state,
     list_threat_intel,
@@ -302,6 +303,37 @@ def source_status() -> list[dict[str, Any]]:
     return list_intel_source_status()
 
 
+def _generation_is_valid_remote(generation: dict[str, Any] | None) -> bool:
+    return bool(
+        generation
+        and generation.get("status") in {"active", "inactive"}
+        and generation.get("activated_at") is not None
+        and int(generation.get("stored_entry_count") or -1) == int(generation.get("entry_count") or 0)
+    )
+
+
+def _resolve_remote_generation(source_id: str, state: dict[str, Any]) -> dict[str, Any] | None:
+    remote_generation_id = str(state.get("remote_generation_id") or "")
+    if remote_generation_id:
+        generation = get_threat_intel_generation(source_id, remote_generation_id)
+        return generation if _generation_is_valid_remote(generation) else None
+
+    content_hash = str(state.get("content_sha256") or "")
+    if not content_hash:
+        return None
+
+    active_generation_id = str(state.get("active_generation") or "")
+    if active_generation_id:
+        active_generation = get_threat_intel_generation(source_id, active_generation_id)
+        if (
+            _generation_is_valid_remote(active_generation)
+            and str(active_generation.get("content_sha256") or "") == content_hash
+        ):
+            return active_generation
+
+    return find_reusable_threat_intel_generation(source_id, content_hash)
+
+
 def update_source(
     source_id: str,
     *,
@@ -333,6 +365,78 @@ def update_source(
             user_agent=settings.intel_user_agent,
         )
         if fetched.not_modified:
+            previous = str(state.get("active_generation") or "")
+            remote_generation = _resolve_remote_generation(source_id, state)
+            if remote_generation is None:
+                result = FeedUpdateResult(
+                    source_id=source_id,
+                    success=False,
+                    changed=False,
+                    not_modified=True,
+                    downloaded_bytes=fetched.downloaded_bytes,
+                    previous_generation=previous,
+                    active_generation=previous,
+                    current_active_generation=previous,
+                    duration_ms=int((time.time() - started) * 1000),
+                    trigger="http_not_modified",
+                    error_code="intel.generation.remote_reference_missing",
+                    error_summary="HTTP validators do not identify a reusable generation.",
+                )
+                if not dry_run:
+                    record_intel_update_audit(result, http_status=304)
+                return result
+            remote_generation_id = str(remote_generation["generation_id"])
+            remote_entry_count = int(remote_generation["entry_count"])
+            if previous and remote_generation_id != previous:
+                active = "" if dry_run else remote_generation_id
+                if not dry_run:
+                    try:
+                        previous, active = activate_existing_threat_intel_generation(
+                            source_id=source_id,
+                            generation_id=remote_generation_id,
+                            previous_generation_id=previous,
+                            etag=fetched.etag,
+                            last_modified=fetched.last_modified,
+                        )
+                    except ValueError as exc:
+                        result = FeedUpdateResult(
+                            source_id=source_id,
+                            success=False,
+                            changed=False,
+                            not_modified=True,
+                            downloaded_bytes=fetched.downloaded_bytes,
+                            previous_generation=previous,
+                            active_generation=previous,
+                            remote_generation=remote_generation_id,
+                            current_active_generation=previous,
+                            duration_ms=int((time.time() - started) * 1000),
+                            trigger="http_not_modified",
+                            error_code="intel.generation.remote_reference_missing",
+                            error_summary=str(exc),
+                        )
+                        record_intel_update_audit(result, http_status=304)
+                        return result
+                result = FeedUpdateResult(
+                    source_id=source_id,
+                    success=True,
+                    changed=True,
+                    not_modified=True,
+                    reused_generation=True,
+                    downloaded_bytes=fetched.downloaded_bytes,
+                    accepted_entries=remote_entry_count,
+                    previous_generation=previous,
+                    active_generation=active,
+                    remote_generation=remote_generation_id,
+                    dry_run=dry_run,
+                    would_activate=dry_run,
+                    proposed_generation_id=remote_generation_id if dry_run else "",
+                    current_active_generation=previous,
+                    duration_ms=int((time.time() - started) * 1000),
+                    trigger="http_not_modified",
+                )
+                if not dry_run:
+                    record_intel_update_audit(result, http_status=304)
+                return result
             result = FeedUpdateResult(
                 source_id=source_id,
                 success=True,
@@ -340,12 +444,21 @@ def update_source(
                 not_modified=True,
                 content_unchanged=True,
                 downloaded_bytes=fetched.downloaded_bytes,
-                previous_generation=str(state.get("active_generation") or ""),
-                active_generation=str(state.get("active_generation") or ""),
+                accepted_entries=remote_entry_count,
+                previous_generation=previous,
+                active_generation=previous,
+                remote_generation=remote_generation_id,
+                current_active_generation=previous,
                 duration_ms=int((time.time() - started) * 1000),
+                trigger="http_not_modified",
             )
             if not dry_run:
-                mark_intel_update_not_modified(source_id, fetched.etag, fetched.last_modified)
+                mark_intel_update_not_modified(
+                    source_id,
+                    fetched.etag,
+                    fetched.last_modified,
+                    remote_generation_id=remote_generation_id,
+                )
                 record_intel_update_audit(result, http_status=304)
             return result
         parsed = parse_feed(fetched.content, source.format, source)
@@ -355,7 +468,9 @@ def update_source(
         )
         sha = content_sha256(fetched.content)
         previous = str(state.get("active_generation") or "")
-        if previous and str(state.get("content_sha256") or "") == sha:
+        active_generation = get_threat_intel_generation(source_id, previous) if previous else None
+        active_sha = str(active_generation.get("content_sha256") or "") if active_generation else ""
+        if previous and active_sha == sha:
             result = FeedUpdateResult(
                 source_id=source_id,
                 success=True,
@@ -369,12 +484,18 @@ def update_source(
                 duplicate_entries=parsed.duplicate_count,
                 previous_generation=previous,
                 active_generation=previous,
+                remote_generation=previous,
                 current_active_generation=previous,
                 duration_ms=int((time.time() - started) * 1000),
                 warnings=warnings + parsed.warnings,
             )
             if not dry_run:
-                mark_intel_update_not_modified(source_id, fetched.etag, fetched.last_modified)
+                mark_intel_update_not_modified(
+                    source_id,
+                    fetched.etag,
+                    fetched.last_modified,
+                    remote_generation_id=previous,
+                )
                 record_intel_update_audit(result, http_status=fetched.status_code)
             else:
                 result = FeedUpdateResult(
@@ -408,6 +529,7 @@ def update_source(
                 duplicate_entries=parsed.duplicate_count,
                 previous_generation=previous,
                 active_generation=active if not dry_run else "",
+                remote_generation=active,
                 dry_run=dry_run,
                 would_activate=dry_run,
                 proposed_generation_id=active if dry_run else "",
@@ -443,6 +565,7 @@ def update_source(
             duplicate_entries=parsed.duplicate_count,
             previous_generation=previous,
             active_generation=active,
+            remote_generation=active,
             dry_run=dry_run,
             would_activate=dry_run,
             proposed_generation_id=generation_id if dry_run else "",

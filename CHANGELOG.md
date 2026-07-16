@@ -36,6 +36,8 @@
   resetting validators only for URL or fetch-setting changes.
 - Threat-intelligence updates now distinguish unchanged active content,
   reactivated historical generations, and newly created generations.
+- Threat-intelligence source state now tracks the remote representation
+  generation separately from the classifier-active generation.
 
 ### Fixed
 
@@ -44,6 +46,9 @@
 - Fixed packaged alert-log defaults to use `/var/log/pihole-ai/alerts.log`.
 - Fixed A -> B -> rollback A -> update B feed cycles so matching inactive
   generations are reactivated instead of reported unchanged or duplicated.
+- Fixed HTTP 304 updates after rollback so unchanged remote content can
+  reactivate the stored remote generation instead of reporting the active
+  rollback generation unchanged.
 - Modernized package license metadata to avoid setuptools license-table
   deprecation warnings.
 

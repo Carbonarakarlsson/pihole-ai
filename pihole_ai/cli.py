@@ -1587,6 +1587,8 @@ def main(
                             f"accepted={result.accepted_entries} active={result.active_generation}"
                         )
                         if result.reused_generation:
+                            if result.not_modified:
+                                print("Remote content is not modified.")
                             print(f"Reactivated existing generation {result.active_generation}.")
                             print(f"Previous active generation: {result.previous_generation}.")
             return 0 if all(result.success for result in results) else 1

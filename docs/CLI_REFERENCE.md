@@ -144,8 +144,9 @@ changes such as `--name` preserve validators and the active source state.
 `intel update` reports whether downloaded content left the active generation
 unchanged, reactivated an existing inactive generation, or created a new
 generation. JSON output includes `content_unchanged`, `reused_generation`, and
-`created_generation`; text output names the reactivated generation and previous
-active generation when reuse occurs.
+`created_generation`; 304 reactivation output also includes `not_modified`,
+`trigger=http_not_modified`, and `remote_generation`. Text output names the
+reactivated generation and previous active generation when reuse occurs.
 
 ## Security-Sensitive Input
 

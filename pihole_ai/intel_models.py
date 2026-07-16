@@ -59,6 +59,7 @@ class FeedState:
     content_sha256: str = ""
     entry_count: int = 0
     active_generation: str = ""
+    remote_generation_id: str = ""
     last_error_code: str = ""
     last_error_summary: str = ""
     consecutive_failures: int = 0
@@ -83,12 +84,14 @@ class FeedUpdateResult:
     duplicate_entries: int = 0
     previous_generation: str = ""
     active_generation: str = ""
+    remote_generation: str = ""
     dry_run: bool = False
     would_activate: bool = False
     proposed_generation_id: str = ""
     current_active_generation: str = ""
     duration_ms: int = 0
     warnings: list[str] = field(default_factory=list)
+    trigger: str = ""
     error_code: str = ""
     error_summary: str = ""
 

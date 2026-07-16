@@ -111,6 +111,9 @@ Successful updates have three outcomes: active content unchanged, an existing
 inactive historical generation reactivated, or a newly created generation
 activated. When downloaded content matches a valid inactive generation, PiHole-AI
 reuses that generation instead of duplicating entries.
+HTTP validators track the last fetched remote representation separately from the
+classifier-active generation, so rollback can be followed by a 304-triggered
+reactivation of the unchanged remote generation.
 
 Use `pihole-ai intel source update <source-id>` to edit a configured source
 without deleting its generations. URL or fetch-setting changes clear HTTP

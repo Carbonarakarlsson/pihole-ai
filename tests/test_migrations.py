@@ -33,6 +33,10 @@ class MigrationTests(unittest.TestCase):
                     row[1]
                     for row in conn.execute("PRAGMA table_info(threat_intel_update_audit)")
                 }
+                state_columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(threat_intel_source_state)")
+                }
 
         self.assertTrue(result.changed)
         self.assertEqual(result.version_before, 0)
@@ -43,6 +47,8 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("reused_generation", audit_columns)
         self.assertIn("created_generation", audit_columns)
         self.assertIn("content_unchanged", audit_columns)
+        self.assertIn("trigger", audit_columns)
+        self.assertIn("remote_generation_id", state_columns)
         self.assertEqual(
             history,
             [(migration.version, migration.name) for migration in migrations.MIGRATIONS],

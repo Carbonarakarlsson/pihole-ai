@@ -94,7 +94,16 @@ generation for the source. Successful updates distinguish active content
 unchanged, reactivation of a valid inactive historical generation with matching
 content, and activation of a newly created generation. Reactivation updates
 `previous_generation` as the current rollback pointer; it is not immutable
-creation provenance. Source metadata edits are separate from feed updates:
+creation provenance.
+
+Source state separates HTTP remote representation from classifier activation.
+`etag`, `last_modified`, `content_sha256`, and `remote_generation_id` describe
+the last successfully fetched remote representation. `active_generation`
+describes what classifiers currently read. Rollback changes local activation
+without redefining the remote representation, so a later HTTP 304 can reactivate
+the historical generation represented by the validators.
+
+Source metadata edits are separate from feed updates:
 `intel source update` preserves active/prior generations and clears validators
 only when URL or fetch settings change. Source-configuration edit auditing is
 follow-up debt; the current threat-intel audit table tracks feed update and

@@ -524,7 +524,10 @@ class CLITests(unittest.TestCase):
             accepted_entries=3,
             previous_generation="gen_a",
             active_generation="gen_b",
+            remote_generation="gen_b",
             reused_generation=True,
+            not_modified=True,
+            trigger="http_not_modified",
         )
         with patch("pihole_ai.intel.update_sources", return_value=[result]), \
              patch("sys.stdout", io.StringIO()) as stdout:
@@ -533,6 +536,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         output = stdout.getvalue()
         self.assertIn("feed-a: ok changed=True accepted=3 active=gen_b", output)
+        self.assertIn("Remote content is not modified.", output)
         self.assertIn("Reactivated existing generation gen_b.", output)
         self.assertIn("Previous active generation: gen_a.", output)
 
@@ -544,9 +548,12 @@ class CLITests(unittest.TestCase):
             accepted_entries=3,
             previous_generation="gen_a",
             active_generation="gen_b",
+            remote_generation="gen_b",
             reused_generation=True,
             created_generation=False,
             content_unchanged=False,
+            not_modified=True,
+            trigger="http_not_modified",
         )
         with patch("pihole_ai.intel.update_sources", return_value=[result]), \
              patch("sys.stdout", io.StringIO()) as stdout:
@@ -558,6 +565,9 @@ class CLITests(unittest.TestCase):
         self.assertTrue(payload[0]["reused_generation"])
         self.assertFalse(payload[0]["created_generation"])
         self.assertFalse(payload[0]["content_unchanged"])
+        self.assertTrue(payload[0]["not_modified"])
+        self.assertEqual(payload[0]["remote_generation"], "gen_b")
+        self.assertEqual(payload[0]["trigger"], "http_not_modified")
 
     def test_intel_confidence_help_documents_range_and_units(self) -> None:
         with patch("sys.stdout", io.StringIO()) as stdout:

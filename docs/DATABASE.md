@@ -5,7 +5,7 @@ FTL database as an external read-only input.
 
 ## Current Schema
 
-Latest supported schema version: `7`.
+Latest supported schema version: `8`.
 
 Registered migrations:
 
@@ -18,6 +18,7 @@ Registered migrations:
 | 5 | `immutable_decision_history` |
 | 6 | `threat_intel_feed_management` |
 | 7 | `threat_intel_reactivation_audit` |
+| 8 | `threat_intel_remote_generation_state` |
 
 The migration registry lives in `core/migrations.py`. Versions must be unique,
 ascending, non-empty, and contiguous unless a gap is explicitly documented.
@@ -38,7 +39,8 @@ ascending, non-empty, and contiguous unless a gap is explicitly documented.
 - `domain_reputation`: learned local reputation.
 - `threat_intel`: compatibility table for manually imported indicators.
 - `threat_intel_sources`: configured threat-intelligence feeds.
-- `threat_intel_source_state`: active generation and update status per feed.
+- `threat_intel_source_state`: active generation, remote representation
+  generation, validators, and update status per feed.
 - `threat_intel_generations`: immutable imported feed generations.
 - `threat_intel_generation_entries`: domains linked to one generation.
 - `threat_intel_update_audit`: feed update/rollback/reactivation audit trail.

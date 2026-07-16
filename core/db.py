@@ -2421,6 +2421,7 @@ def list_intel_source_status() -> list[dict[str, Any]]:
             st.content_sha256,
             st.entry_count,
             st.active_generation,
+            st.remote_generation_id,
             st.last_error_code,
             st.last_error_summary,
             st.consecutive_failures
@@ -2524,11 +2525,12 @@ def activate_intel_generation(
                 content_sha256,
                 entry_count,
                 active_generation,
+                remote_generation_id,
                 last_error_code,
                 last_error_summary,
                 consecutive_failures
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
             ON CONFLICT(source_id)
 
@@ -2542,6 +2544,7 @@ def activate_intel_generation(
                 content_sha256 = excluded.content_sha256,
                 entry_count = excluded.entry_count,
                 active_generation = excluded.active_generation,
+                remote_generation_id = excluded.remote_generation_id,
                 last_error_code = '',
                 last_error_summary = '',
                 consecutive_failures = 0
@@ -2556,6 +2559,7 @@ def activate_intel_generation(
                 last_modified,
                 content_sha256_value,
                 len(entries),
+                generation_id,
                 generation_id,
                 "",
                 "",
@@ -2598,6 +2602,40 @@ def find_reusable_threat_intel_generation(
         LIMIT 1
         """,
         (source_id, content_sha256_value),
+    )
+    return dict(row) if row is not None else None
+
+
+def get_threat_intel_generation(
+    source_id: str,
+    generation_id: str,
+) -> dict[str, Any] | None:
+    row = query_one(
+        """
+        SELECT
+            g.generation_id,
+            g.source_id,
+            g.status,
+            g.content_sha256,
+            g.entry_count,
+            g.activated_at,
+            g.previous_generation,
+            COUNT(e.id) AS stored_entry_count
+        FROM threat_intel_generations g
+        LEFT JOIN threat_intel_generation_entries e
+            ON e.generation_id = g.generation_id
+        WHERE g.source_id = ?
+          AND g.generation_id = ?
+        GROUP BY
+            g.generation_id,
+            g.source_id,
+            g.status,
+            g.content_sha256,
+            g.entry_count,
+            g.activated_at,
+            g.previous_generation
+        """,
+        (source_id, generation_id),
     )
     return dict(row) if row is not None else None
 
@@ -2685,11 +2723,12 @@ def activate_existing_threat_intel_generation(
                 content_sha256,
                 entry_count,
                 active_generation,
+                remote_generation_id,
                 last_error_code,
                 last_error_summary,
                 consecutive_failures
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
             ON CONFLICT(source_id)
 
@@ -2703,6 +2742,7 @@ def activate_existing_threat_intel_generation(
                 content_sha256 = excluded.content_sha256,
                 entry_count = excluded.entry_count,
                 active_generation = excluded.active_generation,
+                remote_generation_id = excluded.remote_generation_id,
                 last_error_code = '',
                 last_error_summary = '',
                 consecutive_failures = 0
@@ -2717,6 +2757,7 @@ def activate_existing_threat_intel_generation(
                 last_modified,
                 generation["content_sha256"],
                 generation["entry_count"],
+                generation_id,
                 generation_id,
                 "",
                 "",
@@ -2845,9 +2886,10 @@ def record_intel_update_audit(
             operation,
             reused_generation,
             created_generation,
-            content_unchanged
+            content_unchanged,
+            trigger
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             result.source_id,
@@ -2871,6 +2913,7 @@ def record_intel_update_audit(
             1 if result.reused_generation else 0,
             1 if result.created_generation else 0,
             1 if result.content_unchanged else 0,
+            result.trigger,
         ),
     )
 
@@ -2907,7 +2950,12 @@ def list_intel_update_audit(limit: int = 100, source_id: str = "") -> list[dict[
     return result
 
 
-def mark_intel_update_not_modified(source_id: str, etag: str = "", last_modified: str = "") -> None:
+def mark_intel_update_not_modified(
+    source_id: str,
+    etag: str = "",
+    last_modified: str = "",
+    remote_generation_id: str = "",
+) -> None:
     now = time.time()
     execute(
         """
@@ -2917,12 +2965,22 @@ def mark_intel_update_not_modified(source_id: str, etag: str = "", last_modified
             last_attempt_at = ?,
             etag = CASE WHEN ? != '' THEN ? ELSE etag END,
             last_modified = CASE WHEN ? != '' THEN ? ELSE last_modified END,
+            remote_generation_id = CASE WHEN ? != '' THEN ? ELSE remote_generation_id END,
             last_error_code = '',
             last_error_summary = '',
             consecutive_failures = 0
         WHERE source_id = ?
         """,
-        (now, etag, etag, last_modified, last_modified, source_id),
+        (
+            now,
+            etag,
+            etag,
+            last_modified,
+            last_modified,
+            remote_generation_id,
+            remote_generation_id,
+            source_id,
+        ),
     )
 
 
@@ -2971,7 +3029,7 @@ def rollback_intel_generation(source_id: str) -> str | None:
         if not previous:
             return None
         previous_row = conn.execute(
-            "SELECT entry_count, content_sha256 FROM threat_intel_generations WHERE generation_id = ?",
+            "SELECT entry_count FROM threat_intel_generations WHERE generation_id = ?",
             (previous,),
         ).fetchone()
         if previous_row is None:
@@ -2987,12 +3045,11 @@ def rollback_intel_generation(source_id: str) -> str | None:
             UPDATE threat_intel_source_state
             SET active_generation = ?,
                 entry_count = ?,
-                content_sha256 = ?,
                 status = 'active',
                 last_success_at = ?
             WHERE source_id = ?
             """,
-            (previous, previous_row["entry_count"], previous_row["content_sha256"], now, source_id),
+            (previous, previous_row["entry_count"], now, source_id),
         )
         return previous
 
