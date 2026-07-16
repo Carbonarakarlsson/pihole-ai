@@ -5,7 +5,7 @@ FTL database as an external read-only input.
 
 ## Current Schema
 
-Latest supported schema version: `8`.
+Latest supported schema version: `9`.
 
 Registered migrations:
 
@@ -19,6 +19,7 @@ Registered migrations:
 | 6 | `threat_intel_feed_management` |
 | 7 | `threat_intel_reactivation_audit` |
 | 8 | `threat_intel_remote_generation_state` |
+| 9 | `repair_remote_generation_identity` |
 
 The migration registry lives in `core/migrations.py`. Versions must be unique,
 ascending, non-empty, and contiguous unless a gap is explicitly documented.

@@ -793,6 +793,107 @@ def _apply_threat_intel_remote_generation_state(conn: sqlite3.Connection) -> Non
             )
 
 
+def _valid_generation_for_source(
+    conn: sqlite3.Connection,
+    source_id: str,
+    generation_id: str,
+) -> sqlite3.Row | None:
+    if not generation_id:
+        return None
+    return conn.execute(
+        """
+        SELECT
+            g.generation_id,
+            g.source_id,
+            g.status,
+            g.content_sha256,
+            g.entry_count,
+            g.activated_at,
+            COUNT(e.id) AS stored_entry_count
+        FROM threat_intel_generations g
+        LEFT JOIN threat_intel_generation_entries e
+            ON e.generation_id = g.generation_id
+        WHERE g.source_id = ?
+          AND g.generation_id = ?
+          AND g.status IN ('active', 'inactive')
+          AND g.activated_at IS NOT NULL
+        GROUP BY
+            g.generation_id,
+            g.source_id,
+            g.status,
+            g.content_sha256,
+            g.entry_count,
+            g.activated_at
+        HAVING stored_entry_count = g.entry_count
+        """,
+        (source_id, generation_id),
+    ).fetchone()
+
+
+def _latest_successful_http_generation(
+    conn: sqlite3.Connection,
+    source_id: str,
+) -> sqlite3.Row | None:
+    audits = conn.execute(
+        """
+        SELECT active_generation
+        FROM threat_intel_update_audit
+        WHERE source_id = ?
+          AND result = 'success'
+          AND http_status = 200
+          AND active_generation != ''
+          AND COALESCE(operation, 'update') != 'rollback'
+          AND COALESCE(error_code, '') = ''
+        ORDER BY attempted_at DESC, id DESC
+        """,
+        (source_id,),
+    ).fetchall()
+    for audit in audits:
+        generation = _valid_generation_for_source(
+            conn,
+            source_id,
+            audit["active_generation"],
+        )
+        if generation is not None:
+            return generation
+    return None
+
+
+def _apply_repair_remote_generation_identity(conn: sqlite3.Connection) -> None:
+    states = conn.execute(
+        """
+        SELECT source_id, active_generation, remote_generation_id
+        FROM threat_intel_source_state
+        """
+    ).fetchall()
+    for state in states:
+        source_id = state["source_id"]
+        active_generation = state["active_generation"] or ""
+        remote_generation = state["remote_generation_id"] or ""
+        candidate = _latest_successful_http_generation(conn, source_id)
+        if candidate is None:
+            continue
+
+        current = _valid_generation_for_source(conn, source_id, remote_generation)
+        should_repair = remote_generation == "" or current is None
+        should_repair = should_repair or (
+            remote_generation == active_generation
+            and candidate["generation_id"] != active_generation
+        )
+        if not should_repair:
+            continue
+
+        conn.execute(
+            """
+            UPDATE threat_intel_source_state
+            SET remote_generation_id = ?,
+                content_sha256 = ?
+            WHERE source_id = ?
+            """,
+            (candidate["generation_id"], candidate["content_sha256"], source_id),
+        )
+
+
 MIGRATIONS = [
     Migration(
         version=1,
@@ -833,6 +934,11 @@ MIGRATIONS = [
         version=8,
         name="threat_intel_remote_generation_state",
         apply=_apply_threat_intel_remote_generation_state,
+    ),
+    Migration(
+        version=9,
+        name="repair_remote_generation_identity",
+        apply=_apply_repair_remote_generation_identity,
     ),
 ]
 

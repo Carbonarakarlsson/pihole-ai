@@ -102,6 +102,10 @@ the last successfully fetched remote representation. `active_generation`
 describes what classifiers currently read. Rollback changes local activation
 without redefining the remote representation, so a later HTTP 304 can reactivate
 the historical generation represented by the validators.
+Migration repair reconstructs missing or suspect remote-generation identity from
+the latest successful HTTP 200 update audit before falling back to stored remote
+content hash. It does not infer the remote generation from active state alone
+when rollback evidence exists.
 
 Source metadata edits are separate from feed updates:
 `intel source update` preserves active/prior generations and clears validators

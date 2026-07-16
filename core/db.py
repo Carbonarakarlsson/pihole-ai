@@ -2640,6 +2640,37 @@ def get_threat_intel_generation(
     return dict(row) if row is not None else None
 
 
+def get_latest_successful_remote_generation(source_id: str) -> dict[str, Any] | None:
+    audits = query_all(
+        """
+        SELECT active_generation
+        FROM threat_intel_update_audit
+        WHERE source_id = ?
+          AND result = 'success'
+          AND http_status = 200
+          AND active_generation != ''
+          AND COALESCE(operation, 'update') != 'rollback'
+          AND COALESCE(error_code, '') = ''
+        ORDER BY attempted_at DESC, id DESC
+        """,
+        (source_id,),
+    )
+    for audit in audits:
+        generation = get_threat_intel_generation(
+            source_id,
+            str(audit["active_generation"] or ""),
+        )
+        if (
+            generation
+            and generation.get("status") in {"active", "inactive"}
+            and generation.get("activated_at") is not None
+            and int(generation.get("stored_entry_count") or -1)
+            == int(generation.get("entry_count") or 0)
+        ):
+            return generation
+    return None
+
+
 def activate_existing_threat_intel_generation(
     *,
     source_id: str,

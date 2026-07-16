@@ -29,7 +29,10 @@ HTTP validators describe the remote representation, not necessarily the
 classifier-active generation. Source state keeps `remote_generation_id` beside
 the validators and content hash. Rollback preserves that remote-generation
 identity while changing `active_generation`, allowing an HTTP 304 after rollback
-to reactivate the unchanged remote generation.
+to reactivate the unchanged remote generation. Legacy repair uses the latest
+successful HTTP 200 update audit as the strongest source of remote-generation
+identity, then falls back to stored remote content hash. Active generation alone
+is not authoritative after rollback.
 
 Manual `intel import-hosts` remains supported through a managed legacy source
 and generation so existing workflows keep working.

@@ -5,7 +5,7 @@
 - Stable release baseline: v0.4 release candidate line
 - Current epic: v0.5 threat-intelligence feed management
 - Test suite: unittest discovery under `tests`
-- Latest schema version: `6`
+- Latest schema version: `9`
 - Supported Python: 3.13+
 - Supported deployment: Linux/systemd appliance, Raspberry Pi target
 

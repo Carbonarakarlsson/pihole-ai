@@ -19,6 +19,7 @@ from core.db import (
     activate_existing_threat_intel_generation,
     activate_intel_generation,
     find_reusable_threat_intel_generation,
+    get_latest_successful_remote_generation,
     get_threat_intel_generation,
     get_intel_source,
     get_intel_source_state,
@@ -314,24 +315,51 @@ def _generation_is_valid_remote(generation: dict[str, Any] | None) -> bool:
 
 def _resolve_remote_generation(source_id: str, state: dict[str, Any]) -> dict[str, Any] | None:
     remote_generation_id = str(state.get("remote_generation_id") or "")
+    active_generation_id = str(state.get("active_generation") or "")
+    content_hash = str(state.get("content_sha256") or "")
     if remote_generation_id:
         generation = get_threat_intel_generation(source_id, remote_generation_id)
-        return generation if _generation_is_valid_remote(generation) else None
+        if _generation_is_valid_remote(generation):
+            latest = get_latest_successful_remote_generation(source_id)
+            if (
+                remote_generation_id == active_generation_id
+                and latest is not None
+                and str(latest.get("generation_id") or "") != remote_generation_id
+            ):
+                return latest
+            generation_hash = str(generation.get("content_sha256") or "")
+            if (
+                remote_generation_id != active_generation_id
+                or not content_hash
+                or content_hash == generation_hash
+            ):
+                return generation
 
-    content_hash = str(state.get("content_sha256") or "")
-    if not content_hash:
-        return None
+    if content_hash:
+        reusable = find_reusable_threat_intel_generation(source_id, content_hash)
+        if reusable is not None:
+            return reusable
+        latest = get_latest_successful_remote_generation(source_id)
+        if (
+            latest is not None
+            and str(latest.get("content_sha256") or "") == content_hash
+        ):
+            return latest
 
-    active_generation_id = str(state.get("active_generation") or "")
+    latest = get_latest_successful_remote_generation(source_id)
+    if latest is not None:
+        return latest
+
     if active_generation_id:
         active_generation = get_threat_intel_generation(source_id, active_generation_id)
         if (
             _generation_is_valid_remote(active_generation)
+            and content_hash
             and str(active_generation.get("content_sha256") or "") == content_hash
         ):
             return active_generation
 
-    return find_reusable_threat_intel_generation(source_id, content_hash)
+    return None
 
 
 def update_source(

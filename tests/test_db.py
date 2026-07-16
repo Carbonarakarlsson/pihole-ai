@@ -1081,6 +1081,68 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(result.reused_generation)
         self.assertEqual(result.active_generation, "gen_b")
 
+    def test_http_304_reactivation_can_recover_bad_remote_reference_from_audit(self) -> None:
+        content_a = b"a.example\n"
+        content_b = b"b.example\n"
+        db.save_intel_source(
+            FeedSource(source_id="feed-a", name="Feed A", url="https://feeds.example/a.txt")
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value=content_sha256(content_a),
+            entries=["a.example"],
+            category="malware",
+            confidence=80,
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_b",
+            content_sha256_value=content_sha256(content_b),
+            entries=["b.example"],
+            category="malware",
+            confidence=80,
+            etag="etag-b",
+        )
+        db.rollback_intel_generation("feed-a")
+        db.execute(
+            """
+            UPDATE threat_intel_source_state
+            SET remote_generation_id = ?, content_sha256 = ?
+            WHERE source_id = ?
+            """,
+            ("gen_a", content_sha256(content_a), "feed-a"),
+        )
+        db.execute(
+            """
+            INSERT INTO threat_intel_update_audit
+            (
+                source_id,
+                attempted_at,
+                result,
+                http_status,
+                changed,
+                not_modified,
+                accepted_entries,
+                previous_generation,
+                active_generation
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("feed-a", 1.0, "success", 200, 1, 0, 1, "gen_a", "gen_b"),
+        )
+
+        with patch(
+            "pihole_ai.intel.fetch_feed",
+            return_value=FetchResult(status_code=304, content=b"", not_modified=True, etag="etag-b"),
+        ):
+            result = update_source("feed-a")
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.not_modified)
+        self.assertTrue(result.reused_generation)
+        self.assertEqual(result.active_generation, "gen_b")
+
     def test_http_304_missing_remote_reference_fails_safely(self) -> None:
         db.save_intel_source(
             FeedSource(source_id="feed-a", name="Feed A", url="https://feeds.example/a.txt")

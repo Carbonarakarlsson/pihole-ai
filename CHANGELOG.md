@@ -38,6 +38,8 @@
   reactivated historical generations, and newly created generations.
 - Threat-intelligence source state now tracks the remote representation
   generation separately from the classifier-active generation.
+- Threat-intelligence remote-generation repair now prefers latest successful
+  HTTP 200 update history over rollback-active state.
 
 ### Fixed
 
@@ -49,6 +51,8 @@
 - Fixed HTTP 304 updates after rollback so unchanged remote content can
   reactivate the stored remote generation instead of reporting the active
   rollback generation unchanged.
+- Fixed migration backfill for rolled-back sources so `remote_generation_id`
+  is repaired from fetch history instead of the currently active generation.
 - Modernized package license metadata to avoid setuptools license-table
   deprecation warnings.
 
