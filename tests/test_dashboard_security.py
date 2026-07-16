@@ -221,6 +221,12 @@ class DashboardAuthCliTests(unittest.TestCase):
                 patch("pihole_ai.dashboard_auth.load_config", return_value=settings),
                 patch("pihole_ai.setup.CONFIG_FILE", path),
                 patch("pihole_ai.dashboard_auth.sys.stdin", io.StringIO("new-strong-password\n")),
+                patch(
+                    "pihole_ai.service.grp.getgrnam",
+                    return_value=SimpleNamespace(gr_gid=992),
+                ),
+                patch("pihole_ai.service.os.chown"),
+                patch("pihole_ai.setup.os.chown"),
             ):
                 output = io.StringIO()
                 with redirect_stdout(output):

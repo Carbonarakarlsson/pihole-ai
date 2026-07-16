@@ -2,7 +2,7 @@ import io
 import subprocess
 import tempfile
 import unittest
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, call, patch
@@ -41,7 +41,27 @@ from pihole_ai.service import (
 from pihole_ai.version import get_version
 
 
+FAKE_SERVICE_UID = 991
+FAKE_SERVICE_GID = 992
+
+
 class ServiceTests(unittest.TestCase):
+    @contextmanager
+    def fake_service_identity(self):
+        with patch(
+            "pihole_ai.service.pwd.getpwnam",
+            return_value=SimpleNamespace(
+                pw_uid=FAKE_SERVICE_UID,
+                pw_gid=FAKE_SERVICE_GID,
+            ),
+        ), patch(
+            "pihole_ai.service.grp.getgrnam",
+            return_value=SimpleNamespace(gr_gid=FAKE_SERVICE_GID),
+        ), patch(
+            "pihole_ai.service.os.chown",
+        ) as chown:
+            yield chown
+
     def _valid_python_check(self, interpreter, args, capture=False):
         if capture:
             return SimpleCompletedProcess(returncode=0, stdout=f"pihole-ai {get_version()}\n")
@@ -566,7 +586,7 @@ class ServiceTests(unittest.TestCase):
         ), patch(
             "pihole_ai.service.lifecycle_lock",
             return_value=nullcontext(),
-        ):
+        ), self.fake_service_identity():
             wrapper = Path(tmpdir) / "pihole-ai"
             config_dir = Path(tmpdir) / "etc" / "pihole-ai"
             data_dir = Path(tmpdir) / "var" / "lib" / "pihole-ai"
@@ -837,7 +857,7 @@ class ServiceTests(unittest.TestCase):
         ), patch(
             "pihole_ai.service.lifecycle_lock",
             return_value=nullcontext(),
-        ):
+        ), self.fake_service_identity():
             wrapper = Path(tmpdir) / "pihole-ai"
             service_install(
                 systemd_dir=Path(tmpdir) / "systemd",
@@ -914,7 +934,7 @@ class ServiceTests(unittest.TestCase):
         ), patch(
             "pihole_ai.service.lifecycle_lock",
             return_value=nullcontext(),
-        ):
+        ), self.fake_service_identity():
             root = Path(tmpdir)
             project = root / "project"
             project_data = project / "data"
@@ -962,6 +982,41 @@ class ServiceTests(unittest.TestCase):
             run.assert_any_call(
                 ["chown", ANY, str(log_dir)],
                 check=True,
+            )
+
+    def test_permission_repair_can_use_explicit_fake_identity_when_host_group_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "pihole_ai.service.grp.getgrnam",
+            side_effect=KeyError("pihole-ai"),
+        ), patch("pihole_ai.service._effective_uid", return_value=0):
+            config_dir = Path(tmpdir) / "pihole-ai"
+            env_file = config_dir / "pihole-ai.env"
+            config_dir.mkdir()
+            env_file.write_text("SECRET=value\n", encoding="utf-8")
+
+            with self.assertRaises(ServiceError) as raised:
+                service_module._repair_config_permissions(
+                    config_dir=config_dir,
+                    env_file=env_file,
+                    group="pihole-ai",
+                    dry_run=False,
+                )
+
+            self.assertIn("Service group does not exist", str(raised.exception))
+
+            with self.fake_service_identity() as chown:
+                service_module._repair_config_permissions(
+                    config_dir=config_dir,
+                    env_file=env_file,
+                    group="pihole-ai",
+                    dry_run=False,
+                )
+
+            chown.assert_has_calls(
+                [
+                    call(config_dir, 0, FAKE_SERVICE_GID),
+                    call(env_file, 0, FAKE_SERVICE_GID),
+                ]
             )
 
     def test_service_install_dry_run_does_not_migrate_project_db(self) -> None:
