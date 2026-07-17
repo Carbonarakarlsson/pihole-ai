@@ -52,6 +52,18 @@ warnings with `--strict`, dry-run previews, confirmation, atomic writes,
 backups, and rollback-on-failure behavior. Automatic restarts and dashboard
 integration remain deferred.
 
+Phase 1C3 status: implemented as explicit restart orchestration for successful
+configuration writes:
+
+- `pihole-ai config set ... --restart`
+- `pihole-ai config unset ... --restart`
+- `pihole-ai config import ... --restart`
+
+Restarts are opt-in, privilege-aware, and limited to affected PiHole-AI
+services from the typed restart-impact model. Configuration persistence happens
+before service restart. Restart failures are reported independently and never
+silently roll back a valid configuration write.
+
 Related documentation:
 
 - [Configuration](CONFIGURATION.md)
@@ -607,9 +619,11 @@ Implementation steps:
 7. Keep current `config check` and `config show` compatibility.
 8. Add import/export CLI commands as wrappers around the registry and env
    writer. Done in Phase 1C2.
-9. Add dashboard/API endpoints.
-10. Add audit events without storing secrets.
-11. Later, optionally add profile presets.
+9. Add explicit restart orchestration for successful configuration writes.
+   Done in Phase 1C3.
+10. Add dashboard/API endpoints.
+11. Add audit events without storing secrets.
+12. Later, optionally add profile presets.
 
 Existing `/etc/pihole-ai/pihole-ai.env` files must continue to load unchanged.
 

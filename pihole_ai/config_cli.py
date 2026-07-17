@@ -36,6 +36,7 @@ from core.config_schema import ConfigItem
 from core.config_schema import ConfigSensitivity
 from core.config_schema import affected_services
 from core.config_schema import get_item
+from core import service_control
 from pihole_ai.version import get_version
 
 
@@ -386,6 +387,7 @@ def print_config_set(
     as_json: bool = False,
     yes: bool = False,
     config_file: str = "",
+    restart: bool = False,
 ) -> int:
     return _run_config_edit(
         operation="set",
@@ -395,6 +397,7 @@ def print_config_set(
         as_json=as_json,
         yes=yes,
         config_file=config_file,
+        restart=restart,
     )
 
 
@@ -405,6 +408,7 @@ def print_config_unset(
     as_json: bool = False,
     yes: bool = False,
     config_file: str = "",
+    restart: bool = False,
 ) -> int:
     return _run_config_edit(
         operation="unset",
@@ -414,6 +418,7 @@ def print_config_unset(
         as_json=as_json,
         yes=yes,
         config_file=config_file,
+        restart=restart,
     )
 
 
@@ -469,6 +474,7 @@ def print_config_import(
     as_json: bool = False,
     strict: bool = False,
     config_file: str = "",
+    restart: bool = False,
 ) -> int:
     """
     Import known configuration settings from JSON or env input.
@@ -535,6 +541,11 @@ def print_config_import(
         "dry_run": dry_run,
         "written": False,
         "backup_path": None,
+        "restart_requested": restart,
+        "restart_attempted": False,
+        "restart_success": None,
+        "service_results": [],
+        "recovery_commands": _recovery_commands(services) if restart else [],
     }
 
     if errors:
@@ -565,8 +576,9 @@ def print_config_import(
         return EXIT_ERROR
     result["written"] = True
     result["backup_path"] = str(backup_path) if backup_path is not None else None
+    restart_exit = _maybe_restart_services(result, restart=restart)
     _print_import_result(result, as_json=as_json)
-    return EXIT_OK
+    return restart_exit
 
 
 def _print_dict(
@@ -884,10 +896,11 @@ def _run_config_edit(
     as_json: bool,
     yes: bool,
     config_file: str,
+    restart: bool,
 ) -> int:
     if as_json and not (dry_run or yes):
         print(
-            "JSON write mode requires --dry-run or --yes.",
+        "JSON write mode requires --dry-run or --yes.",
             file=sys.stderr,
         )
         return EXIT_USAGE
@@ -981,6 +994,7 @@ def _run_config_edit(
         backup_path=None,
         warnings=warnings,
         errors=errors,
+        restart_requested=restart,
     )
 
     if errors:
@@ -1016,8 +1030,9 @@ def _run_config_edit(
 
     result["written"] = True
     result["backup_path"] = str(backup_path) if backup_path is not None else None
+    restart_exit = _maybe_restart_services(result, restart=restart)
     _print_edit_result(result, as_json=as_json)
-    return EXIT_OK
+    return restart_exit
 
 
 def _resolved_rows() -> list[dict[str, Any]]:
@@ -1228,6 +1243,7 @@ def _edit_payload(
     backup_path: str | None,
     warnings: list[str],
     errors: list[dict[str, str]],
+    restart_requested: bool = False,
 ) -> dict[str, Any]:
     return {
         "operation": operation,
@@ -1244,6 +1260,11 @@ def _edit_payload(
         "backup_path": backup_path,
         "warnings": warnings,
         "errors": errors,
+        "restart_requested": restart_requested,
+        "restart_attempted": False,
+        "restart_success": None,
+        "service_results": [],
+        "recovery_commands": _recovery_commands(affected_services) if restart_requested else [],
     }
 
 
@@ -1285,12 +1306,14 @@ def _print_edit_result(
     if result["proposed"] is not None:
         _print_state("Proposed", result["proposed"])
     _print_state("Effective after", result["effective_after"])
+    print("Restart requested:")
+    print(f"  {'yes' if result.get('restart_requested') else 'no'}")
     if result["affected_services"]:
-        print("Restart required:")
+        print("Services to restart:")
         for service in result["affected_services"]:
             print(f"  {service}")
     else:
-        print("Restart required:")
+        print("Services to restart:")
         print("  none")
     print()
     for warning in result["warnings"]:
@@ -1298,11 +1321,17 @@ def _print_edit_result(
     for error in result["errors"]:
         print(f"error: [{error['code']}] {error['key']}: {error['message']}")
     if result["dry_run"]:
+        print(f"Would write configuration: {'yes' if result['changed'] else 'no'}")
+        print(
+            "Would restart services: "
+            f"{'yes' if result.get('restart_requested') and result['affected_services'] else 'no'}"
+        )
         print("Dry run: no file was written.")
     elif result["written"]:
         print("Configuration written.")
         if result["backup_path"]:
             print(f"Backup: {result['backup_path']}")
+        _print_restart_outcome(result)
     elif result.get("declined"):
         print("Change declined; no file was written.")
 
@@ -1338,12 +1367,14 @@ def _print_import_result(
         print("Settings changing:")
         print("  none")
     print()
+    print("Restart requested:")
+    print(f"  {'yes' if result.get('restart_requested') else 'no'}")
     if result["affected_services"]:
-        print("Restart required:")
+        print("Services to restart:")
         for service in result["affected_services"]:
             print(f"  {service}")
     else:
-        print("Restart required:")
+        print("Services to restart:")
         print("  none")
     print()
     for warning in result["warnings"]:
@@ -1351,11 +1382,17 @@ def _print_import_result(
     for error in result["errors"]:
         print(f"error: [{error['code']}] {error['key']}: {error['message']}")
     if result["dry_run"]:
+        print(f"Would write configuration: {'yes' if result['changed'] else 'no'}")
+        print(
+            "Would restart services: "
+            f"{'yes' if result.get('restart_requested') and result['affected_services'] else 'no'}"
+        )
         print("Dry run: no file was written.")
     elif result["written"]:
         print("Configuration import written.")
         if result["backup_path"]:
             print(f"Backup: {result['backup_path']}")
+        _print_restart_outcome(result)
     elif result.get("declined"):
         print("Import declined; no file was written.")
 
@@ -1368,6 +1405,73 @@ def _state_label(
     if state.get("value") is None:
         return "<unset>"
     return str(state["value"])
+
+
+def _maybe_restart_services(
+    result: dict[str, Any],
+    *,
+    restart: bool,
+) -> int:
+    services = result.get("affected_services", [])
+    if not restart or not services:
+        result["restart_requested"] = restart
+        result["restart_attempted"] = False
+        result["restart_success"] = None if not restart else True
+        return EXIT_OK
+
+    result["restart_requested"] = True
+    result["restart_attempted"] = True
+    service_results = service_control.restart_services(services)
+    result["service_results"] = [
+        item.to_dict()
+        for item in service_results
+    ]
+    result["restart_success"] = all(item.success for item in service_results)
+    result["recovery_commands"] = _recovery_commands(
+        [
+            item.service
+            for item in service_results
+            if not item.success
+        ]
+    )
+    return EXIT_OK if result["restart_success"] else EXIT_ERROR
+
+
+def _recovery_commands(
+    services: list[str],
+) -> list[str]:
+    return [
+        f"sudo systemctl restart {service}"
+        for service in services
+    ]
+
+
+def _print_restart_outcome(
+    result: dict[str, Any],
+) -> None:
+    if not result.get("restart_requested"):
+        return
+    if not result.get("affected_services"):
+        print("No service restart is required.")
+        return
+    if not result.get("restart_attempted"):
+        return
+    if result.get("restart_success"):
+        print("Restart completed.")
+        return
+    print("Restart failed:")
+    for item in result.get("service_results", []):
+        if item.get("success"):
+            continue
+        message = item.get("message") or item.get("error_code") or "failed"
+        print(f"- {item['service']}: {message}")
+    if result.get("recovery_commands"):
+        print("To apply the configuration:")
+        for command in result["recovery_commands"]:
+            print(f"  {command}")
+    if result.get("backup_path"):
+        print("Backup:")
+        print(f"  {result['backup_path']}")
 
 
 def _print_state(

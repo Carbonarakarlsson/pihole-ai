@@ -114,6 +114,7 @@ The first safe editing commands are now available:
 ```bash
 pihole-ai config set KEY VALUE --dry-run
 sudo pihole-ai config set KEY VALUE --yes
+sudo pihole-ai config set KEY VALUE --yes --restart
 sudo pihole-ai config unset KEY --yes
 pihole-ai config export --output backup.json
 pihole-ai config import backup.json --dry-run
@@ -129,6 +130,19 @@ warns that the file will change while the effective runtime value remains
 controlled by the environment. Secret values are masked in output, but passing
 secrets as command-line arguments may leave them in shell history or process
 inspection output.
+
+Configuration commands never restart services unless `--restart` is supplied.
+When `--restart` is used, PiHole-AI restarts only the affected PiHole-AI
+services after the file write succeeds. It does not invoke `sudo`, `pkexec`, or
+restart Pi-hole itself. If restart authorization fails, the configuration stays
+saved and output includes manual recovery commands such as:
+
+```bash
+sudo systemctl restart pihole-ai-engine.service
+```
+
+Restart failure does not restore the backup automatically. Use the reported
+backup path if you need to recover the previous file.
 
 Configuration exports are JSON by default and include schema/version metadata.
 Use `--format env` for a generated managed-env representation. Normal exports

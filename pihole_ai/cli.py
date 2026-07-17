@@ -275,6 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_set.add_argument("--dry-run", action="store_true", help="Validate and preview without writing.")
     config_set.add_argument("--json", action="store_true", help="Print result as JSON.")
     config_set.add_argument("--yes", action="store_true", help="Apply without prompting.")
+    config_set.add_argument("--restart", action="store_true", help="Restart affected PiHole-AI services after a successful write.")
     config_set.add_argument("--config-file", default="", help="Configuration file to edit.")
     config_unset = config_commands.add_parser(
         "unset",
@@ -284,6 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_unset.add_argument("--dry-run", action="store_true", help="Validate and preview without writing.")
     config_unset.add_argument("--json", action="store_true", help="Print result as JSON.")
     config_unset.add_argument("--yes", action="store_true", help="Apply without prompting.")
+    config_unset.add_argument("--restart", action="store_true", help="Restart affected PiHole-AI services after a successful write.")
     config_unset.add_argument("--config-file", default="", help="Configuration file to edit.")
     config_export = config_commands.add_parser(
         "export",
@@ -302,6 +304,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_import.add_argument("--yes", action="store_true", help="Apply without prompting.")
     config_import.add_argument("--json", action="store_true", help="Print result as JSON.")
     config_import.add_argument("--strict", action="store_true", help="Reject unknown imported settings.")
+    config_import.add_argument("--restart", action="store_true", help="Restart affected PiHole-AI services after a successful import.")
     config_import.add_argument("--config-file", default="", help="Configuration file to edit.")
 
     doctor = subcommands.add_parser(
@@ -1205,6 +1208,7 @@ def main(
                 as_json=args.json,
                 yes=args.yes,
                 config_file=args.config_file,
+                restart=args.restart,
             )
 
         if args.config_command == "unset":
@@ -1214,6 +1218,7 @@ def main(
                 as_json=args.json,
                 yes=args.yes,
                 config_file=args.config_file,
+                restart=args.restart,
             )
 
         if args.config_command == "export":
@@ -1232,6 +1237,7 @@ def main(
                 as_json=args.json,
                 strict=args.strict,
                 config_file=args.config_file,
+                restart=args.restart,
             )
 
     if args.command == "doctor":

@@ -66,7 +66,7 @@ class ConfigSchemaTests(unittest.TestCase):
             changed_key_impact(["ollama_url", "dashboard_port", "ollama_model"]),
             {
                 "restart_required": True,
-                "services": [DASHBOARD_SERVICE, ENGINE_SERVICE],
+                "services": [ENGINE_SERVICE, DASHBOARD_SERVICE],
             },
         )
 

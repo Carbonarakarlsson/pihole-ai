@@ -60,13 +60,14 @@ pihole-ai config show [--json] [--category CATEGORY] [--source SOURCE]
 pihole-ai config get KEY [--json] [--details]
 pihole-ai config validate [--json]
 pihole-ai config impact KEY [KEY ...] [--json]
-pihole-ai config set KEY VALUE [--dry-run] [--json] [--yes]
+pihole-ai config set KEY VALUE [--dry-run] [--json] [--yes] [--restart]
                      [--config-file PATH]
-pihole-ai config unset KEY [--dry-run] [--json] [--yes]
+pihole-ai config unset KEY [--dry-run] [--json] [--yes] [--restart]
                        [--config-file PATH]
 pihole-ai config export [--output PATH] [--format json|env] [--secure]
                         [--json]
 pihole-ai config import FILE [--dry-run] [--yes] [--json] [--strict]
+                        [--restart]
                         [--config-file PATH]
 
 pihole-ai setup [status] [--json] [--non-interactive] [--dry-run]
@@ -183,6 +184,11 @@ pihole-ai learn [--limit N] [--min-score N] [--no-audit]
   permission, confirmation-declined, or persistence failures; `2` for strict
   unknown-key rejection or invalid command usage; `3` for malformed input,
   unsupported schema, parse, or validation failures.
+- `config set --restart`, `config unset --restart`, and
+  `config import --restart`: `0` only when the configuration write/no-op/dry-run
+  succeeds and every requested restart succeeds. If configuration is saved but
+  any requested restart fails, the command exits `1` and reports recovery
+  commands. The saved configuration is not rolled back automatically.
 - Epic 3.5 Configuration Center command contracts are documented in
   [Configuration Center Design](CONFIGURATION_DESIGN.md).
 - `db status`/`db migrate`: `2` incompatible schema, `3` access error, `1`
@@ -213,6 +219,7 @@ pihole-ai config validate
 pihole-ai config impact PIHOLE_AI_OLLAMA_URL
 pihole-ai config set PIHOLE_AI_OLLAMA_MODEL llama3.2:1b --dry-run
 pihole-ai config set PIHOLE_AI_OLLAMA_MODEL llama3.2:1b --yes
+pihole-ai config set PIHOLE_AI_OLLAMA_MODEL llama3.2:1b --yes --restart
 pihole-ai config unset PIHOLE_AI_OLLAMA_MODEL --dry-run
 pihole-ai config export --output backup.json
 pihole-ai config export --format env
@@ -262,6 +269,25 @@ for example:
 ```bash
 sudo pihole-ai restart
 ```
+
+Alternatively, pass `--restart` with `config set`, `config unset`, or
+`config import` to restart only the affected PiHole-AI services after the
+configuration write succeeds. No restart occurs by default, no `sudo` or
+`pkexec` is invoked internally, and Pi-hole itself is never restarted.
+Dry-runs with `--restart` show the exact affected service plan without calling
+`systemctl`.
+
+Restart order is deterministic:
+
+1. `pihole-ai-collector.service`
+2. `pihole-ai-engine.service`
+3. `pihole-ai-dashboard.service`
+4. `pihole-ai-intel-update.timer`
+
+If restart fails after a successful write, the new configuration remains in
+place. Output shows failed services, safe manual restart commands such as
+`sudo systemctl restart pihole-ai-engine.service`, and the backup path when one
+was created.
 
 If a process environment variable currently overrides the persisted value, the
 preview warns that the file will change but the effective value remains

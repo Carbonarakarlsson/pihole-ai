@@ -31,6 +31,12 @@ COLLECTOR_SERVICE = "pihole-ai-collector.service"
 ENGINE_SERVICE = "pihole-ai-engine.service"
 DASHBOARD_SERVICE = "pihole-ai-dashboard.service"
 INTEL_TIMER_SERVICE = "pihole-ai-intel-update.timer"
+SERVICE_RESTART_ORDER = (
+    COLLECTOR_SERVICE,
+    ENGINE_SERVICE,
+    DASHBOARD_SERVICE,
+    INTEL_TIMER_SERVICE,
+)
 
 
 class ConfigValueType(str, Enum):
@@ -318,7 +324,11 @@ def affected_services(
         if item is None:
             continue
         services.update(item.services)
-    return sorted(services)
+    return [
+        service
+        for service in SERVICE_RESTART_ORDER
+        if service in services
+    ]
 
 
 validate_schema()

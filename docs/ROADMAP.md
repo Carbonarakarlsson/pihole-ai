@@ -82,6 +82,8 @@ Planned features:
   confirmation, validation, backups, and restart-impact preview
 - Phase 1C2 import/export CLI: deterministic JSON/env exports, explicit secure
   exports, validated imports, dry-run previews, backups, and rollback safety
+- Phase 1C3 restart orchestration: optional `--restart` for successful config
+  writes, affected-service planning, dry-run previews, and recovery guidance
 - dashboard settings for common appliance configuration
 - config validation before writes take effect
 - configuration import and export
