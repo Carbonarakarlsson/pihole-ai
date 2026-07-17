@@ -5,9 +5,10 @@ query history, stores normalized events in its own SQLite database, classifies
 domains with deterministic evidence first, and uses local Ollama AI only as an
 optional fallback.
 
-The project is preparing the `0.5.0b3` milestone after completing the
-evidence-based decision engine and physically validating managed
-threat-intelligence feed lifecycles. Remaining v0.5 work is tracked under
+The project is preparing the `0.5.0b4` beta after completing the
+evidence-based decision engine, physically validating managed
+threat-intelligence feed lifecycles, and adding feed diagnostics for Epic 3.3.
+Remaining v0.5 work is tracked under
 `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
 
 ## Supported Target

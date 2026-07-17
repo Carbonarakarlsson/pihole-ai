@@ -1,12 +1,12 @@
 # Repository Status
 
-- Package version: `0.5.0b3`
-- Active branch: `v2-refactor`
+- Package version: `0.5.0b4`
+- Active branch: `v0.5-epic3.3`
 - Stable appliance baseline: v0.5 beta milestone preparation
-- Current epic: Epic 2 complete; Epic 3 planning
+- Current epic: Epic 3.3 threat-intelligence feed diagnostics beta build
 - Test suite: unittest discovery under `tests`
-- Latest schema version: `9`
-- Final automated test count: `446`
+- Latest schema version: `10`
+- Final automated test count: `480`
 - Supported Python: 3.13+
 - Supported deployment: Linux/systemd appliance, Raspberry Pi target
 
