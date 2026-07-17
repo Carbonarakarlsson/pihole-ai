@@ -195,6 +195,15 @@ means PiHole-AI is operational but warning-level or optional diagnostics need
 attention. For example, a securely authenticated dashboard bound outside
 loopback is degraded but ready.
 
+## Project Roadmap
+
+The published `v0.5.0b5` prerelease completed Epic 3.4: AI reliability,
+benchmarking, confidence calibration, reliability dashboard work, and official
+branding. Epic 3.5, Operations & User Experience, is now underway.
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the full v0.5.x to v1.0
+development plan.
+
 ## Detailed Documentation
 
 - [Operations](docs/OPERATIONS.md): install, upgrade, uninstall, services,

@@ -1,45 +1,195 @@
 # Roadmap
 
-## v0.5 Milestone State
+PiHole-AI is moving from validated beta capabilities toward a stable local
+Pi-hole companion appliance. The v0.5 line focuses on making the appliance
+easy to install, operate, inspect, and trust on Raspberry Pi-class hardware.
 
-Epic 1, the evidence-based decision engine, is complete. Epic 2, managed
-threat-intelligence feed lifecycle, is complete and physically field-validated
-on a Raspberry Pi-class appliance.
+For architecture and operational details, see:
 
-Recommended milestone tag after final artifact validation: `v0.5.0-beta1`.
+- [Architecture](ARCHITECTURE.md)
+- [CLI Reference](CLI_REFERENCE.md)
+- [Database](DATABASE.md)
+- [Operations](OPERATIONS.md)
 
-## Epic 3: Domain And Device Behavioral Intelligence
+## Completed Work
 
-Goal: add local behavioral context that improves explanations and anomaly
-evidence without aggressive blocking or automatic mass reclassification.
+### Epic 3.2: SQLite Lifecycle
 
-Scope:
+Epic 3.2 hardened the runtime database layer so appliance services can share
+SQLite safely and predictably.
 
-- domain behavior aggregates: query cadence, recurrence, burstiness, and
-  first-seen/last-seen windows
-- device identity and naming: stable client keys, friendly names, and local
-  alias metadata
-- client-to-domain relationships: which devices query which domains and how
-  often
-- normal-behavior baselines: lightweight rolling summaries suited to Raspberry
-  Pi storage and CPU limits
-- anomaly evidence: deterministic evidence items for unusual domain/device
-  patterns
-- privacy boundaries: local-only storage, redacted exports, and clear retention
-  controls
-- retention: bounded history for per-device and per-domain aggregates
-- explain integration: show why a behavior signal mattered without exposing
-  unnecessary raw query history
-- dashboard summaries: compact domain/device summaries, not a heavy analytics
-  UI
-- immutable decision integration: decisions cite the behavior snapshot used at
-  classification time
-- appliance performance: avoid background jobs that compete with Pi-hole or
-  Ollama on small Raspberry Pi hosts
+Delivered:
 
-Non-goals for Epic 3:
+- centralized SQLite policy in `core/sqlite_policy.py`
+- explicit read-only, read-write, and migration connection modes
+- connection factory ownership for runtime and migration access
+- WAL lifecycle ownership limited to migration mode
+- migration locking and busy-timeout behavior
+- deterministic connection cleanup
+- schema and database diagnostics for health, doctor, setup, and status
 
-- automatic broad blocking based only on anomaly scores
-- cloud synchronization
-- multi-user administration
-- large-scale SIEM replacement
+### Epic 3.3: Threat Intelligence
+
+Epic 3.3 made threat intelligence manageable as appliance data rather than a
+manual import experiment.
+
+Delivered:
+
+- managed threat-intelligence feeds and source state
+- generation-based activation, rollback, and unchanged-content handling
+- reputation-aware classification integration
+- dashboard visibility for feed state and intelligence summaries
+- explain output that can show threat-intelligence evidence
+- feedback and action audit linkage to stored decisions
+- metrics and diagnostics for feed health, active indicators, and integrity
+
+### Epic 3.4: AI Reliability
+
+Epic 3.4 made AI-assisted decisions measurable, explainable, and comparable
+without changing runtime classification policy.
+
+Delivered:
+
+- observational pipeline telemetry
+- richer explainability for classifier timelines and AI invocation state
+- persisted benchmark runs and deterministic regression comparison
+- confidence calibration profiles for reporting
+- reliability metrics for accuracy, confidence, latency, cache use, and AI use
+- dashboard reliability views and read-only APIs
+- official PiHole-AI branding across the dashboard, README, favicon, and wheel
+- published `v0.5.0b5` GitHub prerelease
+
+## Current Epic
+
+### Epic 3.5: Operations & User Experience
+
+Goal: transform PiHole-AI into a production-ready appliance that is easy to
+install, configure, maintain, monitor, and upgrade.
+
+Epic 3.5 is documentation-, operator-, and dashboard-heavy. Runtime behavior
+changes should remain conservative and appliance-safe.
+
+#### Phase 1: Configuration Center
+
+Planned features:
+
+- dashboard settings for common appliance configuration
+- config validation before writes take effect
+- configuration import and export
+- named configuration profiles
+- restart-aware changes that clearly show when services must restart
+
+#### Phase 2: Maintenance
+
+Planned features:
+
+- backup command and dashboard visibility
+- restore workflow with safety checks
+- cleanup for bounded local data
+- SQLite vacuum workflow
+- integrity checks for database, feed, decision, and telemetry state
+
+#### Phase 3: Monitoring
+
+Planned features:
+
+- live service status
+- Ollama status
+- processing queue depth
+- cache metrics
+- throughput summaries
+- trend views for activity, latency, and reliability
+
+#### Phase 4: Installer Experience
+
+Planned features:
+
+- guided install
+- guided upgrade
+- rollback assistance
+- preflight and post-upgrade health checks
+- clearer appliance readiness guidance
+
+#### Phase 5: Dashboard Polish
+
+Planned features:
+
+- improved dashboard UX
+- responsive layout refinement
+- global and table-specific search
+- filtering
+- pagination
+- notifications for settings, maintenance, and service events
+
+## Future Epics
+
+### Epic 3.6: Automation
+
+Proposed work:
+
+- scheduled maintenance
+- scheduled reports
+- automatic backups
+- telemetry retention
+- calibration and benchmark retention policies
+
+### Epic 3.7: Plugin Architecture
+
+Proposed work:
+
+- external classifiers
+- custom actions
+- extension points for local workflows
+- documented plugin contracts
+- isolation and safety rules for third-party extensions
+
+### Epic 3.8: Enterprise
+
+Proposed work:
+
+- multi-instance support
+- remote management
+- authentication improvements
+- fleet management
+- organization-level policy and reporting
+
+## Version Roadmap
+
+```text
+v0.5.x
+Operations & UX
+
+↓
+
+v0.6
+Feature-complete beta
+
+↓
+
+v0.7
+Performance & Scale
+
+↓
+
+v0.8
+Release Candidate
+
+↓
+
+v1.0
+Stable
+```
+
+## v1.0 Definition
+
+PiHole-AI should reach v1.0 when:
+
+- appliance install, upgrade, rollback, backup, and restore are documented and
+  field-tested
+- core dashboard workflows are usable on desktop and mobile
+- runtime health and setup status are clear enough for non-developer operation
+- database migrations remain additive, idempotent, and recoverable
+- AI remains optional and local-first
+- threat-intelligence and reputation behavior are explainable and auditable
+- release artifacts can be installed cleanly from a stable appliance
+  environment
