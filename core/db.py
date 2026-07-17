@@ -36,7 +36,13 @@ from core.migrations import (
     UnsupportedSchemaVersion,
     current_schema_version,
     migrate_database,
-    open_database_readonly,
+)
+from core.sqlite_policy import (
+    SQLiteAccessMode,
+    SQLiteBusyError,
+    SQLiteConnectionFactory,
+    is_busy_error,
+    safe_rollback,
 )
 from engine.evidence import (
     MAX_EVIDENCE_ITEMS,
@@ -102,6 +108,27 @@ class DatabaseReadOnlyError(DatabaseError):
     """
 
 
+class DatabaseBusyError(DatabaseError):
+    """
+    Raised when SQLite cannot acquire a required lock in time.
+    """
+
+    def __init__(
+        self,
+        database_path: str | Path,
+        mode: DatabaseAccessMode,
+        original: BaseException,
+    ) -> None:
+        self.database_path = str(database_path)
+        self.mode = mode
+        super().__init__(
+            f"Database is busy for {mode.value} access at {self.database_path}. "
+            "Another PiHole-AI process may be writing. Retry shortly, or check "
+            "the PiHole-AI service logs if this persists."
+        )
+        self.__cause__ = original
+
+
 class Database:
     """
     Explicit database access-mode entry points.
@@ -111,7 +138,7 @@ class Database:
     def open_read_only(database_path: str | Path) -> sqlite3.Connection:
         path = Path(database_path)
         try:
-            conn = open_database_readonly(path)
+            conn = Database._connect(path, DatabaseAccessMode.READ_ONLY)
             version = current_schema_version(conn)
             if version > LATEST_SUPPORTED_SCHEMA_VERSION:
                 conn.close()
@@ -131,24 +158,36 @@ class Database:
             message = str(exc).lower()
             if "readonly" in message or "attempt to write" in message:
                 raise DatabaseReadOnlyError(str(exc)) from exc
+            if is_busy_error(exc):
+                raise DatabaseBusyError(path, DatabaseAccessMode.READ_ONLY, exc) from exc
             raise
+        except SQLiteBusyError as exc:
+            raise DatabaseBusyError(path, DatabaseAccessMode.READ_ONLY, exc) from exc
 
     @staticmethod
     def open_read_write(database_path: str | Path) -> sqlite3.Connection:
         path = Path(database_path)
         _ensure_database_initialized(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path, timeout=30)
-        _configure_connection(conn)
-        return conn
+        try:
+            return Database._connect(path, DatabaseAccessMode.READ_WRITE)
+        except SQLiteBusyError as exc:
+            raise DatabaseBusyError(path, DatabaseAccessMode.READ_WRITE, exc) from exc
 
     @staticmethod
     def open_for_migration(database_path: str | Path) -> sqlite3.Connection:
         path = Path(database_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path, timeout=30)
-        _configure_connection(conn)
-        return conn
+        try:
+            return Database._connect(path, DatabaseAccessMode.MIGRATION)
+        except SQLiteBusyError as exc:
+            raise DatabaseBusyError(path, DatabaseAccessMode.MIGRATION, exc) from exc
+
+    @staticmethod
+    def _connect(
+        database_path: str | Path,
+        mode: DatabaseAccessMode,
+    ) -> sqlite3.Connection:
+        sqlite_mode = SQLiteAccessMode(mode.value)
+        return SQLiteConnectionFactory.connect(database_path, sqlite_mode)
 
 
 def _database_path() -> Path:
@@ -182,20 +221,6 @@ def _ensure_database_initialized(database_path: Path) -> None:
 # ============================================================================
 
 
-def _configure_connection(conn: sqlite3.Connection) -> None:
-    """
-    Configure SQLite for better reliability and performance.
-    """
-
-    conn.row_factory = sqlite3.Row
-
-    conn.execute("PRAGMA foreign_keys = ON;")
-    conn.execute("PRAGMA journal_mode = WAL;")
-    conn.execute("PRAGMA synchronous = NORMAL;")
-    conn.execute("PRAGMA temp_store = MEMORY;")
-    conn.execute("PRAGMA cache_size = -20000;")
-
-
 def get_connection() -> sqlite3.Connection:
     """
     Return a configured SQLite connection.
@@ -216,14 +241,26 @@ def transaction() -> Iterator[sqlite3.Connection]:
     Automatically commits or rolls back.
     """
 
+    database_path = _database_path()
     conn = get_connection()
 
     try:
+        conn.execute("BEGIN")
         yield conn
         conn.commit()
 
-    except Exception:
-        conn.rollback()
+    except Exception as exc:
+        safe_rollback(
+            conn,
+            database_path=database_path,
+            operation="write_transaction",
+        )
+        if is_busy_error(exc):
+            raise DatabaseBusyError(
+                database_path,
+                DatabaseAccessMode.READ_WRITE,
+                exc,
+            ) from exc
         raise
 
     finally:

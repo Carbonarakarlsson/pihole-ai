@@ -147,6 +147,9 @@ Important defaults:
 
 ```text
 EVENTS_DB_PATH=/var/lib/pihole-ai/events.db
+PIHOLE_AI_DB_TIMEOUT_SECONDS=30
+PIHOLE_AI_DB_MIGRATION_TIMEOUT_SECONDS=60
+PIHOLE_AI_DB_BUSY_TIMEOUT_MS=30000
 LOG_PATH=/var/log/pihole-ai/pihole-ai.log
 PIHOLE_AI_ALERT_LOG=/var/log/pihole-ai/alerts.log
 AI_ENABLED=true

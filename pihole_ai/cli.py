@@ -1048,6 +1048,11 @@ def main(
                 )
                 print(f"pending_migration_count: {status.pending_migration_count}")
                 print(f"database_file_size: {status.database_file_size}")
+                print(f"journal_mode: {status.journal_mode or 'unknown'}")
+                print(f"busy_timeout_ms: {status.busy_timeout_ms}")
+                print(f"wal_file_size: {status.wal_file_size}")
+                print(f"read_only_ok: {str(status.read_only_ok).lower()}")
+                print(f"write_open_ok: {str(status.write_open_ok).lower()}")
                 print(f"compatible: {str(status.compatible).lower()}")
 
             return 0

@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import sqlite3
 import time
 from contextlib import closing
 from dataclasses import asdict, dataclass
@@ -23,6 +22,7 @@ from core.config import (
 )
 from core.logger import get_logger
 from core.migrations import UnsupportedSchemaVersion, database_status
+from core.sqlite_policy import SQLiteAccessMode, SQLiteConnectionFactory
 from pihole_ai.version import get_version
 
 
@@ -250,9 +250,12 @@ def check_events_database() -> HealthCheck:
         )
 
     try:
-        uri = f"file:{path}?mode=ro"
-        with closing(sqlite3.connect(uri, timeout=30, uri=True)) as conn:
-            conn.execute("PRAGMA query_only = ON")
+        with closing(
+            SQLiteConnectionFactory.connect(
+                path,
+                SQLiteAccessMode.READ_ONLY,
+            )
+        ) as conn:
             conn.execute("SELECT 1").fetchone()
 
         db_status = database_status(path)
@@ -291,6 +294,12 @@ def check_events_database() -> HealthCheck:
             "current_schema_version": db_status.current_schema_version,
             "latest_supported_schema_version": db_status.latest_supported_schema_version,
             "pending_migration_count": db_status.pending_migration_count,
+            "journal_mode": db_status.journal_mode,
+            "busy_timeout_ms": db_status.busy_timeout_ms,
+            "database_file_size": db_status.database_file_size,
+            "wal_file_size": db_status.wal_file_size,
+            "read_only_ok": db_status.read_only_ok,
+            "write_open_ok": db_status.write_open_ok,
         },
         started_at=started_at,
     )

@@ -574,7 +574,8 @@ class CLITests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 cli.main(["intel", "source", "add", "--help"])
 
-        self.assertIn("Source confidence percentage, 0-100.", stdout.getvalue())
+        help_text = " ".join(stdout.getvalue().split())
+        self.assertIn("Source confidence percentage, 0-100.", help_text)
 
     def test_intel_confidence_rejects_out_of_range_values(self) -> None:
         with patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):

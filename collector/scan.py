@@ -1,4 +1,3 @@
-import sqlite3
 import time
 from contextlib import closing
 
@@ -10,6 +9,7 @@ from core.db import (
     set_state,
 )
 from core.logger import get_logger
+from core.sqlite_policy import SQLiteAccessMode, SQLiteConnectionFactory
 
 
 LOGGER = get_logger(__name__)
@@ -58,27 +58,38 @@ def fetch(
     Fetch new Pi-hole queries after the given query ID.
     """
 
-    with closing(sqlite3.connect(settings.pihole_db)) as conn:
-        with conn:
-            cur = conn.execute(
-                """
-                SELECT id, domain, client
+    with closing(
+        SQLiteConnectionFactory.connect(
+            settings.pihole_db,
+            SQLiteAccessMode.READ_ONLY,
+        )
+    ) as conn:
+        cur = conn.execute(
+            """
+            SELECT id, domain, client
 
-                FROM queries
+            FROM queries
 
-                WHERE id > ?
+            WHERE id > ?
 
-                ORDER BY id ASC
+            ORDER BY id ASC
 
-                LIMIT ?
-                """,
-                (
-                    last_query_id,
-                    settings.collect_batch_size,
-                ),
+            LIMIT ?
+            """,
+            (
+                last_query_id,
+                settings.collect_batch_size,
+            ),
+        )
+
+        return [
+            (
+                row["id"],
+                row["domain"],
+                row["client"],
             )
-
-            return cur.fetchall()
+            for row in cur.fetchall()
+        ]
 
 
 def process_batch(

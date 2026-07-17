@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 from core import db
 from core import migrations
-from core.migrations import IncompatibleSchema
+from core.migrations import IncompatibleSchema, MigrationLockError
+from core.sqlite_policy import SQLiteAccessMode, SQLiteConnectionFactory
 from engine.decision_engine import DecisionEngine
 from engine.evidence import EvidenceCollection, EvidenceItem, EvidencePolarity
 from pihole_ai.intel import update_source
@@ -88,6 +89,163 @@ class DatabaseTests(unittest.TestCase):
             db.Database.open_read_only(missing)
 
         self.assertFalse(missing.exists())
+
+    def test_production_sqlite_connect_calls_use_central_factory(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        offenders: list[str] = []
+        for path in root.rglob("*.py"):
+            relative = path.relative_to(root)
+            if relative.parts[0] in {"tests", ".venv"}:
+                continue
+            if relative == Path("core/sqlite_policy.py"):
+                continue
+            if "sqlite3.connect" in path.read_text(encoding="utf-8"):
+                offenders.append(str(relative))
+
+        self.assertEqual(offenders, [])
+
+    def test_read_only_connection_uses_uri_mode_ro(self) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        class FakeConnection:
+            row_factory = None
+
+            def execute(self, sql: str):
+                calls.append((sql, {}))
+                return self
+
+        def fake_connect(*args, **kwargs):
+            calls.append((str(args[0]), kwargs))
+            return FakeConnection()
+
+        with patch("core.sqlite_policy.sqlite3.connect", side_effect=fake_connect):
+            SQLiteConnectionFactory.connect(self.database_path, SQLiteAccessMode.READ_ONLY)
+
+        self.assertIn("mode=ro", calls[0][0])
+        self.assertTrue(calls[0][1]["uri"])
+        self.assertNotIn(
+            "journal_mode",
+            " ".join(call[0].lower() for call in calls[1:]),
+        )
+
+    def test_read_only_connection_cannot_write(self) -> None:
+        with closing(db.Database.open_read_only(self.database_path)) as conn:
+            with self.assertRaises(sqlite3.OperationalError):
+                conn.execute(
+                    "INSERT INTO events (device, domain, timestamp) VALUES ('d', 'x.test', 1)"
+                )
+
+    def test_write_connection_enables_foreign_keys_busy_timeout_and_wal(self) -> None:
+        with closing(db.Database.open_read_write(self.database_path)) as conn:
+            foreign_keys = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+            busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+
+        self.assertEqual(foreign_keys, 1)
+        self.assertGreater(busy_timeout, 0)
+        self.assertEqual(journal_mode.lower(), "wal")
+
+    def test_successful_write_transaction_commits(self) -> None:
+        with db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO events (device, domain, timestamp) VALUES ('d', 'commit.test', 1)"
+            )
+
+        row = db.query_one(
+            "SELECT COUNT(*) AS count FROM events WHERE domain = ?",
+            ("commit.test",),
+        )
+        self.assertEqual(row["count"], 1)
+
+    def test_failed_write_transaction_rolls_back_and_releases_connection(self) -> None:
+        with self.assertRaises(RuntimeError):
+            with db.transaction() as conn:
+                conn.execute(
+                    "INSERT INTO events (device, domain, timestamp) VALUES ('d', 'rollback.test', 1)"
+                )
+                raise RuntimeError("boom")
+
+        row = db.query_one(
+            "SELECT COUNT(*) AS count FROM events WHERE domain = ?",
+            ("rollback.test",),
+        )
+        self.assertEqual(row["count"], 0)
+
+        with db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO events (device, domain, timestamp) VALUES ('d', 'after.test', 1)"
+            )
+
+    def test_lock_timeout_becomes_database_busy_error_with_original_cause(self) -> None:
+        locker = db.Database.open_read_write(self.database_path)
+        try:
+            locker.execute("BEGIN IMMEDIATE")
+            with (
+                patch("core.sqlite_policy.settings.db_timeout_seconds", 0.05),
+                patch("core.sqlite_policy.settings.db_busy_timeout_ms", 50),
+            ):
+                with self.assertRaises(db.DatabaseBusyError) as raised:
+                    with db.transaction() as conn:
+                        conn.execute(
+                            "INSERT INTO events (device, domain, timestamp) VALUES ('d', 'busy.test', 1)"
+                        )
+
+            self.assertIsInstance(raised.exception.__cause__, sqlite3.OperationalError)
+            self.assertIn("Database is busy", str(raised.exception))
+        finally:
+            locker.rollback()
+            locker.close()
+
+    def test_concurrent_readers_succeed_while_writer_is_active_in_wal_mode(self) -> None:
+        writer = db.Database.open_read_write(self.database_path)
+        try:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute(
+                "INSERT INTO events (device, domain, timestamp) VALUES ('d', 'uncommitted.test', 1)"
+            )
+
+            with closing(db.Database.open_read_only(self.database_path)) as reader:
+                row = reader.execute(
+                    "SELECT COUNT(*) AS count FROM events WHERE domain = 'uncommitted.test'"
+                ).fetchone()
+
+            self.assertEqual(row["count"], 0)
+        finally:
+            writer.rollback()
+            writer.close()
+
+    def test_migration_lock_failure_has_actionable_error(self) -> None:
+        path = Path(self.tmpdir.name) / "locked-old.db"
+        with closing(sqlite3.connect(path)) as conn:
+            conn.execute(
+                """
+                CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (1, 'old', 'now')"
+            )
+            conn.commit()
+
+        locker = db.Database.open_for_migration(path)
+        try:
+            locker.execute("BEGIN IMMEDIATE")
+            with (
+                patch("core.sqlite_policy.settings.db_migration_timeout_seconds", 0.05),
+                patch("core.sqlite_policy.settings.db_busy_timeout_ms", 50),
+            ):
+                with self.assertRaises(MigrationLockError) as raised:
+                    migrations.migrate_database(path)
+
+            self.assertIn("sudo pihole-ai upgrade", str(raised.exception))
+            self.assertIsInstance(raised.exception.__cause__, sqlite3.OperationalError)
+        finally:
+            locker.rollback()
+            locker.close()
 
     def test_read_only_open_missing_tables_reports_migration_required(self) -> None:
         path = Path(self.tmpdir.name) / "empty.db"

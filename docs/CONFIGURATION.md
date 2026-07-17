@@ -10,6 +10,9 @@ dashboard, or logging settings generally require a service restart.
 | Variable | Type | Default | Secret | Validation | Example | Applies |
 | --- | --- | --- | --- | --- | --- | --- |
 | `EVENTS_DB_PATH` | path | `/var/lib/pihole-ai/events.db` | no | absolute/file path | `/var/lib/pihole-ai/events.db` | all |
+| `PIHOLE_AI_DB_TIMEOUT_SECONDS` | integer seconds | `30` | no | positive | `30` | all |
+| `PIHOLE_AI_DB_MIGRATION_TIMEOUT_SECONDS` | integer seconds | `60` | no | positive | `60` | upgrade/migration |
+| `PIHOLE_AI_DB_BUSY_TIMEOUT_MS` | integer milliseconds | `30000` | no | positive | `30000` | all |
 | `PIHOLE_AI_PIHOLE_DB` | path | `/etc/pihole/pihole-FTL.db` | no | readable SQLite path where required | `/etc/pihole/pihole-FTL.db` | all |
 | `PIHOLE_AI_COLLECT_BATCH_SIZE` | integer | `200` | no | positive | `200` | all |
 | `PIHOLE_AI_COLLECT_INTERVAL` | integer seconds | `2` | no | positive | `2` | all |

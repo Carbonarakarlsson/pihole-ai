@@ -13,14 +13,18 @@ from pathlib import Path
 from typing import Callable
 
 from core.logger import get_logger
+from core.sqlite_policy import (
+    SQLiteAccessMode,
+    SQLiteBusyError,
+    SQLiteConnectionFactory,
+    configured_busy_timeout_ms,
+    is_busy_error,
+)
 
 
 logger = get_logger(__name__)
 
 MIGRATION_TABLE = "schema_migrations"
-SQLITE_TIMEOUT_SECONDS = 30
-
-
 class MigrationError(RuntimeError):
     """
     Base migration failure.
@@ -43,6 +47,23 @@ class ReadOnlyDatabaseUnavailable(MigrationError):
     """
     Existing database could not be opened for read-only inspection.
     """
+
+
+class MigrationLockError(MigrationError):
+    """
+    Migration could not acquire the required SQLite write lock.
+    """
+
+    def __init__(
+        self,
+        migration_version: int,
+    ) -> None:
+        super().__init__(
+            "Database migration could not acquire the required SQLite lock. "
+            "Stop PiHole-AI services or retry shortly, then run "
+            "'sudo pihole-ai upgrade'."
+        )
+        self.migration_version = migration_version
 
 
 @dataclass(frozen=True)
@@ -74,6 +95,11 @@ class DatabaseStatus:
     pending_migration_count: int
     database_file_size: int
     compatible: bool
+    journal_mode: str | None = None
+    busy_timeout_ms: int = 0
+    wal_file_size: int = 0
+    read_only_ok: bool = False
+    write_open_ok: bool = False
 
 
 BASELINE_TABLE_COLUMNS = {
@@ -948,16 +974,10 @@ LATEST_SUPPORTED_SCHEMA_VERSION = MIGRATIONS[-1].version
 def open_database(
     database_path: str | Path,
 ) -> sqlite3.Connection:
-    path = Path(database_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(
-        path,
-        timeout=SQLITE_TIMEOUT_SECONDS,
+    return SQLiteConnectionFactory.connect(
+        database_path,
+        SQLiteAccessMode.MIGRATION,
     )
-    conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA busy_timeout = {SQLITE_TIMEOUT_SECONDS * 1000}")
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
 
 
 def open_database_readonly(
@@ -972,16 +992,10 @@ def open_database_readonly(
     if not path.exists():
         raise FileNotFoundError(path)
 
-    uri = f"file:{path}?mode=ro"
-    conn = sqlite3.connect(
-        uri,
-        timeout=SQLITE_TIMEOUT_SECONDS,
-        uri=True,
+    return SQLiteConnectionFactory.connect(
+        path,
+        SQLiteAccessMode.READ_ONLY,
     )
-    conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA busy_timeout = {SQLITE_TIMEOUT_SECONDS * 1000}")
-    conn.execute("PRAGMA query_only = ON")
-    return conn
 
 
 def ensure_migration_table(conn: sqlite3.Connection) -> None:
@@ -1030,7 +1044,7 @@ def migrate_connection(
     conn: sqlite3.Connection,
 ) -> MigrationResult:
     logger.info("Starting database migration.")
-    conn.execute(f"PRAGMA busy_timeout = {SQLITE_TIMEOUT_SECONDS * 1000}")
+    conn.execute(f"PRAGMA busy_timeout = {configured_busy_timeout_ms()}")
     ensure_migration_table(conn)
     conn.commit()
 
@@ -1066,8 +1080,17 @@ def migrate_connection(
             )
             conn.commit()
 
-        except Exception:
+        except Exception as exc:
             conn.rollback()
+            if isinstance(exc, SQLiteBusyError) or is_busy_error(exc):
+                logger.warning(
+                    "Database migration could not acquire required SQLite lock.",
+                    extra={
+                        "database_path": "configured events database",
+                        "migration_version": migration.version,
+                    },
+                )
+                raise MigrationLockError(migration.version) from exc
             logger.exception(
                 "Database migration %s failed.",
                 migration.version,
@@ -1105,6 +1128,10 @@ def database_status(
             pending_migration_count=len(MIGRATIONS),
             database_file_size=0,
             compatible=True,
+            busy_timeout_ms=0,
+            wal_file_size=0,
+            read_only_ok=False,
+            write_open_ok=False,
         )
 
     with closing(open_database_readonly(path)) as conn:
@@ -1118,6 +1145,7 @@ def database_status(
 
     pending = len(pending_migrations(current))
     file_size = path.stat().st_size if path.exists() else 0
+    diagnostics = SQLiteConnectionFactory.diagnostics(path)
 
     return DatabaseStatus(
         database_path=str(path),
@@ -1126,6 +1154,11 @@ def database_status(
         pending_migration_count=pending,
         database_file_size=file_size,
         compatible=compatible,
+        journal_mode=diagnostics.journal_mode,
+        busy_timeout_ms=diagnostics.busy_timeout_ms,
+        wal_file_size=diagnostics.wal_file_size,
+        read_only_ok=diagnostics.read_only_ok,
+        write_open_ok=diagnostics.write_open_ok,
     )
 
 

@@ -161,6 +161,9 @@ class Settings:
     log_file: Path
     pihole_db: Path
     alert_log: Path
+    db_timeout_seconds: int
+    db_migration_timeout_seconds: int
+    db_busy_timeout_ms: int
     collect_batch_size: int
     collect_interval: int
     engine_batch_size: int
@@ -322,6 +325,11 @@ class Settings:
             "logging": {
                 "level": self.log_level,
                 "file": str(self.log_file),
+            },
+            "database": {
+                "timeout_seconds": self.db_timeout_seconds,
+                "migration_timeout_seconds": self.db_migration_timeout_seconds,
+                "busy_timeout_ms": self.db_busy_timeout_ms,
             },
         }
 
@@ -580,6 +588,9 @@ def _parse_config(
 
     int_fields = {
         "collect_batch_size": ("PIHOLE_AI_COLLECT_BATCH_SIZE", "200"),
+        "db_timeout_seconds": ("PIHOLE_AI_DB_TIMEOUT_SECONDS", "30"),
+        "db_migration_timeout_seconds": ("PIHOLE_AI_DB_MIGRATION_TIMEOUT_SECONDS", "60"),
+        "db_busy_timeout_ms": ("PIHOLE_AI_DB_BUSY_TIMEOUT_MS", "30000"),
         "collect_interval": ("PIHOLE_AI_COLLECT_INTERVAL", "2"),
         "engine_batch_size": ("PIHOLE_AI_ENGINE_BATCH_SIZE", "500"),
         "engine_interval": ("PIHOLE_AI_ENGINE_INTERVAL", "5"),
@@ -1158,6 +1169,9 @@ def _validate_numeric(
         "PIHOLE_AI_DASHBOARD_SLOW_POLL_INTERVAL_MS": config.dashboard_slow_poll_interval_ms,
         "PIHOLE_AI_DASHBOARD_SESSION_LIFETIME_MINUTES": config.dashboard_session_lifetime_minutes,
         "PIHOLE_AI_KEEP_LATEST_EVENTS": config.keep_latest_events,
+        "PIHOLE_AI_DB_TIMEOUT_SECONDS": config.db_timeout_seconds,
+        "PIHOLE_AI_DB_MIGRATION_TIMEOUT_SECONDS": config.db_migration_timeout_seconds,
+        "PIHOLE_AI_DB_BUSY_TIMEOUT_MS": config.db_busy_timeout_ms,
         "PIHOLE_AI_DECISION_HISTORY_RETENTION_DAYS": config.decision_history_retention_days,
         "PIHOLE_AI_DECISION_HISTORY_MAX_PER_DOMAIN": config.decision_history_max_per_domain,
         "PIHOLE_AI_INTEL_UPDATE_INTERVAL_SECONDS": config.intel_update_interval_seconds,
