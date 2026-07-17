@@ -167,6 +167,23 @@ imports require the current file revision, and secrets are never returned in
 plaintext by default. Secure exports remain CLI-only. See
 [API Reference](API_REFERENCE.md) for endpoint details.
 
+The dashboard Settings page is available at `/settings` and in the dashboard
+sidebar. It loads configuration from `/api/config`, groups settings by category,
+shows the effective source of each value, and warns when a process environment
+override may hide a persisted edit. Use Preview changes for a backend dry-run,
+Save to write without restarting, and Save & Restart only when you want
+PiHole-AI to restart the affected services after a successful write.
+
+Configured secrets are shown only as configured/unconfigured state. To change a
+secret, choose Replace secret or Unset secret; the current secret is never
+displayed. Dashboard exports omit secrets. Use the CLI secure export command
+for explicit secret-inclusive backups.
+
+If configuration saves but restart fails, the page reports that the write
+succeeded, lists affected or failed services, and shows backend recovery
+commands such as `sudo systemctl restart pihole-ai-engine.service`. The saved
+configuration is not rolled back automatically.
+
 ## Threat-Intelligence Source Edits
 
 Use supported CLI edits instead of direct SQLite changes:

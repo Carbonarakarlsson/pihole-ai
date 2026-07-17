@@ -223,10 +223,11 @@ backup when replacing an existing file, and never restart services
 automatically. Use `--restart` only when you want PiHole-AI to restart the
 affected services after a successful write.
 
-The dashboard now exposes the same configuration framework through a
-backend-only API for future Settings UI work. The API supports authenticated
-inventory, validation, revision-guarded writes, impact previews, normal
-exports, and imports while keeping secrets masked by default. See
+The dashboard Settings page now uses the same configuration framework as the
+CLI. It supports category browsing, backend validation, dry-run previews,
+revision-guarded saves, optional Save & Restart, normal import/export, and
+explicit secret replace/unset flows while keeping secrets masked by default.
+Secure secret-inclusive exports remain CLI-only. See
 [docs/API_REFERENCE.md](docs/API_REFERENCE.md) for endpoint details.
 
 ## Detailed Documentation

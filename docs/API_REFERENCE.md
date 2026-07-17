@@ -34,7 +34,12 @@ read endpoints must not be sent back as replacement values.
 ## Configuration API
 
 The configuration API is implemented in Epic 3.5 Phase 1D. It is a backend API
-for the future Settings page; it does not add the UI itself.
+for the Settings page. Epic 3.5 Phase 1E added the dashboard UI as a thin
+client over these endpoints.
+
+The Settings page is available at `/settings` and in the authenticated
+dashboard sidebar. It does not embed configuration data in the initial HTML; it
+loads configuration through `GET /api/config` after the page is available.
 
 ### `GET /api/config`
 
@@ -145,6 +150,11 @@ Responses include `changed`, `written`, `backup_path`, `revision`,
 `affected_services`, `restart_attempted`, `restart_success`,
 `service_results`, and `recovery_commands`.
 
+The dashboard exposes separate Save and Save & Restart actions. Restart is
+never preselected. If a write succeeds but restart fails, the UI treats the
+configuration write as saved and displays failed services plus recovery
+commands.
+
 ### `GET /api/config/impact`
 
 Previews service impact for one or more keys.
@@ -181,6 +191,10 @@ Query parameters:
 Normal exports omit secrets and mask sensitive values. Secure exports are
 CLI-only in Phase 1D and return `403` from the dashboard API.
 
+The dashboard offers only normal JSON/env exports and states that secrets are
+omitted. Use `pihole-ai config export --secure` from the CLI for explicit
+secret-inclusive backups.
+
 The response body is the exported file content, not a JSON envelope. The
 response includes `Content-Disposition` with a generated filename.
 
@@ -211,4 +225,3 @@ Behavior:
 - `strict=true` turns unknown keys into errors
 - successful non-dry-run imports use the same atomic write and backup path as
   CLI configuration writes
-

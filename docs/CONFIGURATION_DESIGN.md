@@ -78,6 +78,15 @@ The API reuses the shared configuration operations layer in
 requests, revision-guarded for writes/imports, secret-safe by default, and
 does not add the Settings UI yet. Secure exports remain CLI-only in Phase 1D.
 
+Phase 1E status: implemented as the authenticated dashboard Settings UI. The
+page is a thin client over the Phase 1D API and supports category navigation,
+source/override display, non-secret edits, explicit secret replace/unset
+operations, backend validation, dry-run previews, Save, Save & Restart,
+revision-conflict recovery, import preview/apply, and normal JSON/env export.
+It does not duplicate backend validation rules, does not restart by default,
+and does not expose raw secret values in initial markup, previews, or status
+messages.
+
 Related documentation:
 
 - [Configuration](CONFIGURATION.md)
@@ -532,6 +541,23 @@ Dashboard page goals:
 - clear restart-required state
 - no secret plaintext in responses
 
+Implemented UI behavior:
+
+- direct `/settings` navigation opens the Settings tab after authentication
+- categories are derived from `/api/config` metadata
+- settings render in backend schema order
+- controls are selected from backend metadata (`type`, `allowed_values`,
+  bounds, sensitivity, editability)
+- process environment overrides show a prominent warning that a persisted edit
+  may not change effective runtime behavior
+- configured secrets show replace/unset actions instead of editable masked
+  placeholders
+- pending edits are kept in browser memory only and are protected by a
+  before-unload warning
+- validation, dry-run preview, save, restart, import, and export all use the
+  dashboard Configuration API
+- secure exports remain CLI-only
+
 Endpoints:
 
 ### `GET /api/config`
@@ -640,8 +666,9 @@ Implementation steps:
 9. Add explicit restart orchestration for successful configuration writes.
    Done in Phase 1C3.
 10. Add dashboard/API endpoints. Done in Phase 1D.
-11. Add audit events without storing secrets.
-12. Later, optionally add profile presets.
+11. Add dashboard Settings UI. Done in Phase 1E.
+12. Add audit events without storing secrets.
+13. Later, optionally add profile presets.
 
 Existing `/etc/pihole-ai/pihole-ai.env` files must continue to load unchanged.
 

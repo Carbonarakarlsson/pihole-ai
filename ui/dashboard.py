@@ -74,6 +74,7 @@ ROUTE_SECURITY = {
     "POST /login": "public_state_changing_csrf",
     "GET /live": "public_liveness",
     "GET /": "authenticated_read",
+    "GET /settings": "authenticated_read",
     "GET /api/stats": "authenticated_read",
     "GET /api/polling": "authenticated_read",
     "GET /api/settings": "authenticated_read",
@@ -527,6 +528,195 @@ input {
     padding: 0 12px 12px;
 }
 
+.config-shell {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: 220px minmax(0, 1fr);
+    padding: 12px;
+}
+
+.config-category-list {
+    align-self: start;
+    background: var(--panel-soft);
+    border-radius: 8px;
+    display: grid;
+    gap: 6px;
+    padding: 8px;
+}
+
+.config-category {
+    align-items: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--muted);
+    cursor: pointer;
+    display: flex;
+    font: inherit;
+    justify-content: space-between;
+    min-height: 34px;
+    padding: 7px 8px;
+    text-align: left;
+}
+
+.config-category.active,
+.config-category:focus-visible {
+    border-color: var(--line);
+    color: var(--text);
+    outline: 0;
+}
+
+.config-main {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+}
+
+.config-actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.config-actions button,
+.setting-card button,
+.import-export button {
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--text);
+    min-height: 32px;
+    padding: 6px 10px;
+}
+
+.config-actions button.primary {
+    background: var(--accent);
+    border: 0;
+    color: #06110d;
+    font-weight: 700;
+}
+
+.config-actions button:disabled,
+.setting-card button:disabled,
+.import-export button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.config-status {
+    background: var(--panel-soft);
+    border-radius: 8px;
+    color: var(--muted);
+    min-height: 36px;
+    padding: 10px 12px;
+}
+
+.config-status.error {
+    color: #e86969;
+}
+
+.config-status.success {
+    color: #58c4a7;
+}
+
+.setting-list {
+    display: grid;
+    gap: 10px;
+}
+
+.setting-card {
+    background: var(--panel-soft);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    border-radius: 8px;
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+}
+
+.setting-card.invalid {
+    border-color: rgba(232, 105, 105, 0.55);
+}
+
+.setting-header {
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+}
+
+.setting-title {
+    display: grid;
+    gap: 4px;
+}
+
+.setting-title strong {
+    overflow-wrap: anywhere;
+}
+
+.setting-control {
+    display: grid;
+    gap: 8px;
+}
+
+.setting-control input,
+.setting-control select {
+    max-width: 460px;
+    width: 100%;
+}
+
+.setting-meta {
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    overflow-wrap: anywhere;
+}
+
+.setting-warning,
+.setting-error {
+    border-radius: 6px;
+    padding: 8px;
+}
+
+.setting-warning {
+    background: rgba(231, 183, 95, 0.12);
+    color: #e7b75f;
+}
+
+.setting-error {
+    background: rgba(232, 105, 105, 0.12);
+    color: #e86969;
+}
+
+.config-preview,
+.import-export {
+    background: var(--panel-soft);
+    border-radius: 8px;
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+}
+
+.config-preview pre,
+.import-export pre {
+    background: #101418;
+    border-radius: 6px;
+    color: var(--muted);
+    margin: 0;
+    overflow: auto;
+    padding: 10px;
+    white-space: pre-wrap;
+}
+
+.import-export {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.import-export > div {
+    display: grid;
+    gap: 8px;
+}
+
 .inline-actions {
     display: flex;
     flex-wrap: wrap;
@@ -860,6 +1050,17 @@ th {
     .settings-row {
         grid-template-columns: minmax(0, 1fr);
     }
+
+    .config-shell,
+    .import-export {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .config-category-list {
+        grid-auto-flow: column;
+        grid-auto-columns: max-content;
+        overflow-x: auto;
+    }
 }
 </style>
 </head>
@@ -1087,7 +1288,10 @@ th {
 
         <section class="tab-panel" id="page-settings">
             <section class="panel">
-                <h2>Settings</h2>
+                <div class="panel-title">
+                    <h2>Settings</h2>
+                    <span class="muted">Configuration Center</span>
+                </div>
                 <div class="settings-form">
                     <div class="settings-group">
                         <strong>Service control</strong>
@@ -1098,43 +1302,66 @@ th {
                             <button type="button" id="service-status-button">View service status</button>
                         </div>
                     </div>
-                    <div class="settings-group">
-                        <strong>AI settings</strong>
-                        <label class="settings-row">
-                            <span>AI enabled</span>
-                            <input id="setting-ai-enabled" type="checkbox">
-                        </label>
-                        <label class="settings-row">
-                            <span>Max calls per minute</span>
-                            <input id="setting-ai-max-calls" type="number" min="0" step="1">
-                        </label>
-                        <label class="settings-row">
-                            <span>Cooldown seconds</span>
-                            <input id="setting-ai-cooldown" type="number" min="0" step="1">
-                        </label>
-                        <label class="settings-row">
-                            <span>Timeout seconds</span>
-                            <input id="setting-ai-timeout" type="number" min="1" step="1">
-                        </label>
-                    </div>
-                    <div class="settings-group">
-                        <strong>Dashboard settings</strong>
-                        <label class="settings-row">
-                            <span>Refresh interval</span>
-                            <input id="setting-refresh" type="number" min="1000" step="1000">
-                        </label>
-                        <label class="settings-row">
-                            <span>Access logs / dev logs</span>
-                            <input id="setting-dev-logs" type="checkbox">
-                        </label>
-                    </div>
-                    <div class="settings-actions">
-                        <button class="primary" id="save-settings" type="button">Save settings</button>
-                        <button id="restart-required" type="button">Restart required</button>
+                </div>
+                <div class="config-status" id="config-status" role="status" aria-live="polite">Loading configuration...</div>
+                <div class="config-shell" id="settings-config-app">
+                    <nav class="config-category-list" id="config-categories" aria-label="Configuration categories"></nav>
+                    <div class="config-main">
+                        <div class="config-actions">
+                            <button type="button" id="config-preview" disabled>Preview changes</button>
+                            <button class="primary" type="button" id="config-save" disabled>Save</button>
+                            <button type="button" id="config-save-restart" disabled>Save & Restart</button>
+                            <button type="button" id="config-revert-all" disabled>Revert all</button>
+                        </div>
+                        <div class="config-preview" id="config-preview-panel" hidden>
+                            <strong>Change preview</strong>
+                            <pre id="config-preview-output"></pre>
+                        </div>
+                        <div class="setting-list" id="config-settings"></div>
+                        <div class="import-export">
+                            <div>
+                                <strong>Export</strong>
+                                <span class="muted">Dashboard exports omit secrets. Use CLI secure export for secret-inclusive backups.</span>
+                                <label>
+                                    Format
+                                    <select id="config-export-format">
+                                        <option value="json">JSON</option>
+                                        <option value="env">ENV</option>
+                                    </select>
+                                </label>
+                                <button type="button" id="config-export">Download export</button>
+                            </div>
+                            <div>
+                                <strong>Import</strong>
+                                <span class="muted">Preview imports before applying. Imported secret values are never displayed.</span>
+                                <label>
+                                    File
+                                    <input id="config-import-file" type="file" accept=".json,.env,text/plain,application/json">
+                                </label>
+                                <label>
+                                    Format
+                                    <select id="config-import-format">
+                                        <option value="json">JSON</option>
+                                        <option value="env">ENV</option>
+                                    </select>
+                                </label>
+                                <label class="settings-row">
+                                    <span>Strict mode</span>
+                                    <input id="config-import-strict" type="checkbox">
+                                </label>
+                                <label class="settings-row">
+                                    <span>Restart after import</span>
+                                    <input id="config-import-restart" type="checkbox">
+                                </label>
+                                <div class="settings-actions">
+                                    <button type="button" id="config-import-preview">Preview import</button>
+                                    <button type="button" id="config-import-apply" disabled>Apply import</button>
+                                </div>
+                                <pre id="config-import-output"></pre>
+                            </div>
+                        </div>
                     </div>
                 </div>
-                <div class="settings-message" id="settings-message"></div>
-                <div class="explain-grid" id="settings-summary"></div>
                 <div class="empty" id="threat-intel-empty">No threat intel imported yet</div>
             </section>
         </section>
@@ -1150,6 +1377,7 @@ th {
 </div>
 <script nonce="__CSP_NONCE__">
 const csrfToken = document.querySelector("meta[name='csrf-token']")?.content ?? "";
+const initialPage = "__INITIAL_PAGE__";
 const text = (value) => String(value ?? "-");
 
 function csrfHeaders(extra = {}) {
@@ -1686,50 +1914,583 @@ function renderReputations(reputations) {
 }
 
 function renderSettings(status) {
-    const target = document.getElementById("settings-summary");
     const database = status.database ?? {};
-    const config = status.config ?? {};
-
-    renderKeyValue(target, [
-        ["Events DB", config.events_db],
-        ["Pi-hole DB", config.pihole_db],
-        ["Dashboard Port", config.dashboard_port],
-        ["AI Enabled", config.ai_enabled],
-        ["AI Calls / Minute", config.ai_max_calls_per_minute],
-        ["AI Cooldown Seconds", config.ai_cooldown_seconds],
-        ["AI Timeout Seconds", config.ai_timeout_seconds],
-    ]);
     emptyState("threat-intel-empty", (database.threat_intel ?? 0) === 0);
 }
 
-function renderSettingsControls(payload) {
-    const ai = payload.ai ?? {};
-    const dashboard = payload.dashboard ?? {};
-    document.getElementById("setting-ai-enabled").checked = Boolean(ai.enabled);
-    document.getElementById("setting-ai-max-calls").value = ai.max_calls_per_minute ?? 2;
-    document.getElementById("setting-ai-cooldown").value = ai.cooldown_seconds ?? 60;
-    document.getElementById("setting-ai-timeout").value = ai.timeout_seconds ?? 20;
-    document.getElementById("setting-refresh").value = dashboard.refresh_interval_ms ?? 5000;
-    document.getElementById("setting-dev-logs").checked = Boolean(dashboard.dev_access_logs);
+const configUi = {
+    loaded: false,
+    revision: null,
+    settings: [],
+    category: null,
+    edits: new Map(),
+    validationErrors: new Map(),
+    warnings: [],
+    valid: true,
+    busy: false,
+    validationSeq: 0,
+    importPreviewReady: false,
+    importContent: "",
+};
+
+function settingsMessage(message, kind = "") {
+    const target = document.getElementById("config-status");
+    if (!target) return;
+    target.textContent = message;
+    target.classList.toggle("error", kind === "error");
+    target.classList.toggle("success", kind === "success");
 }
 
-function settingPayload() {
-    return {
-        ai: {
-            enabled: document.getElementById("setting-ai-enabled").checked,
-            max_calls_per_minute: Number(document.getElementById("setting-ai-max-calls").value),
-            cooldown_seconds: Number(document.getElementById("setting-ai-cooldown").value),
-            timeout_seconds: Number(document.getElementById("setting-ai-timeout").value),
-        },
-        dashboard: {
-            refresh_interval_ms: Number(document.getElementById("setting-refresh").value),
-            dev_access_logs: document.getElementById("setting-dev-logs").checked,
-        },
-    };
+function configErrorMessage(payload, fallback = "Configuration request failed.") {
+    const error = payload?.error;
+    if (error?.message) return error.message;
+    if (typeof payload?.message === "string") return payload.message;
+    return fallback;
 }
 
-function settingsMessage(message) {
-    document.getElementById("settings-message").textContent = message;
+function categoryCounts(settings) {
+    const counts = new Map();
+    settings.forEach((item) => {
+        counts.set(item.category, (counts.get(item.category) ?? 0) + 1);
+    });
+    return counts;
+}
+
+function settingLabel(setting) {
+    return String(setting.key ?? "")
+        .replaceAll("_", " ")
+        .replace(/\\b\\w/g, (char) => char.toUpperCase());
+}
+
+function isDirty(key) {
+    return configUi.edits.has(key);
+}
+
+function editValueFor(setting) {
+    if (configUi.edits.has(setting.key)) {
+        return configUi.edits.get(setting.key);
+    }
+    return {operation: "replace", value: setting.value ?? ""};
+}
+
+function changesPayload() {
+    const changes = {};
+    configUi.edits.forEach((edit, key) => {
+        if (edit.operation === "unset") {
+            changes[key] = {operation: "unset"};
+        } else if (edit.operation === "secret-replace") {
+            changes[key] = {operation: "replace", value: edit.value ?? ""};
+        } else if (edit.operation === "replace") {
+            changes[key] = edit.value;
+        }
+    });
+    return changes;
+}
+
+function hasChanges() {
+    return configUi.edits.size > 0;
+}
+
+function updateConfigButtons() {
+    const loaded = configUi.loaded;
+    const dirty = hasChanges();
+    const canSave = loaded && dirty && configUi.valid && !configUi.busy;
+    ["config-preview", "config-save", "config-save-restart", "config-revert-all"].forEach((id) => {
+        const item = document.getElementById(id);
+        if (!item) return;
+        item.disabled = id === "config-revert-all"
+            ? !dirty || configUi.busy
+            : !canSave;
+    });
+}
+
+function renderConfigCategories() {
+    const target = document.getElementById("config-categories");
+    clear(target);
+    const counts = categoryCounts(configUi.settings);
+    const categories = Array.from(counts.keys());
+    if (!configUi.category || !counts.has(configUi.category)) {
+        configUi.category = categories[0] ?? null;
+    }
+    categories.forEach((category) => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "config-category";
+        item.classList.toggle("active", category === configUi.category);
+        item.setAttribute("aria-pressed", category === configUi.category ? "true" : "false");
+        const label = document.createElement("span");
+        label.textContent = category;
+        const count = document.createElement("span");
+        count.className = "badge";
+        count.textContent = counts.get(category);
+        item.append(label, count);
+        item.addEventListener("click", () => {
+            configUi.category = category;
+            renderConfigSettings();
+        });
+        target.appendChild(item);
+    });
+}
+
+function sourceBadge(setting) {
+    const value = String(setting.source ?? "default");
+    if (value === "environment") return "process environment";
+    if (value === "default") return "default";
+    if (value.includes("env_file")) return "persisted";
+    return value;
+}
+
+function renderSettingControl(setting, card) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "setting-control";
+    const inputId = `config-setting-${setting.key}`;
+    const edit = editValueFor(setting);
+
+    if (!setting.editable) {
+        const value = document.createElement("span");
+        value.className = "muted";
+        value.textContent = "Read-only setting";
+        wrapper.appendChild(value);
+        return wrapper;
+    }
+
+    if (setting.sensitivity === "secret") {
+        const state = document.createElement("span");
+        state.textContent = setting.configured ? "Configured: yes" : "Configured: no";
+        wrapper.appendChild(state);
+
+        if (edit.operation === "secret-replace") {
+            const label = document.createElement("label");
+            label.setAttribute("for", inputId);
+            label.textContent = "New secret";
+            const input = document.createElement("input");
+            input.id = inputId;
+            input.type = "password";
+            input.autocomplete = "new-password";
+            input.value = edit.value ?? "";
+            input.addEventListener("input", () => {
+                configUi.edits.set(setting.key, {operation: "secret-replace", value: input.value});
+                scheduleConfigValidation();
+            });
+            label.appendChild(input);
+            wrapper.appendChild(label);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "inline-actions";
+        const replace = button("Replace secret", () => {
+            configUi.edits.set(setting.key, {operation: "secret-replace", value: ""});
+            renderConfigSettings();
+            scheduleConfigValidation();
+        });
+        const unset = button("Unset secret", () => {
+            configUi.edits.set(setting.key, {operation: "unset"});
+            renderConfigSettings();
+            scheduleConfigValidation();
+        });
+        actions.append(replace, unset);
+        wrapper.appendChild(actions);
+        return wrapper;
+    }
+
+    const label = document.createElement("label");
+    label.setAttribute("for", inputId);
+    label.textContent = settingLabel(setting);
+    let input;
+    if (setting.type === "boolean") {
+        input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = String(edit.value).toLowerCase() === "true";
+        input.addEventListener("change", () => {
+            configUi.edits.set(setting.key, {operation: "replace", value: input.checked});
+            scheduleConfigValidation();
+        });
+    } else if (setting.allowed_values && setting.allowed_values.length) {
+        input = document.createElement("select");
+        setting.allowed_values.forEach((value) => {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = value;
+            input.appendChild(option);
+        });
+        input.value = text(edit.value);
+        input.addEventListener("change", () => {
+            configUi.edits.set(setting.key, {operation: "replace", value: input.value});
+            scheduleConfigValidation();
+        });
+    } else {
+        input = document.createElement("input");
+        input.type = setting.type === "integer" || setting.type === "port" ? "number" : setting.type === "url" ? "url" : "text";
+        if (setting.minimum !== null && setting.minimum !== undefined) input.min = setting.minimum;
+        if (setting.maximum !== null && setting.maximum !== undefined) input.max = setting.maximum;
+        if (input.type === "number") input.step = "1";
+        input.value = edit.value ?? "";
+        input.addEventListener("input", () => {
+            configUi.edits.set(setting.key, {operation: "replace", value: input.value});
+            scheduleConfigValidation();
+        });
+    }
+    input.id = inputId;
+    input.disabled = !setting.valid;
+    label.appendChild(input);
+    wrapper.appendChild(label);
+
+    const unset = button("Use default", () => {
+        configUi.edits.set(setting.key, {operation: "unset"});
+        renderConfigSettings();
+        scheduleConfigValidation();
+    });
+    wrapper.appendChild(unset);
+    return wrapper;
+}
+
+function renderSettingCard(setting) {
+    const card = document.createElement("article");
+    card.className = "setting-card";
+    card.classList.toggle("invalid", !setting.valid || configUi.validationErrors.has(setting.key));
+
+    const header = document.createElement("div");
+    header.className = "setting-header";
+    const title = document.createElement("div");
+    title.className = "setting-title";
+    const name = document.createElement("strong");
+    name.textContent = settingLabel(setting);
+    const description = document.createElement("span");
+    description.className = "muted";
+    description.textContent = setting.description;
+    title.append(name, description);
+    const dirty = document.createElement("span");
+    dirty.className = "badge";
+    dirty.textContent = isDirty(setting.key) ? "edited" : sourceBadge(setting);
+    header.append(title, dirty);
+    card.appendChild(header);
+
+    card.appendChild(renderSettingControl(setting, card));
+
+    const meta = document.createElement("div");
+    meta.className = "setting-meta";
+    [
+        `key ${setting.key}`,
+        `env ${setting.env}`,
+        `source ${sourceBadge(setting)}`,
+        setting.configured ? "configured" : "fallback/default",
+        setting.restart?.length ? `restart ${setting.restart.join(", ")}` : "no restart",
+    ].forEach((value) => {
+        const span = document.createElement("span");
+        span.textContent = value;
+        meta.appendChild(span);
+    });
+    card.appendChild(meta);
+
+    if (setting.source === "environment") {
+        const warning = document.createElement("div");
+        warning.className = "setting-warning";
+        warning.textContent = "This value is currently overridden by the process environment. Saving updates the persisted value but may not change effective runtime behavior.";
+        card.appendChild(warning);
+    }
+
+    const errors = [
+        ...(setting.errors ?? []),
+        ...(configUi.validationErrors.get(setting.key) ?? []),
+    ];
+    errors.forEach((error) => {
+        const node = document.createElement("div");
+        node.className = "setting-error";
+        node.textContent = error.message ?? String(error);
+        card.appendChild(node);
+    });
+
+    if (isDirty(setting.key)) {
+        const actions = document.createElement("div");
+        actions.className = "inline-actions";
+        actions.appendChild(button("Revert", () => {
+            const edit = configUi.edits.get(setting.key);
+            configUi.edits.delete(setting.key);
+            if (edit?.operation === "secret-replace") {
+                // Drop secret value from the current browser state as soon as it is cancelled.
+            }
+            renderConfigSettings();
+            scheduleConfigValidation();
+        }));
+        card.appendChild(actions);
+    }
+    return card;
+}
+
+function renderConfigSettings() {
+    renderConfigCategories();
+    const target = document.getElementById("config-settings");
+    clear(target);
+    if (!configUi.loaded) {
+        updateConfigButtons();
+        return;
+    }
+    configUi.settings
+        .filter((setting) => setting.category === configUi.category)
+        .forEach((setting) => target.appendChild(renderSettingCard(setting)));
+    updateConfigButtons();
+}
+
+function applyConfigPayload(payload) {
+    configUi.loaded = true;
+    configUi.revision = payload.revision;
+    configUi.settings = Array.isArray(payload.settings) ? payload.settings : [];
+    configUi.validationErrors = new Map();
+    configUi.warnings = [];
+    configUi.valid = true;
+    settingsMessage(`Configuration loaded. Revision ${configUi.revision}.`);
+    renderConfigSettings();
+}
+
+function renderPreview(payload, label = "Preview") {
+    const panel = document.getElementById("config-preview-panel");
+    const output = document.getElementById("config-preview-output");
+    panel.hidden = false;
+    const lines = [label];
+    lines.push(payload.changed ? "Configuration would be written." : "No configuration change is required.");
+    if (payload.restart_requested) {
+        lines.push(payload.restart_attempted ? "Services were restarted." : "Services would be restarted.");
+    }
+    if (payload.affected_services?.length) {
+        lines.push(`Affected services: ${payload.affected_services.join(", ")}`);
+    }
+    if (payload.backup_path) {
+        lines.push(`Backup: ${payload.backup_path}`);
+    }
+    (payload.warnings ?? []).forEach((warning) => lines.push(`Warning: ${warning}`));
+    (payload.recovery_commands ?? []).forEach((command) => lines.push(`Recovery: ${command}`));
+    output.textContent = lines.join("\\n");
+}
+
+function applyValidationErrors(payload) {
+    configUi.validationErrors = new Map();
+    (payload?.error?.details ?? payload?.errors ?? []).forEach((error) => {
+        const key = error.key ?? "";
+        if (!configUi.validationErrors.has(key)) {
+            configUi.validationErrors.set(key, []);
+        }
+        configUi.validationErrors.get(key).push(error);
+    });
+}
+
+let validationTimer = null;
+function scheduleConfigValidation() {
+    configUi.valid = false;
+    updateConfigButtons();
+    if (validationTimer) clearTimeout(validationTimer);
+    validationTimer = setTimeout(validateConfigEdits, 250);
+}
+
+async function validateConfigEdits() {
+    const seq = ++configUi.validationSeq;
+    if (!hasChanges()) {
+        configUi.validationErrors = new Map();
+        configUi.valid = true;
+        renderConfigSettings();
+        return;
+    }
+    try {
+        const response = await checkedFetch("/api/config/validate", {
+            method: "POST",
+            headers: csrfHeaders({"Content-Type": "application/json"}),
+            body: JSON.stringify({revision: configUi.revision, changes: changesPayload()}),
+        });
+        const payload = await response.json();
+        if (seq !== configUi.validationSeq) return;
+        if (!response.ok) {
+            if (response.status === 409) {
+                settingsMessage("Configuration changed on disk. Reload to review before saving.", "error");
+            } else {
+                settingsMessage(configErrorMessage(payload, "Configuration validation failed."), "error");
+            }
+            applyValidationErrors(payload);
+            configUi.valid = false;
+        } else {
+            configUi.validationErrors = new Map();
+            configUi.warnings = payload.warnings ?? [];
+            configUi.valid = true;
+            settingsMessage("Changes validated. Review the preview before saving.");
+        }
+    } catch (error) {
+        if (seq !== configUi.validationSeq) return;
+        configUi.valid = false;
+        settingsMessage("Could not validate changes. Your edits are still preserved.", "error");
+    }
+    renderConfigSettings();
+}
+
+async function loadSettings() {
+    settingsMessage("Loading configuration...");
+    try {
+        const response = await checkedFetch("/api/config");
+        const payload = await response.json();
+        if (!response.ok) {
+            settingsMessage(configErrorMessage(payload, "Could not load configuration."), "error");
+            return;
+        }
+        applyConfigPayload(payload);
+    } catch (error) {
+        settingsMessage("Could not load configuration. Retry from the dashboard when ready.", "error");
+    }
+}
+
+async function previewConfigChanges() {
+    await submitConfigChanges({dryRun: true, restart: false});
+}
+
+async function submitConfigChanges({dryRun = false, restart = false} = {}) {
+    if (!hasChanges() && !dryRun) {
+        settingsMessage("No configuration change is required.");
+        return;
+    }
+    configUi.busy = true;
+    updateConfigButtons();
+    try {
+        const response = await checkedFetch("/api/config", {
+            method: "PUT",
+            headers: csrfHeaders({"Content-Type": "application/json"}),
+            body: JSON.stringify({
+                revision: configUi.revision,
+                changes: changesPayload(),
+                dry_run: dryRun,
+                restart,
+            }),
+        });
+        const payload = await response.json();
+        if (response.status === 409) {
+            settingsMessage("Configuration changed before save. Reloading latest values while preserving your edits.", "error");
+            await reloadConfigPreservingEdits();
+            return;
+        }
+        if (!response.ok) {
+            settingsMessage(configErrorMessage(payload, "Configuration save failed."), "error");
+            applyValidationErrors(payload);
+            renderConfigSettings();
+            return;
+        }
+        renderPreview(payload, dryRun ? "Dry-run preview" : "Save result");
+        if (dryRun) {
+            settingsMessage("Dry run complete. No file was written.");
+            return;
+        }
+        configUi.revision = payload.revision ?? configUi.revision;
+        configUi.edits.clear();
+        configUi.importPreviewReady = false;
+        if (payload.written && restart && payload.restart_success === false) {
+            settingsMessage("Configuration was saved, but one or more services could not be restarted.", "error");
+        } else if (payload.written && restart) {
+            settingsMessage("Configuration saved and affected services restarted.", "success");
+        } else if (payload.written) {
+            settingsMessage("Configuration saved. Restart affected services when ready.", "success");
+        } else {
+            settingsMessage("No configuration change was required.");
+        }
+        await loadSettings();
+    } catch (error) {
+        settingsMessage("Network error while saving. Your edits are still preserved.", "error");
+    } finally {
+        configUi.busy = false;
+        updateConfigButtons();
+    }
+}
+
+async function reloadConfigPreservingEdits() {
+    const edits = new Map(configUi.edits);
+    await loadSettings();
+    configUi.edits = edits;
+    await validateConfigEdits();
+    settingsMessage("Latest configuration loaded. Review highlighted edits before retrying save.", "error");
+}
+
+function revertAllConfigChanges() {
+    configUi.edits.clear();
+    configUi.validationErrors = new Map();
+    configUi.valid = true;
+    document.getElementById("config-preview-panel").hidden = true;
+    settingsMessage("All pending configuration changes reverted.");
+    renderConfigSettings();
+}
+
+async function exportConfig() {
+    const format = document.getElementById("config-export-format").value;
+    try {
+        const response = await checkedFetch(`/api/config/export?format=${encodeURIComponent(format)}`);
+        if (!response.ok) {
+            const payload = await response.json();
+            settingsMessage(configErrorMessage(payload, "Configuration export failed."), "error");
+            return;
+        }
+        const blob = await response.blob();
+        const disposition = response.headers.get("Content-Disposition") ?? "";
+        const match = disposition.match(/filename=([^;]+)/);
+        const filename = match ? match[1].replaceAll('"', "") : `pihole-ai-config.${format}`;
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        link.rel = "noopener";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        settingsMessage("Configuration export downloaded. Secrets were omitted.", "success");
+    } catch (error) {
+        settingsMessage("Configuration export failed.", "error");
+    }
+}
+
+async function readImportFile() {
+    const file = document.getElementById("config-import-file").files[0];
+    if (!file) {
+        settingsMessage("Choose a configuration file first.", "error");
+        return null;
+    }
+    if (file.size > 64 * 1024) {
+        settingsMessage("Import file is too large.", "error");
+        return null;
+    }
+    return await file.text();
+}
+
+async function submitImport({dryRun = true} = {}) {
+    const content = dryRun ? await readImportFile() : configUi.importContent;
+    if (content === null) return;
+    const output = document.getElementById("config-import-output");
+    try {
+        const response = await checkedFetch("/api/config/import", {
+            method: "POST",
+            headers: csrfHeaders({"Content-Type": "application/json"}),
+            body: JSON.stringify({
+                revision: configUi.revision,
+                format: document.getElementById("config-import-format").value,
+                content,
+                dry_run: dryRun,
+                restart: Boolean(document.getElementById("config-import-restart").checked),
+                strict: Boolean(document.getElementById("config-import-strict").checked),
+            }),
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+            output.textContent = configErrorMessage(payload, "Import failed.");
+            settingsMessage(output.textContent, "error");
+            configUi.importPreviewReady = false;
+            document.getElementById("config-import-apply").disabled = true;
+            return;
+        }
+        renderPreview(payload, dryRun ? "Import dry-run preview" : "Import result");
+        output.textContent = dryRun
+            ? "Import preview complete. Review affected services before applying."
+            : "Import applied. Configuration reloaded.";
+        configUi.importPreviewReady = dryRun;
+        configUi.importContent = dryRun ? content : "";
+        document.getElementById("config-import-apply").disabled = !dryRun;
+        if (!dryRun) {
+            await loadSettings();
+        }
+    } catch (error) {
+        output.textContent = "Import failed. Your current edits were preserved.";
+        settingsMessage(output.textContent, "error");
+    }
 }
 
 function renderIntelligence(metrics, status, intelSources) {
@@ -2164,11 +2925,6 @@ async function loadOverview() {
         new Date().toLocaleTimeString();
 }
 
-async function loadSettings() {
-    const payload = await checkedFetch("/api/settings").then((res) => res.json());
-    renderSettingsControls(payload);
-}
-
 async function loadMetrics() {
     const [metrics, status, intelSources] = await Promise.all([
         checkedFetch("/api/metrics/decisions").then((res) => res.json()),
@@ -2243,6 +2999,7 @@ function activatePage(name) {
 document.querySelectorAll(".nav-link").forEach((link) => {
     link.addEventListener("click", () => activatePage(link.dataset.page));
 });
+activatePage(initialPage || "overview");
 document.getElementById("refresh").addEventListener("click", loadAll);
 document.getElementById("search").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -2251,18 +3008,13 @@ document.getElementById("search").addEventListener("keydown", (event) => {
 });
 document.getElementById("min-risk").addEventListener("change", loadAll);
 document.getElementById("limit").addEventListener("change", loadAll);
-document.getElementById("save-settings").addEventListener("click", async () => {
-    const response = await checkedFetch("/api/settings", {
-        method: "POST",
-        headers: csrfHeaders({"Content-Type": "application/json"}),
-        body: JSON.stringify(settingPayload()),
-    }).then((res) => res.json());
-
-    settingsMessage(response.restart_required
-        ? "Settings saved. Restart required."
-        : "Settings saved.");
-});
-document.getElementById("restart-required").addEventListener("click", () => serviceAction("restart"));
+document.getElementById("config-preview").addEventListener("click", previewConfigChanges);
+document.getElementById("config-save").addEventListener("click", () => submitConfigChanges({dryRun: false, restart: false}));
+document.getElementById("config-save-restart").addEventListener("click", () => submitConfigChanges({dryRun: false, restart: true}));
+document.getElementById("config-revert-all").addEventListener("click", revertAllConfigChanges);
+document.getElementById("config-export").addEventListener("click", exportConfig);
+document.getElementById("config-import-preview").addEventListener("click", () => submitImport({dryRun: true}));
+document.getElementById("config-import-apply").addEventListener("click", () => submitImport({dryRun: false}));
 document.getElementById("service-status-button").addEventListener("click", async () => {
     const status = await checkedFetch("/api/status").then((res) => res.json());
     settingsMessage(`Status loaded. Events: ${status.database?.events ?? 0}, processed: ${status.database?.processed ?? 0}.`);
@@ -2283,6 +3035,12 @@ async function serviceAction(action) {
         settingsMessage(response.message || `Run: ${response.command}`);
     }
 }
+
+window.addEventListener("beforeunload", (event) => {
+    if (!hasChanges()) return;
+    event.preventDefault();
+    event.returnValue = "";
+});
 document.getElementById("logout").addEventListener("click", async () => {
     await checkedFetch("/logout", {
         method: "POST",
@@ -3101,6 +3859,13 @@ def create_app() -> Flask:
 
     @app.get("/")
     def home():
+        return render_dashboard("overview")
+
+    @app.get("/settings")
+    def settings_page():
+        return render_dashboard("settings")
+
+    def render_dashboard(initial_page: str):
         html = HTML
         replacements = {
             "__OVERVIEW_POLL_INTERVAL_MS__": settings.dashboard_overview_poll_interval_ms,
@@ -3110,6 +3875,7 @@ def create_app() -> Flask:
             "__CSP_NONCE__": getattr(g, "csp_nonce", ""),
             "__CSRF_TOKEN__": csrf_token(),
             "__USERNAME__": session.get("username", settings.dashboard_username),
+            "__INITIAL_PAGE__": initial_page if initial_page in {"overview", "activity", "domains", "devices", "intelligence", "reliability", "rules", "settings"} else "overview",
         }
 
         for placeholder, value in replacements.items():
