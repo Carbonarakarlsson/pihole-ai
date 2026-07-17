@@ -569,6 +569,70 @@ class CLITests(unittest.TestCase):
         self.assertEqual(payload[0]["remote_generation"], "gen_b")
         self.assertEqual(payload[0]["trigger"], "http_not_modified")
 
+    def test_intel_update_accepts_positional_source_id(self) -> None:
+        result = FeedUpdateResult(
+            source_id="feed-a",
+            success=True,
+        )
+        with patch("pihole_ai.intel.update_sources", return_value=[result]) as update_sources, \
+             patch("sys.stdout", io.StringIO()):
+            exit_code = cli.main(["intel", "update", "feed-a"])
+
+        self.assertEqual(exit_code, 0)
+        update_sources.assert_called_once_with(
+            source_id="feed-a",
+            all_sources=False,
+            dry_run=False,
+            automatic=False,
+        )
+
+    def test_intel_update_rejects_conflicting_source_selectors(self) -> None:
+        with patch("pihole_ai.intel.update_sources") as update_sources, \
+             patch("sys.stdout", io.StringIO()) as stdout:
+            exit_code = cli.main(["intel", "update", "feed-a", "--source", "feed-b"])
+
+        self.assertEqual(exit_code, 1)
+        update_sources.assert_not_called()
+        self.assertIn("Use either positional source_id or --source", stdout.getvalue())
+
+    def test_intel_sources_command_prints_operational_status(self) -> None:
+        rows = [
+            {
+                "source_id": "feed-a",
+                "enabled": True,
+                "status": "active",
+                "entry_count": 2,
+                "last_http_status": 200,
+                "last_success_at": 100.0,
+            }
+        ]
+        with patch("pihole_ai.intel.source_status", return_value=rows), \
+             patch("core.db.migrate_database") as migrate_database, \
+             patch("sys.stdout", io.StringIO()) as stdout:
+            exit_code = cli.main(["intel", "sources"])
+
+        self.assertEqual(exit_code, 0)
+        migrate_database.assert_not_called()
+        self.assertIn("feed-a enabled=True status=active entries=2 http=200", stdout.getvalue())
+
+    def test_intel_stats_command_prints_json(self) -> None:
+        payload = {
+            "sources_total": 1,
+            "enabled_sources": 1,
+            "active_indicators": 2,
+            "failed_sources": 0,
+            "stale_sources": 0,
+            "integrity_issues": 0,
+        }
+        with patch("pihole_ai.intel.stats", return_value=payload), \
+             patch("core.db.migrate_database") as migrate_database, \
+             patch("sys.stdout", io.StringIO()) as stdout:
+            exit_code = cli.main(["intel", "stats", "--json"])
+
+        self.assertEqual(exit_code, 0)
+        migrate_database.assert_not_called()
+        self.assertEqual(__import__("json").loads(stdout.getvalue()), payload)
+
     def test_intel_confidence_help_documents_range_and_units(self) -> None:
         with patch("sys.stdout", io.StringIO()) as stdout:
             with self.assertRaises(SystemExit):
@@ -606,6 +670,8 @@ class CLITests(unittest.TestCase):
     def test_read_only_cli_commands_do_not_migrate(self) -> None:
         cases = [
             (["intel", "source", "show", "feed-a"], "core.db.get_intel_source", {"source_id": "feed-a"}),
+            (["intel", "sources"], "pihole_ai.intel.source_status", []),
+            (["intel", "stats"], "pihole_ai.intel.stats", {"sources_total": 0, "enabled_sources": 0, "active_indicators": 0, "failed_sources": 0, "stale_sources": 0, "integrity_issues": 0}),
             (["intel", "status"], "pihole_ai.intel.source_status", []),
             (["intel", "audit"], "core.db.list_intel_update_audit", []),
             (["intel", "list"], "pihole_ai.intel.print_intel", 0),

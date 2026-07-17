@@ -116,6 +116,16 @@ generation. URL and fetch-setting changes clear ETag/Last-Modified validators;
 display-only changes preserve validators. Run `pihole-ai intel update --source
 SOURCE_ID` separately when ready.
 
+For routine visibility:
+
+```bash
+pihole-ai intel sources
+pihole-ai intel stats
+```
+
+Both commands are read-only and report managed-feed freshness, active
+indicator counts, failed/stale source counts, and integrity issue totals.
+
 For deterministic field tests, prefer immutable URLs such as commit-pinned raw
 files. Branch-based raw URLs can be cached upstream and may not reflect the
 expected fixture generation immediately.

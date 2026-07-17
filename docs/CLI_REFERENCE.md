@@ -105,9 +105,11 @@ pihole-ai intel source update SOURCE_ID [--name NAME] [--url URL]
 pihole-ai intel source remove SOURCE_ID
 pihole-ai intel source enable SOURCE_ID
 pihole-ai intel source disable SOURCE_ID
-pihole-ai intel update [--source SOURCE_ID] [--all] [--dry-run]
+pihole-ai intel sources [--json]
+pihole-ai intel update [SOURCE_ID] [--source SOURCE_ID] [--all] [--dry-run]
                        [--non-interactive] [--json]
 pihole-ai intel status [--json]
+pihole-ai intel stats [--json]
 pihole-ai intel rollback --source SOURCE_ID [--json]
 pihole-ai intel audit [--source SOURCE_ID] [--limit N] [--json]
 
@@ -149,19 +151,27 @@ and above-range values are rejected.
 Dry-run updates preview the proposed generation and do not mutate source state,
 generations, validators, entries, or audit rows.
 
-`intel update` reports whether downloaded content left the active generation
-unchanged, reactivated an existing inactive generation, or created a new
-generation. JSON output includes `content_unchanged`, `reused_generation`, and
-`created_generation`; 304 reactivation output also includes `not_modified`,
-`trigger=http_not_modified`, and `remote_generation`. Text output names the
-reactivated generation and previous active generation when reuse occurs.
+`intel update` accepts either a positional `SOURCE_ID` or `--source SOURCE_ID`
+for a single source. It reports whether downloaded content left the active
+generation unchanged, reactivated an existing inactive generation, or created a
+new generation. JSON output includes `content_unchanged`, `reused_generation`,
+and `created_generation`; 304 reactivation output also includes
+`not_modified`, `trigger=http_not_modified`, and `remote_generation`. Text
+output names the reactivated generation and previous active generation when
+reuse occurs.
+
+`intel sources` shows configured feed sources with operational state such as
+enabled status, active entry count, last HTTP status, and last successful
+update. `intel stats` summarizes enabled sources, active indicators,
+failed/stale sources, and integrity issue counts. Both commands are read-only.
 
 Rollback changes the classifier-active generation but preserves the remote
 generation represented by current validators, so a later HTTP 304 may reactivate
 an inactive historical generation without creating duplicates.
 
-Read-only intel commands such as `source list`, `source show`, `status`,
-`audit`, and `list` use read-only database access and do not run migrations.
+Read-only intel commands such as `source list`, `source show`, `sources`,
+`status`, `stats`, `audit`, and `list` use read-only database access and do not
+run migrations.
 Mutating commands such as `source add`, `source update`, `update`, `rollback`,
 and `source remove` may initialize or migrate the runtime database.
 

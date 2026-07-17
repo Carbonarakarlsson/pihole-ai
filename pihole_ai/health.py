@@ -20,6 +20,7 @@ from core.config import (
     load_config_with_result,
     settings,
 )
+from core.db import ReadOnlyMigrationRequired, threat_intel_diagnostics, threat_intel_stats
 from core.logger import get_logger
 from core.migrations import UnsupportedSchemaVersion, database_status
 from core.sqlite_policy import SQLiteAccessMode, SQLiteConnectionFactory
@@ -76,6 +77,7 @@ def run_health_checks() -> HealthReport:
         _safe_check("events_database", check_events_database),
         _safe_check("pihole_ftl_database", check_pihole_ftl_database),
         _safe_check("ollama", check_ollama),
+        _safe_check("threat_intel", check_threat_intel),
         _safe_check("collector_progress", check_collector_progress),
         _safe_check("disk_space", check_disk_space),
     ]
@@ -300,6 +302,54 @@ def check_events_database() -> HealthCheck:
             "wal_file_size": db_status.wal_file_size,
             "read_only_ok": db_status.read_only_ok,
             "write_open_ok": db_status.write_open_ok,
+        },
+        started_at=started_at,
+    )
+
+
+def check_threat_intel() -> HealthCheck:
+    started_at = time.perf_counter()
+
+    try:
+        stats = threat_intel_stats(settings.events_db)
+        diagnostics = threat_intel_diagnostics(settings.events_db)
+    except ReadOnlyMigrationRequired:
+        return _check(
+            name="threat_intel",
+            status=HealthStatus.DEGRADED,
+            summary="Threat-intelligence metadata needs database migration.",
+            details={"remediation": "run: sudo pihole-ai db migrate"},
+            started_at=started_at,
+        )
+    except Exception as exc:
+        logger.warning("Threat-intelligence health check failed: %s", exc)
+        return _check(
+            name="threat_intel",
+            status=HealthStatus.UNKNOWN,
+            summary="Threat-intelligence health could not be checked.",
+            details={"error": _safe_error(exc)},
+            started_at=started_at,
+        )
+
+    error_count = len([item for item in diagnostics if item.get("severity") == "error"])
+    warning_count = len([item for item in diagnostics if item.get("severity") == "warning"])
+    if error_count:
+        status = HealthStatus.DEGRADED
+        summary = "Threat-intelligence integrity issues were detected."
+    elif warning_count:
+        status = HealthStatus.DEGRADED
+        summary = "Threat-intelligence feeds need attention."
+    else:
+        status = HealthStatus.HEALTHY
+        summary = "Threat-intelligence feeds are healthy."
+
+    return _check(
+        name="threat_intel",
+        status=status,
+        summary=summary,
+        details={
+            "stats": stats,
+            "diagnostics": diagnostics,
         },
         started_at=started_at,
     )

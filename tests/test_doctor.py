@@ -47,6 +47,7 @@ class DoctorTests(unittest.TestCase):
              patch("pihole_ai.doctor._dashboard_auth_diagnostic", return_value=Diagnostic("dashboard_auth", "healthy", "ok", {})), \
              patch("pihole_ai.doctor._dashboard_exposure_diagnostic", return_value=Diagnostic("dashboard_exposure", "healthy", "ok", {})), \
              patch("pihole_ai.doctor._database_diagnostic", return_value=Diagnostic("database_schema", "healthy", "ok", {})), \
+             patch("pihole_ai.doctor._threat_intel_diagnostic", return_value=Diagnostic("threat_intel", "healthy", "ok", {})), \
              patch("pihole_ai.doctor.check_events_database", return_value=health_check("events_database")), \
              patch("pihole_ai.doctor.check_pihole_ftl_database", return_value=health_check("pihole_ftl_database")), \
              patch("pihole_ai.doctor.check_disk_space", return_value=health_check("disk_space")), \

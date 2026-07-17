@@ -33,6 +33,8 @@ from core.db import (
     list_intel_source_status,
     query_all_readonly,
     readonly_database,
+    threat_intel_diagnostics,
+    threat_intel_stats,
 )
 from core.logger import get_logger
 from pihole_ai.explain import (
@@ -82,6 +84,7 @@ ROUTE_SECURITY = {
     "GET /api/rules": "authenticated_read",
     "GET /api/reputations": "authenticated_read",
     "GET /api/intel/sources": "authenticated_read",
+    "GET /api/intel/stats": "authenticated_read",
     "GET /api/explain/<domain>": "authenticated_read",
     "GET /api/explain/<domain>/history": "authenticated_read",
     "GET /api/explain/<domain>/decision/<decision_id>": "authenticated_read",
@@ -1586,9 +1589,10 @@ function renderIntelligence(metrics, status, intelSources) {
     const ai = status.ai ?? {};
     const config = status.config ?? {};
     const sources = Array.isArray(intelSources?.sources) ? intelSources.sources : [];
-    const enabledSources = sources.filter((source) => source.enabled).length;
-    const failedSources = sources.filter((source) => source.status === "failed").length;
-    const staleSources = sources.filter((source) => source.status === "stale").length;
+    const intelStats = intelSources?.stats ?? {};
+    const enabledSources = intelStats.enabled_sources ?? sources.filter((source) => source.enabled).length;
+    const failedSources = intelStats.failed_sources ?? sources.filter((source) => source.status === "failed").length;
+    const staleSources = intelStats.stale_sources ?? sources.filter((source) => source.status === "stale").length;
 
     target.appendChild(metricPanel("AI Controls", [
         ["Enabled", config.ai_enabled],
@@ -1608,10 +1612,15 @@ function renderIntelligence(metrics, status, intelSources) {
         ["Blocks", metrics.rules?.block ?? 0],
     ]));
     target.appendChild(metricPanel("Threat Intel", [
-        ["Indicators", database.threat_intel ?? 0],
-        ["Sources", sources.length],
+        ["Indicators", intelStats.active_indicators ?? database.threat_intel ?? 0],
+        ["Sources", intelStats.sources_total ?? sources.length],
         ["Enabled", enabledSources],
         ["Failed/Stale", `${failedSources}/${staleSources}`],
+    ]));
+    target.appendChild(metricPanel("Feed Updates", [
+        ["Last Success", formatTime(intelStats.last_success_at)],
+        ["Last Attempt", formatTime(intelStats.last_attempt_at)],
+        ["Integrity", intelStats.integrity_issues ?? 0],
     ]));
 }
 
@@ -3052,21 +3061,54 @@ def create_app() -> Flask:
     @app.get("/api/intel/sources")
     def intel_sources():
         sources = []
+        stats = {}
+        diagnostics = []
         with readonly_database():
+            stats = threat_intel_stats(settings.events_db)
+            diagnostics = threat_intel_diagnostics(settings.events_db)
             for row in list_intel_source_status():
                 sources.append(
                     {
                         "source_id": row.get("source_id"),
                         "name": row.get("name"),
                         "enabled": bool(row.get("enabled")),
+                        "category": row.get("category") or "",
+                        "confidence": row.get("confidence") or 0,
                         "status": row.get("status") or "unknown",
                         "entry_count": row.get("entry_count") or 0,
+                        "active_generation": row.get("active_generation") or "",
+                        "last_http_status": row.get("last_http_status"),
+                        "last_downloaded_bytes": row.get("last_downloaded_bytes") or 0,
+                        "last_parsed_entries": row.get("last_parsed_entries") or 0,
+                        "last_accepted_entries": row.get("last_accepted_entries") or 0,
+                        "last_rejected_entries": row.get("last_rejected_entries") or 0,
+                        "last_duplicate_entries": row.get("last_duplicate_entries") or 0,
+                        "last_update_duration_ms": row.get("last_update_duration_ms") or 0,
                         "last_success_at": row.get("last_success_at"),
                         "last_attempt_at": row.get("last_attempt_at"),
                         "last_error_code": row.get("last_error_code") or "",
+                        "last_error_summary": row.get("last_error_summary") or "",
+                        "consecutive_failures": row.get("consecutive_failures") or 0,
                     }
                 )
-        response = jsonify({"sources": sources})
+        response = jsonify(
+            {
+                "sources": sources,
+                "stats": stats,
+                "diagnostics": diagnostics,
+            }
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/api/intel/stats")
+    def intel_stats_api():
+        with readonly_database():
+            payload = {
+                "stats": threat_intel_stats(settings.events_db),
+                "diagnostics": threat_intel_diagnostics(settings.events_db),
+            }
+        response = jsonify(payload)
         response.headers["Cache-Control"] = "no-store"
         return response
 

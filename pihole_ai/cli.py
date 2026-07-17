@@ -730,7 +730,14 @@ def build_parser() -> argparse.ArgumentParser:
         parser_source_action.add_argument("source_id")
         parser_source_action.add_argument("--json", action="store_true", help="Print JSON.")
 
+    intel_sources = intel_commands.add_parser(
+        "sources",
+        help="List feed sources with operational status.",
+    )
+    intel_sources.add_argument("--json", action="store_true", help="Print JSON.")
+
     intel_update = intel_commands.add_parser("update", help="Fetch and activate configured feeds.")
+    intel_update.add_argument("source_id_arg", nargs="?", help=argparse.SUPPRESS)
     intel_update.add_argument("--source", default="")
     intel_update.add_argument("--all", action="store_true")
     intel_update.add_argument("--dry-run", action="store_true")
@@ -739,6 +746,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     intel_status = intel_commands.add_parser("status", help="Show feed source status.")
     intel_status.add_argument("--json", action="store_true", help="Print JSON.")
+
+    intel_stats = intel_commands.add_parser("stats", help="Show threat-intel feed statistics.")
+    intel_stats.add_argument("--json", action="store_true", help="Print JSON.")
 
     intel_rollback = intel_commands.add_parser("rollback", help="Rollback a source to the previous generation.")
     intel_rollback.add_argument("--source", required=True)
@@ -1396,6 +1406,7 @@ def main(
             print_intel,
             rollback_source,
             source_status,
+            stats as intel_stats,
             update_sources,
             update_source_config,
         )
@@ -1563,13 +1574,39 @@ def main(
                     print(f"{'Enabled' if enabled else 'Disabled'} feed source {args.source_id}.")
                 return 0
 
+        if args.intel_command == "sources":
+            try:
+                with readonly_database():
+                    rows = source_status()
+            except ReadOnlyMigrationRequired:
+                print_migration_required()
+                return 1
+            if args.json:
+                print(json.dumps(rows, sort_keys=True))
+            else:
+                if not rows:
+                    print("No feed sources configured.")
+                for row in rows:
+                    print(
+                        f"{row['source_id']} enabled={bool(row['enabled'])} "
+                        f"status={row.get('status') or 'unknown'} "
+                        f"entries={row.get('entry_count') or 0} "
+                        f"http={row.get('last_http_status') or ''} "
+                        f"last_success={row.get('last_success_at') or ''}"
+                    )
+            return 0
+
         if args.intel_command == "update":
+            selected_source = args.source or args.source_id_arg or None
+            if args.source and args.source_id_arg and args.source != args.source_id_arg:
+                print("Use either positional source_id or --source, not both.")
+                return 1
             try:
                 results = update_sources(
-                    source_id=args.source or None,
+                    source_id=selected_source,
                     all_sources=args.all,
                     dry_run=args.dry_run,
-                    automatic=bool(args.non_interactive and args.all and not args.source),
+                    automatic=bool(args.non_interactive and args.all and not selected_source),
                 )
             except RuntimeError as exc:
                 print(str(exc))
@@ -1597,6 +1634,24 @@ def main(
                             print(f"Reactivated existing generation {result.active_generation}.")
                             print(f"Previous active generation: {result.previous_generation}.")
             return 0 if all(result.success for result in results) else 1
+
+        if args.intel_command == "stats":
+            try:
+                with readonly_database():
+                    payload = intel_stats()
+            except ReadOnlyMigrationRequired:
+                print_migration_required()
+                return 1
+            if args.json:
+                print(json.dumps(payload, sort_keys=True))
+            else:
+                print(f"sources_total: {payload['sources_total']}")
+                print(f"enabled_sources: {payload['enabled_sources']}")
+                print(f"active_indicators: {payload['active_indicators']}")
+                print(f"failed_sources: {payload['failed_sources']}")
+                print(f"stale_sources: {payload['stale_sources']}")
+                print(f"integrity_issues: {payload['integrity_issues']}")
+            return 0
 
         if args.intel_command == "status":
             try:

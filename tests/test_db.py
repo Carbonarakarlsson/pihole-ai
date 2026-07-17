@@ -66,6 +66,24 @@ class DatabaseTests(unittest.TestCase):
         self.assertIn("schema_migrations", tables)
         self.assertIn("confidence", columns)
 
+        state_columns = {
+            row["name"]
+            for row in db.query_all("PRAGMA table_info(threat_intel_source_state)")
+        }
+        entry_columns = {
+            row["name"]
+            for row in db.query_all("PRAGMA table_info(threat_intel_generation_entries)")
+        }
+        generation_columns = {
+            row["name"]
+            for row in db.query_all("PRAGMA table_info(threat_intel_generations)")
+        }
+        self.assertIn("last_http_status", state_columns)
+        self.assertIn("last_downloaded_bytes", state_columns)
+        self.assertIn("last_update_duration_ms", state_columns)
+        self.assertIn("expires_at", entry_columns)
+        self.assertIn("pruned_at", generation_columns)
+
         migration = db.query_one(
             "SELECT version, name FROM schema_migrations ORDER BY version DESC LIMIT 1"
         )
@@ -947,6 +965,68 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(hit["generation_id"], "gen_a")
         self.assertEqual(hit["confidence"], 92)
 
+    def test_active_threat_intel_ignores_expired_generation_entries(self) -> None:
+        db.save_intel_source(
+            FeedSource(
+                source_id="feed-a",
+                name="Feed A",
+                url="https://feeds.example/a.txt",
+                category="malware",
+                confidence=92,
+            )
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value="abc123",
+            entries=["old.example"],
+            category="malware",
+            confidence=92,
+        )
+        db.execute(
+            """
+            UPDATE threat_intel_generation_entries
+            SET expires_at = ?
+            WHERE domain = ?
+            """,
+            (1.0, "old.example"),
+        )
+
+        self.assertIsNone(db.get_active_threat_intel("old.example"))
+
+    def test_threat_intel_stats_and_diagnostics_are_read_only(self) -> None:
+        db.save_intel_source(
+            FeedSource(
+                source_id="feed-a",
+                name="Feed A",
+                url="https://feeds.example/a.txt",
+                category="malware",
+                confidence=92,
+            )
+        )
+        db.activate_intel_generation(
+            source_id="feed-a",
+            generation_id="gen_a",
+            content_sha256_value="abc123",
+            entries=["bad.example"],
+            category="malware",
+            confidence=92,
+            http_status=200,
+            downloaded_bytes=12,
+            parsed_entries=1,
+            duration_ms=25,
+        )
+
+        with patch("core.db.migrate_database", side_effect=AssertionError("mutated")):
+            stats = db.threat_intel_stats()
+            diagnostics = db.threat_intel_diagnostics()
+
+        self.assertEqual(stats["sources_total"], 1)
+        self.assertEqual(stats["enabled_sources"], 1)
+        self.assertEqual(stats["active_indicators"], 1)
+        self.assertEqual(stats["integrity_issues"], 0)
+        self.assertEqual(diagnostics, [])
+
     def test_threat_intel_integrity_helper_reports_clean_state(self) -> None:
         db.save_intel_source(
             FeedSource(
@@ -1151,6 +1231,12 @@ class DatabaseTests(unittest.TestCase):
             db.query_one("SELECT COUNT(*) AS count FROM threat_intel_generation_entries")["count"],
             2,
         )
+        state = db.get_intel_source_state("feed-a")
+        self.assertEqual(state["last_http_status"], 200)
+        self.assertEqual(state["last_downloaded_bytes"], len(content))
+        self.assertEqual(state["last_parsed_entries"], 2)
+        self.assertEqual(state["last_accepted_entries"], 2)
+        self.assertGreaterEqual(state["last_update_duration_ms"], 0)
 
     def test_update_reactivates_inactive_generation_with_matching_content(self) -> None:
         content_a = b"a-one.example\na-two.example\n"

@@ -920,6 +920,122 @@ def _apply_repair_remote_generation_identity(conn: sqlite3.Connection) -> None:
         )
 
 
+def _apply_threat_intel_operational_metadata(conn: sqlite3.Connection) -> None:
+    state_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(threat_intel_source_state)")
+    }
+    state_additions = {
+        "last_http_status": "INTEGER",
+        "last_downloaded_bytes": "INTEGER NOT NULL DEFAULT 0",
+        "last_parsed_entries": "INTEGER NOT NULL DEFAULT 0",
+        "last_accepted_entries": "INTEGER NOT NULL DEFAULT 0",
+        "last_rejected_entries": "INTEGER NOT NULL DEFAULT 0",
+        "last_duplicate_entries": "INTEGER NOT NULL DEFAULT 0",
+        "last_warnings_json": "TEXT NOT NULL DEFAULT '[]'",
+        "last_update_duration_ms": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for column, definition in state_additions.items():
+        if column not in state_columns:
+            conn.execute(
+                f"ALTER TABLE threat_intel_source_state ADD COLUMN {column} {definition}"
+            )
+
+    entry_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(threat_intel_generation_entries)")
+    }
+    if "expires_at" not in entry_columns:
+        conn.execute(
+            "ALTER TABLE threat_intel_generation_entries ADD COLUMN expires_at REAL"
+        )
+
+    generation_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(threat_intel_generations)")
+    }
+    if "pruned_at" not in generation_columns:
+        conn.execute(
+            "ALTER TABLE threat_intel_generations ADD COLUMN pruned_at REAL"
+        )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_threat_intel_entries_expires_at
+        ON threat_intel_generation_entries(expires_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_threat_intel_state_status
+        ON threat_intel_source_state(status, last_success_at)
+        """
+    )
+
+    conn.execute(
+        """
+        UPDATE threat_intel_source_state
+        SET
+            last_http_status = (
+                SELECT audit.http_status
+                FROM threat_intel_update_audit audit
+                WHERE audit.source_id = threat_intel_source_state.source_id
+                ORDER BY audit.attempted_at DESC, audit.id DESC
+                LIMIT 1
+            ),
+            last_downloaded_bytes = COALESCE((
+                SELECT audit.downloaded_bytes
+                FROM threat_intel_update_audit audit
+                WHERE audit.source_id = threat_intel_source_state.source_id
+                ORDER BY audit.attempted_at DESC, audit.id DESC
+                LIMIT 1
+            ), last_downloaded_bytes),
+            last_parsed_entries = COALESCE((
+                SELECT audit.parsed_entries
+                FROM threat_intel_update_audit audit
+                WHERE audit.source_id = threat_intel_source_state.source_id
+                ORDER BY audit.attempted_at DESC, audit.id DESC
+                LIMIT 1
+            ), last_parsed_entries),
+            last_accepted_entries = COALESCE((
+                SELECT audit.accepted_entries
+                FROM threat_intel_update_audit audit
+                WHERE audit.source_id = threat_intel_source_state.source_id
+                ORDER BY audit.attempted_at DESC, audit.id DESC
+                LIMIT 1
+            ), last_accepted_entries),
+            last_rejected_entries = COALESCE((
+                SELECT audit.rejected_entries
+                FROM threat_intel_update_audit audit
+                WHERE audit.source_id = threat_intel_source_state.source_id
+                ORDER BY audit.attempted_at DESC, audit.id DESC
+                LIMIT 1
+            ), last_rejected_entries),
+            last_duplicate_entries = COALESCE((
+                SELECT audit.duplicate_entries
+                FROM threat_intel_update_audit audit
+                WHERE audit.source_id = threat_intel_source_state.source_id
+                ORDER BY audit.attempted_at DESC, audit.id DESC
+                LIMIT 1
+            ), last_duplicate_entries),
+            last_warnings_json = COALESCE((
+                SELECT audit.warnings_json
+                FROM threat_intel_update_audit audit
+                WHERE audit.source_id = threat_intel_source_state.source_id
+                ORDER BY audit.attempted_at DESC, audit.id DESC
+                LIMIT 1
+            ), last_warnings_json),
+            last_update_duration_ms = COALESCE((
+                SELECT audit.duration_ms
+                FROM threat_intel_update_audit audit
+                WHERE audit.source_id = threat_intel_source_state.source_id
+                ORDER BY audit.attempted_at DESC, audit.id DESC
+                LIMIT 1
+            ), last_update_duration_ms)
+        """
+    )
+
+
 MIGRATIONS = [
     Migration(
         version=1,
@@ -965,6 +1081,11 @@ MIGRATIONS = [
         version=9,
         name="repair_remote_generation_identity",
         apply=_apply_repair_remote_generation_identity,
+    ),
+    Migration(
+        version=10,
+        name="threat_intel_operational_metadata",
+        apply=_apply_threat_intel_operational_metadata,
     ),
 ]
 

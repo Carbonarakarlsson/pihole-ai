@@ -575,14 +575,46 @@ class DashboardTests(unittest.TestCase):
             }
         ]
 
-        with patch("ui.dashboard.list_intel_source_status", return_value=rows):
+        stats = {
+            "sources_total": 1,
+            "enabled_sources": 1,
+            "active_indicators": 12,
+            "failed_sources": 0,
+            "stale_sources": 0,
+            "integrity_issues": 0,
+        }
+
+        with patch("ui.dashboard.list_intel_source_status", return_value=rows), \
+             patch("ui.dashboard.threat_intel_stats", return_value=stats), \
+             patch("ui.dashboard.threat_intel_diagnostics", return_value=[]):
             response = self.client.get("/api/intel/sources")
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["sources"][0]["source_id"], "feed-a")
         self.assertEqual(payload["sources"][0]["entry_count"], 12)
+        self.assertEqual(payload["stats"]["active_indicators"], 12)
+        self.assertEqual(payload["diagnostics"], [])
         self.assertNotIn("url", payload["sources"][0])
+
+    def test_intel_stats_endpoint_returns_read_only_feed_summary(self) -> None:
+        stats = {
+            "sources_total": 1,
+            "enabled_sources": 1,
+            "active_indicators": 12,
+            "failed_sources": 0,
+            "stale_sources": 0,
+            "integrity_issues": 0,
+        }
+
+        with patch("ui.dashboard.threat_intel_stats", return_value=stats), \
+             patch("ui.dashboard.threat_intel_diagnostics", return_value=[]):
+            response = self.client.get("/api/intel/stats")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["stats"]["active_indicators"], 12)
+        self.assertEqual(payload["diagnostics"], [])
 
     def test_explain_endpoint_returns_domain_explanation(self) -> None:
         explanation = {

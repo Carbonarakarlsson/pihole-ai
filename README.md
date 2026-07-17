@@ -120,6 +120,12 @@ validators so the next explicit update refetches content, but the active
 generation, prior generations, entries, and rollback history remain intact until
 `pihole-ai intel update` or `pihole-ai intel rollback` is run.
 
+Use `pihole-ai intel sources` for per-source operational state and
+`pihole-ai intel stats` for feed counts, active indicators, stale/failed source
+counts, and integrity diagnostics. Single-source updates can be run as either
+`pihole-ai intel update <source-id>` or `pihole-ai intel update --source
+<source-id>`.
+
 For deterministic field tests, prefer immutable feed URLs such as commit-pinned
 raw files rather than branch URLs, which can be cached by upstream providers.
 

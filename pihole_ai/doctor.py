@@ -17,6 +17,7 @@ from core.config import (
     ValidationSeverity,
     load_config_with_result,
 )
+from core.db import ReadOnlyMigrationRequired, threat_intel_diagnostics, threat_intel_stats
 from core.migrations import (
     MigrationError,
     UnsupportedSchemaVersion,
@@ -63,6 +64,7 @@ def run_doctor() -> DoctorReport:
         _safe_diagnostic("dashboard_auth", _dashboard_auth_diagnostic),
         _safe_diagnostic("dashboard_exposure", _dashboard_exposure_diagnostic),
         _safe_diagnostic("database_schema", _database_diagnostic),
+        _safe_diagnostic("threat_intel", _threat_intel_diagnostic),
         _safe_diagnostic(
             "events_database",
             lambda: _health_diagnostic("events_database", check_events_database),
@@ -367,6 +369,58 @@ def _health_diagnostic(
         summary=result.summary,
         details=result.details,
         remediation=_health_remediation(name, result.status),
+    )
+
+
+def _threat_intel_diagnostic() -> Diagnostic:
+    config, result = load_config_with_result(
+        mode=ValidationMode.SYNTAX,
+    )
+    if config is None:
+        return Diagnostic(
+            name="threat_intel",
+            status=HealthStatus.UNKNOWN.value,
+            summary="Threat-intelligence diagnostics could not run because configuration did not parse.",
+            details=result.to_dict(),
+            remediation="Run: pihole-ai config check",
+        )
+
+    try:
+        stats = threat_intel_stats(config.events_db)
+        diagnostics = threat_intel_diagnostics(config.events_db)
+    except ReadOnlyMigrationRequired:
+        return Diagnostic(
+            name="threat_intel",
+            status=HealthStatus.DEGRADED.value,
+            summary="Threat-intelligence diagnostics require a database migration.",
+            details={},
+            remediation="Run: sudo pihole-ai db migrate",
+        )
+
+    error_count = len([item for item in diagnostics if item.get("severity") == "error"])
+    warning_count = len([item for item in diagnostics if item.get("severity") == "warning"])
+    if error_count:
+        status = HealthStatus.DEGRADED
+        summary = "Threat-intelligence integrity issues were detected."
+        remediation = "Run: pihole-ai intel status"
+    elif warning_count:
+        status = HealthStatus.DEGRADED
+        summary = "Threat-intelligence feeds need attention."
+        remediation = "Run: pihole-ai intel sources"
+    else:
+        status = HealthStatus.HEALTHY
+        summary = "Threat-intelligence feeds are healthy."
+        remediation = None
+
+    return Diagnostic(
+        name="threat_intel",
+        status=status.value,
+        summary=summary,
+        details={
+            "stats": stats,
+            "diagnostics": diagnostics,
+        },
+        remediation=remediation,
     )
 
 

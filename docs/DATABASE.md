@@ -5,7 +5,7 @@ FTL database as an external read-only input.
 
 ## Current Schema
 
-Latest supported schema version: `9`.
+Latest supported schema version: `10`.
 
 Registered migrations:
 
@@ -20,6 +20,7 @@ Registered migrations:
 | 7 | `threat_intel_reactivation_audit` |
 | 8 | `threat_intel_remote_generation_state` |
 | 9 | `repair_remote_generation_identity` |
+| 10 | `threat_intel_operational_metadata` |
 
 The migration registry lives in `core/migrations.py`. Versions must be unique,
 ascending, non-empty, and contiguous unless a gap is explicitly documented.
@@ -41,9 +42,11 @@ ascending, non-empty, and contiguous unless a gap is explicitly documented.
 - `threat_intel`: compatibility table for manually imported indicators.
 - `threat_intel_sources`: configured threat-intelligence feeds.
 - `threat_intel_source_state`: active generation, remote representation
-  generation, validators, and update status per feed.
+  generation, validators, update status, HTTP status, parse counters, and
+  last-update operational metadata per feed.
 - `threat_intel_generations`: immutable imported feed generations.
-- `threat_intel_generation_entries`: domains linked to one generation.
+- `threat_intel_generation_entries`: domains linked to one generation, with
+  optional expiration metadata.
 - `threat_intel_update_audit`: feed update/rollback/reactivation audit trail.
 - `schema_migrations`: applied migration history.
 - `app_state`: small runtime state values.
@@ -103,6 +106,8 @@ HTTP validators. This allows rollback to a prior generation and later
 HTTP-304 reactivation of the unchanged remote generation without duplicating
 rows.
 
-`core.db.check_threat_intel_integrity()` inspects managed feed state through a
-read-only database connection. It is available for diagnostics and future
-doctor integration; it does not initialize, migrate, repair, or mutate data.
+`core.db.check_threat_intel_integrity()`,
+`core.db.threat_intel_stats()`, and `core.db.threat_intel_diagnostics()`
+inspect managed feed state through read-only database connections. They are
+used by status, health, doctor, and dashboard views; they do not initialize,
+migrate, repair, fetch feeds, or mutate data.

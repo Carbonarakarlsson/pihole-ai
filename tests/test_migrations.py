@@ -255,7 +255,7 @@ class MigrationTests(unittest.TestCase):
                 ).fetchone()[0]
 
         self.assertTrue(result.changed)
-        self.assertEqual([migration.version for migration in result.applied_migrations], [9])
+        self.assertEqual([migration.version for migration in result.applied_migrations], [9, 10])
         self.assertEqual(state[0], "gen_a")
         self.assertEqual(state[1], "gen_b")
         self.assertEqual(state[2], "sha-b")
@@ -343,10 +343,38 @@ class MigrationTests(unittest.TestCase):
                     ("feed-a",),
                 ).fetchone()
 
-        self.assertEqual([migration.version for migration in first.applied_migrations], [9])
+        self.assertEqual([migration.version for migration in first.applied_migrations], [9, 10])
         self.assertFalse(second.changed)
         self.assertEqual(state[0], "gen_b")
         self.assertEqual(state[1], "sha-b")
+
+    def test_migration_10_adds_threat_intel_operational_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "events.db"
+            self._migrate_to_version(database_path, 9)
+
+            result = migrations.migrate_database(database_path)
+
+            with closing(sqlite3.connect(database_path)) as conn:
+                state_columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(threat_intel_source_state)")
+                }
+                entry_columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(threat_intel_generation_entries)")
+                }
+                generation_columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(threat_intel_generations)")
+                }
+
+        self.assertEqual([migration.version for migration in result.applied_migrations], [10])
+        self.assertIn("last_http_status", state_columns)
+        self.assertIn("last_downloaded_bytes", state_columns)
+        self.assertIn("last_update_duration_ms", state_columns)
+        self.assertIn("expires_at", entry_columns)
+        self.assertIn("pruned_at", generation_columns)
 
     def test_existing_unversioned_baseline_is_adopted_without_data_loss(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

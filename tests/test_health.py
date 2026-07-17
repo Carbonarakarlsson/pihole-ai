@@ -85,18 +85,20 @@ class HealthTests(unittest.TestCase):
              patch("pihole_ai.health.check_events_database", return_value=health_check("events_database")), \
              patch("pihole_ai.health.check_pihole_ftl_database", return_value=health_check("pihole_ftl_database")), \
              patch("pihole_ai.health.check_ollama", return_value=health_check("ollama")), \
+             patch("pihole_ai.health.check_threat_intel", return_value=health_check("threat_intel")), \
              patch("pihole_ai.health.check_collector_progress", return_value=health_check("collector_progress")), \
              patch("pihole_ai.health.check_disk_space", return_value=health_check("disk_space")):
             report = run_health_checks()
 
         self.assertEqual(report.overall_status, HealthStatus.HEALTHY.value)
-        self.assertEqual(len(report.checks), 6)
+        self.assertEqual(len(report.checks), 7)
 
     def test_health_report_uses_package_version_metadata(self) -> None:
         with patch("pihole_ai.health.check_configuration", return_value=health_check("configuration")), \
              patch("pihole_ai.health.check_events_database", return_value=health_check("events_database")), \
              patch("pihole_ai.health.check_pihole_ftl_database", return_value=health_check("pihole_ftl_database")), \
              patch("pihole_ai.health.check_ollama", return_value=health_check("ollama")), \
+             patch("pihole_ai.health.check_threat_intel", return_value=health_check("threat_intel")), \
              patch("pihole_ai.health.check_collector_progress", return_value=health_check("collector_progress")), \
              patch("pihole_ai.health.check_disk_space", return_value=health_check("disk_space")), \
              patch("pihole_ai.health.get_version", return_value="9.9-test"):
@@ -296,12 +298,13 @@ class HealthTests(unittest.TestCase):
              patch("pihole_ai.health.check_events_database", return_value=health_check("events_database")), \
              patch("pihole_ai.health.check_pihole_ftl_database", return_value=health_check("pihole_ftl_database")), \
              patch("pihole_ai.health.check_ollama", return_value=health_check("ollama")), \
+             patch("pihole_ai.health.check_threat_intel", return_value=health_check("threat_intel")), \
              patch("pihole_ai.health.check_collector_progress", return_value=health_check("collector_progress")), \
              patch("pihole_ai.health.check_disk_space", return_value=health_check("disk_space")):
             report = run_health_checks()
 
         self.assertEqual(report.overall_status, HealthStatus.UNHEALTHY.value)
-        self.assertEqual(len(report.checks), 6)
+        self.assertEqual(len(report.checks), 7)
 
     def test_cli_text_output_and_exit_code(self) -> None:
         with patch(

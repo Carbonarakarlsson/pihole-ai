@@ -63,6 +63,14 @@ class FeedState:
     last_error_code: str = ""
     last_error_summary: str = ""
     consecutive_failures: int = 0
+    last_http_status: int | None = None
+    last_downloaded_bytes: int = 0
+    last_parsed_entries: int = 0
+    last_accepted_entries: int = 0
+    last_rejected_entries: int = 0
+    last_duplicate_entries: int = 0
+    last_warnings_json: str = "[]"
+    last_update_duration_ms: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

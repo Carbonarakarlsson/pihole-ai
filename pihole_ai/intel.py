@@ -36,6 +36,8 @@ from core.db import (
     save_intel_source,
     rollback_intel_generation,
     set_intel_source_enabled,
+    threat_intel_diagnostics,
+    threat_intel_stats,
     update_threat_intel_source,
 )
 from pihole_ai.intel_feeds import (
@@ -304,6 +306,14 @@ def source_status() -> list[dict[str, Any]]:
     return list_intel_source_status()
 
 
+def stats() -> dict[str, Any]:
+    return threat_intel_stats()
+
+
+def diagnostics() -> list[dict[str, Any]]:
+    return threat_intel_diagnostics()
+
+
 def _generation_is_valid_remote(generation: dict[str, Any] | None) -> bool:
     return bool(
         generation
@@ -417,6 +427,7 @@ def update_source(
             remote_entry_count = int(remote_generation["entry_count"])
             if previous and remote_generation_id != previous:
                 active = "" if dry_run else remote_generation_id
+                duration_ms = int((time.time() - started) * 1000)
                 if not dry_run:
                     try:
                         previous, active = activate_existing_threat_intel_generation(
@@ -425,6 +436,11 @@ def update_source(
                             previous_generation_id=previous,
                             etag=fetched.etag,
                             last_modified=fetched.last_modified,
+                            next_update_at=time.time() + source.refresh_interval_seconds,
+                            http_status=304,
+                            downloaded_bytes=fetched.downloaded_bytes,
+                            accepted_entries=remote_entry_count,
+                            duration_ms=duration_ms,
                         )
                     except ValueError as exc:
                         result = FeedUpdateResult(
@@ -459,7 +475,7 @@ def update_source(
                     would_activate=dry_run,
                     proposed_generation_id=remote_generation_id if dry_run else "",
                     current_active_generation=previous,
-                    duration_ms=int((time.time() - started) * 1000),
+                    duration_ms=duration_ms,
                     trigger="http_not_modified",
                 )
                 if not dry_run:
@@ -486,6 +502,10 @@ def update_source(
                     fetched.etag,
                     fetched.last_modified,
                     remote_generation_id=remote_generation_id,
+                    http_status=304,
+                    downloaded_bytes=fetched.downloaded_bytes,
+                    accepted_entries=remote_entry_count,
+                    duration_ms=int((time.time() - started) * 1000),
                 )
                 record_intel_update_audit(result, http_status=304)
             return result
@@ -523,6 +543,14 @@ def update_source(
                     fetched.etag,
                     fetched.last_modified,
                     remote_generation_id=previous,
+                    http_status=fetched.status_code,
+                    downloaded_bytes=fetched.downloaded_bytes,
+                    parsed_entries=parsed.parsed_entries,
+                    accepted_entries=len(parsed.accepted_entries),
+                    rejected_entries=parsed.rejected_count,
+                    duplicate_entries=parsed.duplicate_count,
+                    warnings=warnings + parsed.warnings,
+                    duration_ms=result.duration_ms,
                 )
                 record_intel_update_audit(result, http_status=fetched.status_code)
             else:
@@ -544,6 +572,15 @@ def update_source(
                     previous_generation_id=previous,
                     etag=fetched.etag,
                     last_modified=fetched.last_modified,
+                    next_update_at=time.time() + source.refresh_interval_seconds,
+                    http_status=fetched.status_code,
+                    downloaded_bytes=fetched.downloaded_bytes,
+                    parsed_entries=parsed.parsed_entries,
+                    accepted_entries=entry_count,
+                    rejected_entries=parsed.rejected_count,
+                    duplicate_entries=parsed.duplicate_count,
+                    warnings=warnings + parsed.warnings,
+                    duration_ms=int((time.time() - started) * 1000),
                 )
             result = FeedUpdateResult(
                 source_id=source_id,
@@ -580,6 +617,14 @@ def update_source(
                 confidence=source.confidence,
                 etag=fetched.etag,
                 last_modified=fetched.last_modified,
+                next_update_at=time.time() + source.refresh_interval_seconds,
+                http_status=fetched.status_code,
+                downloaded_bytes=fetched.downloaded_bytes,
+                parsed_entries=parsed.parsed_entries,
+                rejected_entries=parsed.rejected_count,
+                duplicate_entries=parsed.duplicate_count,
+                warnings=warnings + parsed.warnings,
+                duration_ms=int((time.time() - started) * 1000),
             )
         result = FeedUpdateResult(
             source_id=source_id,
@@ -607,7 +652,12 @@ def update_source(
     except FeedError as exc:
         result = failed_result(source_id, exc.code, exc.summary, started)
         if not dry_run:
-            mark_intel_update_failed(source_id, exc.code, exc.summary)
+            mark_intel_update_failed(
+                source_id,
+                exc.code,
+                exc.summary,
+                duration_ms=result.duration_ms,
+            )
             record_intel_update_audit(result)
         return result
 

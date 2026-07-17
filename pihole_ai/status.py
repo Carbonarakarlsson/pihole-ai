@@ -9,6 +9,7 @@ from typing import Any
 from core.config import settings
 from core.db import database_stats_readonly as database_stats
 from core.db import get_state_readonly as get_state
+from core.db import threat_intel_stats
 
 
 def ai_metrics() -> dict[str, int]:
@@ -31,6 +32,38 @@ def ai_metrics() -> dict[str, int]:
         + metrics["ai_timeouts"]
     )
     return metrics
+
+
+def _empty_threat_intel_stats(error: str = "") -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "sources_total": 0,
+        "enabled_sources": 0,
+        "disabled_sources": 0,
+        "failed_sources": 0,
+        "stale_sources": 0,
+        "active_indicators": 0,
+        "generations_total": 0,
+        "active_generations": 0,
+        "inactive_generations": 0,
+        "staging_generations": 0,
+        "last_success_at": None,
+        "last_attempt_at": None,
+        "audit_success": 0,
+        "audit_failed": 0,
+        "sources_by_status": {},
+        "integrity_issues": 0,
+        "integrity_issue_codes": [],
+    }
+    if error:
+        payload["error"] = error
+    return payload
+
+
+def threat_intel_metrics() -> dict[str, Any]:
+    try:
+        return threat_intel_stats(settings.events_db)
+    except Exception as exc:
+        return _empty_threat_intel_stats(exc.__class__.__name__)
 
 
 def get_ollama_health() -> dict[str, Any]:
@@ -70,6 +103,7 @@ def collect_status(
             ),
         },
         "ai": ai_metrics(),
+        "threat_intel": threat_intel_metrics(),
         "config": {
             "events_db": str(settings.events_db),
             "pihole_db": str(settings.pihole_db),
@@ -103,6 +137,7 @@ def print_status(
     database = status["database"]
     collector = status["collector"]
     ai = status["ai"]
+    threat_intel = status.get("threat_intel", _empty_threat_intel_stats())
     config = status["config"]
 
     print("PiHole-AI status")
@@ -114,6 +149,11 @@ def print_status(
     print(f"  analyses: {database['analyses']}")
     print(f"  reputations: {database.get('reputations', 0)}")
     print(f"  threat_intel: {database.get('threat_intel', 0)}")
+    print(f"  threat_intel_sources: {threat_intel['sources_total']}")
+    print(f"  threat_intel_enabled_sources: {threat_intel['enabled_sources']}")
+    print(f"  threat_intel_active_indicators: {threat_intel['active_indicators']}")
+    print(f"  threat_intel_failed_sources: {threat_intel['failed_sources']}")
+    print(f"  threat_intel_stale_sources: {threat_intel['stale_sources']}")
     print(f"  collector.last_query_id: {collector['last_query_id']}")
     print("AI:")
     print(f"  enabled: {config['ai_enabled']}")

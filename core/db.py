@@ -2527,7 +2527,15 @@ def list_intel_source_status() -> list[dict[str, Any]]:
             st.remote_generation_id,
             st.last_error_code,
             st.last_error_summary,
-            st.consecutive_failures
+            st.consecutive_failures,
+            st.last_http_status,
+            st.last_downloaded_bytes,
+            st.last_parsed_entries,
+            st.last_accepted_entries,
+            st.last_rejected_entries,
+            st.last_duplicate_entries,
+            st.last_warnings_json,
+            st.last_update_duration_ms
         FROM threat_intel_sources s
         LEFT JOIN threat_intel_source_state st
             ON st.source_id = s.source_id
@@ -2553,6 +2561,14 @@ def activate_intel_generation(
     confidence: int,
     etag: str = "",
     last_modified: str = "",
+    next_update_at: float | None = None,
+    http_status: int | None = None,
+    downloaded_bytes: int = 0,
+    parsed_entries: int = 0,
+    rejected_entries: int = 0,
+    duplicate_entries: int = 0,
+    warnings: list[str] | None = None,
+    duration_ms: int = 0,
 ) -> tuple[str, str]:
     now = time.time()
     confidence = max(0, min(confidence, 100))
@@ -2631,9 +2647,17 @@ def activate_intel_generation(
                 remote_generation_id,
                 last_error_code,
                 last_error_summary,
-                consecutive_failures
+                consecutive_failures,
+                last_http_status,
+                last_downloaded_bytes,
+                last_parsed_entries,
+                last_accepted_entries,
+                last_rejected_entries,
+                last_duplicate_entries,
+                last_warnings_json,
+                last_update_duration_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
             ON CONFLICT(source_id)
 
@@ -2650,14 +2674,22 @@ def activate_intel_generation(
                 remote_generation_id = excluded.remote_generation_id,
                 last_error_code = '',
                 last_error_summary = '',
-                consecutive_failures = 0
+                consecutive_failures = 0,
+                last_http_status = excluded.last_http_status,
+                last_downloaded_bytes = excluded.last_downloaded_bytes,
+                last_parsed_entries = excluded.last_parsed_entries,
+                last_accepted_entries = excluded.last_accepted_entries,
+                last_rejected_entries = excluded.last_rejected_entries,
+                last_duplicate_entries = excluded.last_duplicate_entries,
+                last_warnings_json = excluded.last_warnings_json,
+                last_update_duration_ms = excluded.last_update_duration_ms
             """,
             (
                 source_id,
                 FeedStatus.ACTIVE.value,
                 now,
                 now,
-                None,
+                next_update_at,
                 etag,
                 last_modified,
                 content_sha256_value,
@@ -2667,6 +2699,14 @@ def activate_intel_generation(
                 "",
                 "",
                 0,
+                http_status,
+                downloaded_bytes,
+                parsed_entries,
+                len(entries),
+                rejected_entries,
+                duplicate_entries,
+                json.dumps(warnings or []),
+                duration_ms,
             ),
         )
     return previous, generation_id
@@ -2781,6 +2821,15 @@ def activate_existing_threat_intel_generation(
     previous_generation_id: str = "",
     etag: str = "",
     last_modified: str = "",
+    next_update_at: float | None = None,
+    http_status: int | None = None,
+    downloaded_bytes: int = 0,
+    parsed_entries: int = 0,
+    accepted_entries: int | None = None,
+    rejected_entries: int = 0,
+    duplicate_entries: int = 0,
+    warnings: list[str] | None = None,
+    duration_ms: int = 0,
 ) -> tuple[str, str]:
     now = time.time()
     with transaction() as conn:
@@ -2860,9 +2909,17 @@ def activate_existing_threat_intel_generation(
                 remote_generation_id,
                 last_error_code,
                 last_error_summary,
-                consecutive_failures
+                consecutive_failures,
+                last_http_status,
+                last_downloaded_bytes,
+                last_parsed_entries,
+                last_accepted_entries,
+                last_rejected_entries,
+                last_duplicate_entries,
+                last_warnings_json,
+                last_update_duration_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 
             ON CONFLICT(source_id)
 
@@ -2879,14 +2936,22 @@ def activate_existing_threat_intel_generation(
                 remote_generation_id = excluded.remote_generation_id,
                 last_error_code = '',
                 last_error_summary = '',
-                consecutive_failures = 0
+                consecutive_failures = 0,
+                last_http_status = excluded.last_http_status,
+                last_downloaded_bytes = excluded.last_downloaded_bytes,
+                last_parsed_entries = excluded.last_parsed_entries,
+                last_accepted_entries = excluded.last_accepted_entries,
+                last_rejected_entries = excluded.last_rejected_entries,
+                last_duplicate_entries = excluded.last_duplicate_entries,
+                last_warnings_json = excluded.last_warnings_json,
+                last_update_duration_ms = excluded.last_update_duration_ms
             """,
             (
                 source_id,
                 FeedStatus.ACTIVE.value,
                 now,
                 now,
-                None,
+                next_update_at,
                 etag,
                 last_modified,
                 generation["content_sha256"],
@@ -2896,6 +2961,14 @@ def activate_existing_threat_intel_generation(
                 "",
                 "",
                 0,
+                http_status,
+                downloaded_bytes,
+                parsed_entries,
+                int(generation["entry_count"]) if accepted_entries is None else accepted_entries,
+                rejected_entries,
+                duplicate_entries,
+                json.dumps(warnings or []),
+                duration_ms,
             ),
         )
     return previous, generation_id
@@ -2912,6 +2985,7 @@ def get_active_threat_intel(domain: str) -> sqlite3.Row | None:
             e.confidence,
             e.first_seen,
             e.last_seen,
+            e.expires_at,
             g.generation_id,
             st.last_success_at,
             st.status,
@@ -2926,10 +3000,11 @@ def get_active_threat_intel(domain: str) -> sqlite3.Row | None:
         LEFT JOIN threat_intel_source_state st
             ON st.source_id = s.source_id
         WHERE e.domain = ?
+          AND (e.expires_at IS NULL OR e.expires_at > ?)
         ORDER BY e.confidence DESC, e.last_seen DESC
         LIMIT 1
         """,
-        (domain,),
+        (domain, time.time()),
     )
 
 
@@ -2975,7 +3050,8 @@ def list_managed_threat_intel_entries(
             e.category,
             e.confidence,
             e.first_seen,
-            e.last_seen
+            e.last_seen,
+            e.expires_at
         FROM threat_intel_generation_entries e
         JOIN threat_intel_generations g
             ON g.generation_id = e.generation_id
@@ -3279,11 +3355,227 @@ def check_threat_intel_integrity(
     return issues
 
 
+def threat_intel_stats(
+    database_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """
+    Return read-only operational statistics for managed threat-intelligence feeds.
+    """
+
+    now = time.time()
+
+    def one(sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Row | None:
+        return query_one_readonly(sql, params, database_path=database_path)
+
+    def all_rows(sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
+        return query_all_readonly(sql, params, database_path=database_path)
+
+    source_totals = one(
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) AS enabled,
+            SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END) AS disabled
+        FROM threat_intel_sources
+        """
+    )
+    state_totals = one(
+        """
+        SELECT
+            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+            MAX(last_success_at) AS last_success_at,
+            MAX(last_attempt_at) AS last_attempt_at
+        FROM threat_intel_source_state
+        """
+    )
+    stale = one(
+        """
+        SELECT COUNT(*) AS count
+        FROM threat_intel_sources s
+        LEFT JOIN threat_intel_source_state st
+            ON st.source_id = s.source_id
+        WHERE s.enabled = 1
+          AND (
+              st.last_success_at IS NULL
+              OR st.last_success_at < ? - s.stale_after_seconds
+              OR st.status = 'stale'
+          )
+        """,
+        (now,),
+    )
+    active_indicators = one(
+        """
+        SELECT COUNT(*) AS count
+        FROM threat_intel_generation_entries e
+        JOIN threat_intel_generations g
+            ON g.generation_id = e.generation_id
+            AND g.status = 'active'
+        JOIN threat_intel_sources s
+            ON s.source_id = e.source_id
+            AND s.enabled = 1
+        WHERE e.expires_at IS NULL OR e.expires_at > ?
+        """,
+        (now,),
+    )
+    generations = one(
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+            SUM(CASE WHEN status = 'inactive' THEN 1 ELSE 0 END) AS inactive,
+            SUM(CASE WHEN status = 'staging' THEN 1 ELSE 0 END) AS staging
+        FROM threat_intel_generations
+        """
+    )
+    audit = one(
+        """
+        SELECT
+            SUM(CASE WHEN result = 'success' THEN 1 ELSE 0 END) AS success,
+            SUM(CASE WHEN result = 'failed' THEN 1 ELSE 0 END) AS failed
+        FROM threat_intel_update_audit
+        """
+    )
+    by_status = {
+        str(row["status"] or "unknown"): int(row["count"] or 0)
+        for row in all_rows(
+            """
+            SELECT COALESCE(status, 'unknown') AS status, COUNT(*) AS count
+            FROM threat_intel_source_state
+            GROUP BY COALESCE(status, 'unknown')
+            """
+        )
+    }
+    integrity_issues = check_threat_intel_integrity(database_path)
+
+    def row_value(row: sqlite3.Row | None, key: str, default: Any = None) -> Any:
+        return row[key] if row is not None and key in row.keys() else default
+
+    return {
+        "sources_total": int(row_value(source_totals, "total", 0) or 0),
+        "enabled_sources": int(row_value(source_totals, "enabled", 0) or 0),
+        "disabled_sources": int(row_value(source_totals, "disabled", 0) or 0),
+        "failed_sources": int(row_value(state_totals, "failed", 0) or 0),
+        "stale_sources": int(row_value(stale, "count", 0) or 0),
+        "active_indicators": int(row_value(active_indicators, "count", 0) or 0),
+        "generations_total": int(row_value(generations, "total", 0) or 0),
+        "active_generations": int(row_value(generations, "active", 0) or 0),
+        "inactive_generations": int(row_value(generations, "inactive", 0) or 0),
+        "staging_generations": int(row_value(generations, "staging", 0) or 0),
+        "last_success_at": row_value(state_totals, "last_success_at"),
+        "last_attempt_at": row_value(state_totals, "last_attempt_at"),
+        "audit_success": int(row_value(audit, "success", 0) or 0),
+        "audit_failed": int(row_value(audit, "failed", 0) or 0),
+        "sources_by_status": by_status,
+        "integrity_issues": len(integrity_issues),
+        "integrity_issue_codes": [issue["code"] for issue in integrity_issues],
+    }
+
+
+def threat_intel_diagnostics(
+    database_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Return read-only health diagnostics for configured managed feeds.
+    """
+
+    now = time.time()
+    issues: list[dict[str, Any]] = []
+    rows = query_all_readonly(
+        """
+        SELECT
+            s.source_id,
+            s.enabled,
+            s.stale_after_seconds,
+            st.status,
+            st.last_success_at,
+            st.last_error_code,
+            st.last_error_summary,
+            st.consecutive_failures,
+            st.entry_count,
+            st.active_generation
+        FROM threat_intel_sources s
+        LEFT JOIN threat_intel_source_state st
+            ON st.source_id = s.source_id
+        ORDER BY s.source_id ASC
+        """,
+        database_path=database_path,
+    )
+    enabled_rows = [row for row in rows if bool(row["enabled"])]
+    if not enabled_rows:
+        issues.append(
+            {
+                "code": "intel.sources.none_enabled",
+                "severity": "warning",
+                "summary": "No enabled threat-intelligence feed sources are configured.",
+            }
+        )
+
+    for row in enabled_rows:
+        source_id = str(row["source_id"])
+        last_success = row["last_success_at"]
+        if last_success is None:
+            issues.append(
+                {
+                    "code": "intel.source.never_updated",
+                    "severity": "warning",
+                    "source_id": source_id,
+                    "summary": "Feed source has not completed a successful update.",
+                }
+            )
+        elif now - float(last_success) > int(row["stale_after_seconds"] or 0):
+            issues.append(
+                {
+                    "code": "intel.source.stale",
+                    "severity": "warning",
+                    "source_id": source_id,
+                    "summary": "Feed source has not updated within its stale window.",
+                }
+            )
+        if str(row["status"] or "") == FeedStatus.FAILED.value:
+            issues.append(
+                {
+                    "code": "intel.source.last_update_failed",
+                    "severity": "warning",
+                    "source_id": source_id,
+                    "error_code": str(row["last_error_code"] or ""),
+                    "summary": str(row["last_error_summary"] or "Last feed update failed."),
+                }
+            )
+        if row["active_generation"] and int(row["entry_count"] or 0) == 0:
+            issues.append(
+                {
+                    "code": "intel.source.empty_active_generation",
+                    "severity": "warning",
+                    "source_id": source_id,
+                    "summary": "Feed source has an active generation with no indicators.",
+                }
+            )
+
+    for issue in check_threat_intel_integrity(database_path):
+        issues.append(
+            {
+                "code": issue["code"],
+                "severity": "error",
+                "summary": "Threat-intelligence generation integrity issue detected.",
+                "details": issue,
+            }
+        )
+    return issues
+
+
 def mark_intel_update_not_modified(
     source_id: str,
     etag: str = "",
     last_modified: str = "",
     remote_generation_id: str = "",
+    http_status: int | None = None,
+    downloaded_bytes: int = 0,
+    parsed_entries: int = 0,
+    accepted_entries: int = 0,
+    rejected_entries: int = 0,
+    duplicate_entries: int = 0,
+    warnings: list[str] | None = None,
+    duration_ms: int = 0,
 ) -> None:
     now = time.time()
     execute(
@@ -3297,7 +3589,15 @@ def mark_intel_update_not_modified(
             remote_generation_id = CASE WHEN ? != '' THEN ? ELSE remote_generation_id END,
             last_error_code = '',
             last_error_summary = '',
-            consecutive_failures = 0
+            consecutive_failures = 0,
+            last_http_status = ?,
+            last_downloaded_bytes = ?,
+            last_parsed_entries = ?,
+            last_accepted_entries = CASE WHEN ? > 0 THEN ? ELSE entry_count END,
+            last_rejected_entries = ?,
+            last_duplicate_entries = ?,
+            last_warnings_json = ?,
+            last_update_duration_ms = ?
         WHERE source_id = ?
         """,
         (
@@ -3308,12 +3608,28 @@ def mark_intel_update_not_modified(
             last_modified,
             remote_generation_id,
             remote_generation_id,
+            http_status,
+            downloaded_bytes,
+            parsed_entries,
+            accepted_entries,
+            accepted_entries,
+            rejected_entries,
+            duplicate_entries,
+            json.dumps(warnings or []),
+            duration_ms,
             source_id,
         ),
     )
 
 
-def mark_intel_update_failed(source_id: str, code: str, summary: str) -> None:
+def mark_intel_update_failed(
+    source_id: str,
+    code: str,
+    summary: str,
+    *,
+    http_status: int | None = None,
+    duration_ms: int = 0,
+) -> None:
     now = time.time()
     execute(
         """
@@ -3324,9 +3640,11 @@ def mark_intel_update_failed(source_id: str, code: str, summary: str) -> None:
             last_attempt_at,
             last_error_code,
             last_error_summary,
-            consecutive_failures
+            consecutive_failures,
+            last_http_status,
+            last_update_duration_ms
         )
-        VALUES (?, ?, ?, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?, 1, ?, ?)
 
         ON CONFLICT(source_id)
 
@@ -3335,9 +3653,11 @@ def mark_intel_update_failed(source_id: str, code: str, summary: str) -> None:
             last_attempt_at = excluded.last_attempt_at,
             last_error_code = excluded.last_error_code,
             last_error_summary = excluded.last_error_summary,
-            consecutive_failures = consecutive_failures + 1
+            consecutive_failures = consecutive_failures + 1,
+            last_http_status = excluded.last_http_status,
+            last_update_duration_ms = excluded.last_update_duration_ms
         """,
-        (source_id, FeedStatus.FAILED.value, now, code, summary[:240]),
+        (source_id, FeedStatus.FAILED.value, now, code, summary[:240], http_status, duration_ms),
     )
 
 
