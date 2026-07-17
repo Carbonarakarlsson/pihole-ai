@@ -34,10 +34,12 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 pihole_ai = ["defaults/*.env"]
+assets = ["branding/*"]
 
 [tool.setuptools.packages.find]
 include = [
     "actions*",
+    "assets*",
     "collector*",
     "core*",
     "engine*",

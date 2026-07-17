@@ -19,6 +19,7 @@ from flask import (
     redirect,
     render_template_string,
     request,
+    send_from_directory,
     session,
     url_for,
 )
@@ -56,6 +57,7 @@ from pihole_ai.status import collect_status
 
 
 logger = get_logger(__name__)
+BRANDING_DIR = Path(__file__).resolve().parent.parent / "assets" / "branding"
 
 MAX_CONTENT_LENGTH = 32 * 1024
 LOGIN_FAILURE_LIMIT = 5
@@ -121,6 +123,8 @@ LOGIN_HTML = """
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PiHole-AI Login</title>
+<link rel="icon" href="{{ url_for('branding_asset', filename='favicon.ico') }}">
+<link rel="manifest" href="{{ url_for('branding_asset', filename='site.webmanifest') }}">
 <style nonce="__CSP_NONCE__">
 :root { color-scheme: dark; }
 body {
@@ -143,6 +147,10 @@ body {
     max-width: 360px;
     padding: 20px;
     width: 100%;
+}
+.login-logo {
+    height: 46px;
+    width: auto;
 }
 h1 { font-size: 22px; margin: 0; }
 p { color: #aab2bb; margin: 0; }
@@ -169,6 +177,7 @@ button {
 </head>
 <body>
 <form class="login" method="post" action="/login" autocomplete="on">
+    <img class="login-logo" src="{{ url_for('branding_asset', filename='logo-transparent.png') }}" alt="PiHole-AI logo">
     <h1>PiHole-AI</h1>
     <p>Sign in to the companion appliance.</p>
     <input type="hidden" name="csrf_token" value="__CSRF_TOKEN__">
@@ -196,6 +205,8 @@ HTML = """
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PiHole-AI</title>
+<link rel="icon" href="{{ url_for('branding_asset', filename='favicon.ico') }}">
+<link rel="manifest" href="{{ url_for('branding_asset', filename='site.webmanifest') }}">
 <meta name="csrf-token" content="__CSRF_TOKEN__">
 <style nonce="__CSP_NONCE__">
 :root {
@@ -241,9 +252,15 @@ body {
 }
 
 .brand {
+    align-items: center;
     display: grid;
     gap: 4px;
     padding: 4px 4px 10px;
+}
+
+.brand-logo {
+    height: 46px;
+    width: auto;
 }
 
 .brand strong {
@@ -843,6 +860,7 @@ th {
 <div class="layout">
 <aside class="sidebar">
     <div class="brand">
+        <img class="brand-logo" src="{{ url_for('branding_asset', filename='logo-transparent.png') }}" alt="PiHole-AI logo">
         <strong>PiHole-AI</strong>
         <span>Companion appliance</span>
     </div>
@@ -2887,7 +2905,7 @@ def create_app() -> Flask:
         if request.is_secure:
             current_app.config["SESSION_COOKIE_SECURE"] = True
 
-        if request.endpoint in {"login", "login_submit", "live", "static"}:
+        if request.endpoint in {"login", "login_submit", "live", "static", "branding_asset"}:
             return None
 
         if not auth_is_enabled():
@@ -2963,6 +2981,10 @@ def create_app() -> Flask:
     @app.get("/live")
     def live():
         return jsonify({"status": "alive"})
+
+    @app.get("/branding/<path:filename>")
+    def branding_asset(filename: str):
+        return send_from_directory(BRANDING_DIR, filename)
 
     @app.get("/login")
     def login():

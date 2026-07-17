@@ -1,5 +1,6 @@
 include README.md LICENSE .env.example
 recursive-include pihole_ai/defaults *.env
+recursive-include assets/branding *
 recursive-exclude * __pycache__ *.py[cod]
 recursive-exclude .git *
 recursive-exclude .pytest_cache *

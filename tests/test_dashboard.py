@@ -314,6 +314,36 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("No benchmark runs yet", body)
         self.assertIn("No active calibration profile yet", body)
 
+    def test_dashboard_renders_official_branding(self) -> None:
+        response = self.client.get("/")
+        body = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('rel="icon" href="/branding/favicon.ico"', body)
+        self.assertIn('rel="manifest" href="/branding/site.webmanifest"', body)
+        self.assertIn('src="/branding/logo-transparent.png"', body)
+        self.assertIn('alt="PiHole-AI logo"', body)
+
+    def test_branding_route_serves_canonical_assets(self) -> None:
+        response = self.client.get("/branding/favicon.ico")
+
+        try:
+            self.assertEqual(response.status_code, 200)
+            self.assertGreater(len(response.data), 0)
+        finally:
+            response.close()
+
+    def test_branding_manifest_references_branding_icons(self) -> None:
+        response = self.client.get("/branding/site.webmanifest")
+
+        try:
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["name"], "PiHole-AI")
+            self.assertEqual(payload["icons"][0]["src"], "favicon-192.png")
+        finally:
+            response.close()
+
     def test_reliability_endpoint_returns_metrics(self) -> None:
         payload = {
             "summary": {

@@ -1,4 +1,8 @@
-# PiHole-AI
+<div align="center">
+  <img src="assets/branding/logo-transparent.png" alt="PiHole-AI logo" height="96">
+  <h1>PiHole-AI</h1>
+  <p><strong>AI-powered local DNS intelligence for Pi-hole</strong></p>
+</div>
 
 PiHole-AI is a local companion appliance for Pi-hole. It reads Pi-hole DNS
 query history, stores normalized events in its own SQLite database, classifies
