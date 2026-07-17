@@ -40,6 +40,8 @@ from pihole_ai.health import (
 from pihole_ai.service import (
     DEFAULT_SERVICE_GROUP,
     DEFAULT_SERVICE_USER,
+    INTEL_UPDATE_SERVICE_NAME,
+    INTEL_UPDATE_TIMER_NAME,
     SERVICE_NAMES,
     InstallationStatus,
     _repair_config_permissions,
@@ -171,7 +173,7 @@ def evaluate_setup(
         _events_database_step(health),
         _database_schema_step(config),
         _service_identity_step(install),
-        _services_step(install),
+        _services_step(install, config),
         _ollama_step(config, health, skip_ollama_check=skip_ollama_check),
         _dashboard_step(install),
         _final_health_step(health),
@@ -806,7 +808,7 @@ def _service_identity_step(status: InstallationStatus) -> SetupStep:
         )
 
 
-def _services_step(status: InstallationStatus) -> SetupStep:
+def _services_step(status: InstallationStatus, config: Any) -> SetupStep:
     if status.state != "installed":
         return SetupStep(
             "services",
@@ -818,12 +820,8 @@ def _services_step(status: InstallationStatus) -> SetupStep:
             SetupAction("run_install", "Install services", True),
         )
 
-    inactive = [
-        name
-        for name, unit in status.unit_files.items()
-        if unit.get("active") != "active"
-    ]
-    if inactive:
+    daemon_issues = _inactive_daemon_units(status.unit_files)
+    if daemon_issues:
         return SetupStep(
             "services",
             "Runtime services",
@@ -832,8 +830,29 @@ def _services_step(status: InstallationStatus) -> SetupStep:
             "One or more required services are inactive.",
             "Run: sudo pihole-ai start",
             SetupAction("start_services", "Start services", True),
-            {"inactive": inactive, "services": status.unit_files},
+            {"inactive": daemon_issues, "services": status.unit_files},
         )
+
+    warnings: list[dict[str, Any]] = []
+    timer_warning = _timer_warning(status.unit_files, config)
+    if timer_warning is not None:
+        warnings.append(timer_warning)
+    oneshot_warning = _oneshot_warning(status.unit_files)
+    if oneshot_warning is not None:
+        warnings.append(oneshot_warning)
+
+    if warnings:
+        return SetupStep(
+            "services",
+            "Runtime services",
+            "warning",
+            True,
+            "Runtime daemons are active, but scheduled updater service state needs review.",
+            "Run: systemctl status pihole-ai-intel-update.service; journalctl -u pihole-ai-intel-update.service",
+            SetupAction("run_doctor", "Run diagnostics"),
+            {"warnings": warnings, "services": status.unit_files},
+        )
+
     return SetupStep(
         "services",
         "Runtime services",
@@ -842,6 +861,50 @@ def _services_step(status: InstallationStatus) -> SetupStep:
         "Collector, engine, and dashboard services are active.",
         details={"services": status.unit_files},
     )
+
+
+def _inactive_daemon_units(unit_files: dict[str, dict[str, Any]]) -> list[str]:
+    inactive: list[str] = []
+    for name in SERVICE_NAMES:
+        unit = unit_files.get(name, {})
+        if not unit.get("exists") or unit.get("active") != "active":
+            inactive.append(name)
+    return inactive
+
+
+def _timer_warning(unit_files: dict[str, dict[str, Any]], config: Any) -> dict[str, Any] | None:
+    timer = unit_files.get(INTEL_UPDATE_TIMER_NAME, {})
+    active = timer.get("active")
+    enabled = timer.get("enabled")
+    ready = bool(timer.get("exists")) and active == "active" and enabled == "enabled"
+    auto_update_enabled = bool(getattr(config, "intel_auto_update_enabled", False))
+    if ready or not auto_update_enabled:
+        return None
+    return {
+        "unit": INTEL_UPDATE_TIMER_NAME,
+        "role": "timer",
+        "active": active or "missing",
+        "enabled": enabled or "missing",
+        "summary": "Automatic threat-intelligence updates are enabled, but the updater timer is not ready.",
+    }
+
+
+def _oneshot_warning(unit_files: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    unit = unit_files.get(INTEL_UPDATE_SERVICE_NAME, {})
+    if not unit.get("exists"):
+        return None
+
+    active = str(unit.get("active") or "")
+    result = str(unit.get("result") or "")
+    if active in {"active", "activating", "inactive"} and result in {"", "success"}:
+        return None
+    return {
+        "unit": INTEL_UPDATE_SERVICE_NAME,
+        "role": "oneshot",
+        "active": active or "unknown",
+        "result": result or "unknown",
+        "summary": "Threat-intelligence updater oneshot did not complete successfully.",
+    }
 
 
 def _ollama_step(config: Any, report: HealthReport | None, *, skip_ollama_check: bool) -> SetupStep:

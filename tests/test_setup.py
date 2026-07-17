@@ -31,6 +31,7 @@ def valid_config(**overrides):
         "events_db": Path("/tmp/events.db"),
         "pihole_db": Path("/tmp/pihole-FTL.db"),
         "ai_enabled": True,
+        "intel_auto_update_enabled": False,
         "ollama_url": "http://127.0.0.1:11434",
         "ollama_model": "llama3.2:1b",
         "dashboard_host": "0.0.0.0",
@@ -68,7 +69,32 @@ def validation_result(errors=0, warnings=0):
     return ConfigurationValidationResult(mode="runtime", issues=issues)
 
 
-def install_status(state="installed", active=True):
+def dashboard_non_loopback_warning_result():
+    return ConfigurationValidationResult(
+        mode="runtime",
+        issues=[
+            SimpleNamespace(
+                code="config.dashboard.non_loopback_bind",
+                severity=ValidationSeverity.WARNING.value,
+                setting="PIHOLE_AI_DASHBOARD_HOST",
+                summary="Dashboard binds outside loopback.",
+                remediation="Restrict network access.",
+                details={},
+            )
+        ],
+    )
+
+
+def install_status(
+    state="installed",
+    active=True,
+    *,
+    inactive_unit: str | None = None,
+    timer_active: bool = True,
+    timer_enabled: bool = True,
+    oneshot_active: str = "inactive",
+    oneshot_result: str = "success",
+):
     units = {}
     for name in (
         "pihole-ai-collector.service",
@@ -80,9 +106,31 @@ def install_status(state="installed", active=True):
             "exists": state == "installed",
             "managed": state == "installed",
             "drifted": False,
-            "active": "active" if active else "inactive",
+            "role": "daemon",
+            "active": "inactive" if name == inactive_unit else "active" if active else "inactive",
             "enabled": "enabled",
+            "result": "",
         }
+    units["pihole-ai-intel-update.timer"] = {
+        "path": "/etc/systemd/system/pihole-ai-intel-update.timer",
+        "exists": state == "installed",
+        "managed": state == "installed",
+        "drifted": False,
+        "role": "timer",
+        "active": "active" if timer_active else "inactive",
+        "enabled": "enabled" if timer_enabled else "disabled",
+        "result": "",
+    }
+    units["pihole-ai-intel-update.service"] = {
+        "path": "/etc/systemd/system/pihole-ai-intel-update.service",
+        "exists": state == "installed",
+        "managed": state == "installed",
+        "drifted": False,
+        "role": "oneshot",
+        "active": oneshot_active,
+        "enabled": "static",
+        "result": oneshot_result,
+    }
     return InstallationStatus(
         state=state,
         managed=state == "installed",
@@ -195,6 +243,77 @@ class SetupStateTests(unittest.TestCase):
         report = self.evaluate_with(status=install_status(active=False))
         self.assertEqual(report.overall_stage, SetupStage.BLOCKED.value)
         self.assertEqual(self._step(report, "services").status, "blocked")
+
+    def test_successful_inactive_updater_oneshot_does_not_block_readiness(self):
+        report = self.evaluate_with(
+            result=dashboard_non_loopback_warning_result(),
+            health=health_report(overall=HealthStatus.DEGRADED.value),
+            status=install_status(
+                timer_active=True,
+                timer_enabled=True,
+                oneshot_active="inactive",
+                oneshot_result="success",
+            ),
+        )
+
+        self.assertEqual(report.overall_stage, SetupStage.DEGRADED.value)
+        self.assertTrue(report.ready)
+        self.assertEqual(setup_exit_code(report), 0)
+        self.assertEqual(self._step(report, "services").status, "complete")
+
+    def test_inactive_collector_blocks_readiness(self):
+        report = self.evaluate_with(
+            status=install_status(inactive_unit="pihole-ai-collector.service")
+        )
+        self.assertEqual(report.overall_stage, SetupStage.BLOCKED.value)
+        self.assertFalse(report.ready)
+        self.assertEqual(self._step(report, "services").status, "blocked")
+
+    def test_inactive_engine_blocks_readiness(self):
+        report = self.evaluate_with(
+            status=install_status(inactive_unit="pihole-ai-engine.service")
+        )
+        self.assertEqual(report.overall_stage, SetupStage.BLOCKED.value)
+        self.assertFalse(report.ready)
+        self.assertEqual(self._step(report, "services").status, "blocked")
+
+    def test_inactive_dashboard_blocks_readiness(self):
+        report = self.evaluate_with(
+            status=install_status(inactive_unit="pihole-ai-dashboard.service")
+        )
+        self.assertEqual(report.overall_stage, SetupStage.BLOCKED.value)
+        self.assertFalse(report.ready)
+        self.assertEqual(self._step(report, "services").status, "blocked")
+
+    def test_disabled_timer_with_auto_update_enabled_degrades_but_does_not_block(self):
+        report = self.evaluate_with(
+            config=valid_config(intel_auto_update_enabled=True),
+            status=install_status(timer_active=False, timer_enabled=False),
+        )
+
+        self.assertEqual(report.overall_stage, SetupStage.DEGRADED.value)
+        self.assertTrue(report.ready)
+        self.assertEqual(self._step(report, "services").status, "warning")
+
+    def test_disabled_timer_with_auto_update_disabled_does_not_block(self):
+        report = self.evaluate_with(
+            config=valid_config(intel_auto_update_enabled=False),
+            status=install_status(timer_active=False, timer_enabled=False),
+        )
+
+        self.assertTrue(report.ready)
+        self.assertEqual(self._step(report, "services").status, "complete")
+
+    def test_failed_updater_oneshot_degrades_but_does_not_block(self):
+        report = self.evaluate_with(
+            status=install_status(oneshot_active="failed", oneshot_result="exit-code"),
+        )
+
+        self.assertEqual(report.overall_stage, SetupStage.DEGRADED.value)
+        self.assertTrue(report.ready)
+        services = self._step(report, "services")
+        self.assertEqual(services.status, "warning")
+        self.assertIn("journalctl -u pihole-ai-intel-update.service", services.remediation)
 
     def test_ollama_unavailable_is_degraded_not_blocked(self):
         report = self.evaluate_with(

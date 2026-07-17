@@ -5,6 +5,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from tests.test_setup import (
+    SetupStage,
+    dashboard_non_loopback_warning_result,
+    health_report,
+    install_status,
+    valid_candidate,
+    valid_config,
+    db_status,
+)
 from ui.dashboard import create_app, parse_limit
 
 
@@ -255,6 +264,32 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["ready"])
         evaluate.assert_called_once_with()
+
+    def test_setup_endpoint_reports_degraded_ready_for_warning_only_state(self) -> None:
+        with (
+            patch(
+                "pihole_ai.setup.installation_status",
+                return_value=install_status(
+                    timer_active=True,
+                    timer_enabled=True,
+                    oneshot_active="inactive",
+                    oneshot_result="success",
+                ),
+            ),
+            patch(
+                "pihole_ai.setup.load_config_with_result",
+                return_value=(valid_config(), dashboard_non_loopback_warning_result()),
+            ),
+            patch("pihole_ai.setup.run_health_checks", return_value=health_report()),
+            patch("pihole_ai.setup.detect_pihole_databases", return_value=[valid_candidate()]),
+            patch("pihole_ai.setup.database_status", return_value=db_status()),
+        ):
+            response = self.client.get("/api/setup")
+
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["overall_stage"], SetupStage.DEGRADED.value)
+        self.assertTrue(payload["ready"])
 
     def test_settings_api_returns_current_ai_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

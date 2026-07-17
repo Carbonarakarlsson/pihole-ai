@@ -68,6 +68,16 @@ INTEL_UNIT_NAMES = [
     INTEL_UPDATE_SERVICE_NAME,
     INTEL_UPDATE_TIMER_NAME,
 ]
+UNIT_ROLE_DAEMON = "daemon"
+UNIT_ROLE_TIMER = "timer"
+UNIT_ROLE_ONESHOT = "oneshot"
+UNIT_ROLES = {
+    SERVICE_NAMES[0]: UNIT_ROLE_DAEMON,
+    SERVICE_NAMES[1]: UNIT_ROLE_DAEMON,
+    SERVICE_NAMES[2]: UNIT_ROLE_DAEMON,
+    INTEL_UPDATE_SERVICE_NAME: UNIT_ROLE_ONESHOT,
+    INTEL_UPDATE_TIMER_NAME: UNIT_ROLE_TIMER,
+}
 MANAGED_UNIT_NAMES = [
     *SERVICE_NAMES,
     *INTEL_UNIT_NAMES,
@@ -935,8 +945,14 @@ def installation_status(
             "drifted": drift,
             "expected_hash": expected_hash,
             "installed_hash": installed_hash,
+            "role": UNIT_ROLES.get(name, "unit"),
             "active": _run_capture(["systemctl", "is-active", name]) if exists else "missing",
             "enabled": _run_capture(["systemctl", "is-enabled", name]) if exists else "missing",
+            "result": _run_capture(
+                ["systemctl", "show", name, "--property=Result", "--value"]
+            )
+            if exists and UNIT_ROLES.get(name) == UNIT_ROLE_ONESHOT
+            else "",
         }
 
     database: dict[str, Any]
