@@ -80,6 +80,8 @@ Planned features:
   `config impact`
 - Phase 1C1 safe editing CLI: `config set` and `config unset` with dry-run,
   confirmation, validation, backups, and restart-impact preview
+- Phase 1C2 import/export CLI: deterministic JSON/env exports, explicit secure
+  exports, validated imports, dry-run previews, backups, and rollback safety
 - dashboard settings for common appliance configuration
 - config validation before writes take effect
 - configuration import and export

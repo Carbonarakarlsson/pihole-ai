@@ -40,6 +40,18 @@ services. JSON write mode requires `--dry-run` or `--yes`. Secret values remain
 masked, and process-environment overrides are called out explicitly in
 previews.
 
+Phase 1C2 status: implemented as safe import/export CLI operations:
+
+- `pihole-ai config export`
+- `pihole-ai config import <file>`
+
+Exports support JSON, env format, output files, and explicit `--secure`
+exports. Normal exports omit secrets and mask sensitive values. Imports support
+JSON/env detection, schema-version checks, alias resolution, unknown-key
+warnings with `--strict`, dry-run previews, confirmation, atomic writes,
+backups, and rollback-on-failure behavior. Automatic restarts and dashboard
+integration remain deferred.
+
 Related documentation:
 
 - [Configuration](CONFIGURATION.md)
@@ -594,10 +606,10 @@ Implementation steps:
 6. Replace narrow dashboard settings writer with registry-backed validation.
 7. Keep current `config check` and `config show` compatibility.
 8. Add import/export CLI commands as wrappers around the registry and env
-   writer.
+   writer. Done in Phase 1C2.
 9. Add dashboard/API endpoints.
 10. Add audit events without storing secrets.
-11. Later, optionally add profile presets and secure export.
+11. Later, optionally add profile presets.
 
 Existing `/etc/pihole-ai/pihole-ai.env` files must continue to load unchanged.
 

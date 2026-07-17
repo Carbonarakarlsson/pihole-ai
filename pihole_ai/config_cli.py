@@ -8,6 +8,8 @@ import json
 import os
 import sys
 from collections import defaultdict
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,10 +31,12 @@ from core.config_manager import write_env_document_atomic
 from core.config_manager import runtime_config
 from core.config_schema import CONFIG_SCHEMA
 from core.config_schema import SCHEMA_VERSION
+from core.config_schema import ConfigExportPolicy
 from core.config_schema import ConfigItem
 from core.config_schema import ConfigSensitivity
 from core.config_schema import affected_services
 from core.config_schema import get_item
+from pihole_ai.version import get_version
 
 
 EXIT_OK = 0
@@ -413,6 +417,158 @@ def print_config_unset(
     )
 
 
+def print_config_export(
+    *,
+    output: str = "",
+    export_format: str = "json",
+    secure: bool = False,
+    as_json: bool = False,
+) -> int:
+    """
+    Export effective configuration in JSON or env format.
+    """
+
+    if as_json:
+        export_format = "json"
+    try:
+        rows = _resolved_rows()
+    except (ProtectedConfigurationAccessError, ConfigurationParseError) as exc:
+        print(f"Configuration could not be read: {exc.__class__.__name__}", file=sys.stderr)
+        return EXIT_INVALID_CONFIG
+
+    if secure:
+        print(
+            "warning: secure configuration export includes secrets; protect the output file.",
+            file=sys.stderr,
+        )
+
+    payload = _export_payload(rows, export_format=export_format, secure=secure)
+    content = (
+        json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        if export_format == "json"
+        else _export_env(rows, secure=secure)
+    )
+
+    if output:
+        try:
+            _write_output_file(Path(output), content)
+        except OSError as exc:
+            print(f"Could not write export file: {exc.__class__.__name__}", file=sys.stderr)
+            return EXIT_ERROR
+        print(f"Wrote configuration export to {output}.", file=sys.stderr)
+    else:
+        sys.stdout.write(content)
+    return EXIT_OK
+
+
+def print_config_import(
+    import_path: str,
+    *,
+    dry_run: bool = False,
+    yes: bool = False,
+    as_json: bool = False,
+    strict: bool = False,
+    config_file: str = "",
+) -> int:
+    """
+    Import known configuration settings from JSON or env input.
+    """
+
+    if as_json and not (dry_run or yes):
+        print(
+            "JSON import mode requires --dry-run or --yes.",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+
+    source_path = Path(import_path)
+    target_file = Path(config_file).expanduser() if config_file else runtime_config.CONFIG_FILE
+    try:
+        updates, warnings = _parse_import_file(source_path, strict=strict)
+        document = _load_edit_document(target_file)
+        original_text = document.to_text()
+        current_rows = {
+            item.key: _resolved_row_for_item(item, target_file, document)
+            for item in CONFIG_SCHEMA
+        }
+        for item in updates:
+            _persisted_key_for_item(document, item)
+        for item, serialized in updates.items():
+            persisted_key = _persisted_key_for_item(document, item)
+            document.set(persisted_key or item.env_var, serialized)
+    except ConfigEditError as exc:
+        _print_edit_error(exc, as_json=as_json)
+        return exc.exit_code
+
+    changed_keys = [
+        item.key
+        for item in updates
+        if current_rows[item.key] != _resolved_row_for_item(item, target_file, document)
+        or document.to_text() != original_text
+    ]
+    changed = document.to_text() != original_text
+    services = affected_services([item.key for item in updates]) if changed else []
+    proposed_rows = {
+        item.key: _resolved_row_for_item(item, target_file, document)
+        for item in updates
+    }
+    errors = _validate_proposed_document(target_file, document)
+    result = {
+        "operation": "import",
+        "schema_version": SCHEMA_VERSION,
+        "source_file": str(source_path),
+        "target_file": str(target_file),
+        "changed": changed,
+        "changed_settings": [
+            {
+                "key": item.key,
+                "current": _safe_state(current_rows[item.key]),
+                "proposed": _safe_state(proposed_rows[item.key]),
+            }
+            for item in updates
+            if current_rows[item.key] != proposed_rows[item.key]
+            or changed
+        ],
+        "affected_services": services,
+        "warnings": warnings,
+        "errors": errors,
+        "dry_run": dry_run,
+        "written": False,
+        "backup_path": None,
+    }
+
+    if errors:
+        _print_import_result(result, as_json=as_json)
+        return EXIT_INVALID_CONFIG
+    if not changed:
+        _print_import_result(result, as_json=as_json)
+        return EXIT_OK
+    if dry_run:
+        _print_import_result(result, as_json=as_json)
+        return EXIT_OK
+    if not yes:
+        if not _confirm_change():
+            result["declined"] = True
+            _print_import_result(result, as_json=as_json)
+            return EXIT_ERROR
+    try:
+        backup_path = write_env_document_atomic(target_file, document)
+    except (OSError, PermissionError) as exc:
+        _print_edit_error(
+            ConfigEditError(
+                "Configuration could not be written.",
+                EXIT_ERROR,
+                exc.__class__.__name__,
+            ),
+            as_json=as_json,
+        )
+        return EXIT_ERROR
+    result["written"] = True
+    result["backup_path"] = str(backup_path) if backup_path is not None else None
+    _print_import_result(result, as_json=as_json)
+    return EXIT_OK
+
+
 def _print_dict(
     values: dict[str, Any],
     indent: int = 0,
@@ -428,6 +584,295 @@ def _print_dict(
             )
         else:
             print(f"{prefix}{key}: {value}")
+
+
+def _export_payload(
+    rows: list[dict[str, Any]],
+    *,
+    export_format: str,
+    secure: bool,
+) -> dict[str, Any]:
+    settings: list[dict[str, Any]] = []
+    for row in rows:
+        item: ConfigItem = row["item"]
+        if item.export_policy == ConfigExportPolicy.EXCLUDE:
+            continue
+        rendered = _render_export_value(item, row["raw_value"], secure=secure)
+        if rendered is None:
+            continue
+        settings.append(
+            {
+                "key": item.key,
+                "env": item.env_var,
+                "value": rendered["value"],
+                "masked": rendered["masked"],
+                "source": row["source"],
+                "category": item.category,
+                "type": item.value_type.value,
+            }
+        )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "pihole_ai_version": get_version(),
+        "exported_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "format": export_format,
+        "secure": secure,
+        "contains_secrets": secure,
+        "settings": settings,
+    }
+
+
+def _export_env(
+    rows: list[dict[str, Any]],
+    *,
+    secure: bool,
+) -> str:
+    lines = [
+        "# Generated PiHole-AI configuration export",
+        f"# schema_version={SCHEMA_VERSION}",
+        f"# pihole_ai_version={get_version()}",
+        f"# secure={'true' if secure else 'false'}",
+    ]
+    for row in rows:
+        item: ConfigItem = row["item"]
+        if item.export_policy == ConfigExportPolicy.EXCLUDE:
+            continue
+        rendered = _render_export_value(item, row["raw_value"], secure=secure)
+        if rendered is None:
+            continue
+        if rendered["masked"]:
+            lines.append(f"# {item.env_var}=<masked>")
+        else:
+            lines.append(f"{item.env_var}={_serialize_env_for_export(_serialize_config_value(rendered['value']))}")
+    return "\n".join(lines) + "\n"
+
+
+def _render_export_value(
+    item: ConfigItem,
+    raw_value: str,
+    *,
+    secure: bool,
+) -> dict[str, Any] | None:
+    if item.sensitivity == ConfigSensitivity.SECRET and not secure:
+        return None
+    if item.sensitivity == ConfigSensitivity.SENSITIVE and not secure:
+        rendered = mask_value(item, raw_value)
+        return {
+            "value": rendered["value"],
+            "masked": rendered["masked"],
+        }
+    return {
+        "value": _typed_export_value(item, raw_value),
+        "masked": False,
+    }
+
+
+def _typed_export_value(
+    item: ConfigItem,
+    raw_value: str,
+) -> Any:
+    validation = item.validator(item, raw_value)
+    if validation.is_valid:
+        value = validation.value
+        if isinstance(value, Path):
+            return str(value)
+        return value
+    return raw_value
+
+
+def _write_output_file(
+    path: Path,
+    content: str,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    import tempfile
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
+def _parse_import_file(
+    path: Path,
+    *,
+    strict: bool,
+) -> tuple[dict[ConfigItem, str], list[str]]:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConfigEditError(
+            f"Import file cannot be read: {path}",
+            EXIT_ERROR,
+            exc.__class__.__name__,
+        ) from exc
+    stripped = content.lstrip()
+    if path.suffix.lower() == ".json" or stripped.startswith("{"):
+        return _parse_import_json(content, strict=strict)
+    return _parse_import_env(content, strict=strict)
+
+
+def _parse_import_json(
+    content: str,
+    *,
+    strict: bool,
+) -> tuple[dict[ConfigItem, str], list[str]]:
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ConfigEditError(
+            "Malformed JSON import file.",
+            EXIT_INVALID_CONFIG,
+            "config.import.malformed_json",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ConfigEditError(
+            "JSON import must contain an object.",
+            EXIT_INVALID_CONFIG,
+            "config.import.invalid_json",
+        )
+    schema_version = int(payload.get("schema_version", 0))
+    if schema_version > SCHEMA_VERSION:
+        raise ConfigEditError(
+            f"Unsupported schema version.\nImport: {schema_version}\nSupported: {SCHEMA_VERSION}\nUpgrade PiHole-AI and retry.",
+            EXIT_INVALID_CONFIG,
+            "config.import.unsupported_schema_version",
+        )
+    raw_settings = payload.get("settings", [])
+    if isinstance(raw_settings, dict):
+        entries = [
+            {"key": key, "value": value}
+            for key, value in raw_settings.items()
+        ]
+    elif isinstance(raw_settings, list):
+        entries = raw_settings
+    else:
+        raise ConfigEditError(
+            "JSON import settings must be a list or object.",
+            EXIT_INVALID_CONFIG,
+            "config.import.invalid_settings",
+        )
+    updates: dict[ConfigItem, str] = {}
+    warnings: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ConfigEditError(
+                "JSON import contains a malformed setting entry.",
+                EXIT_INVALID_CONFIG,
+                "config.import.invalid_setting_entry",
+            )
+        if entry.get("masked"):
+            continue
+        key = str(entry.get("key") or entry.get("env") or "")
+        if not key:
+            raise ConfigEditError(
+                "JSON import contains a setting without a key.",
+                EXIT_INVALID_CONFIG,
+                "config.import.missing_key",
+            )
+        value = entry.get("value")
+        _add_import_update(updates, warnings, key, value, strict=strict)
+    return updates, warnings
+
+
+def _parse_import_env(
+    content: str,
+    *,
+    strict: bool,
+) -> tuple[dict[ConfigItem, str], list[str]]:
+    updates: dict[ConfigItem, str] = {}
+    warnings: list[str] = []
+    seen: set[str] = set()
+    for line_number, raw in enumerate(content.splitlines(), start=1):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" not in raw:
+            raise ConfigEditError(
+                f"Malformed ENV import line {line_number}.",
+                EXIT_INVALID_CONFIG,
+                "config.import.malformed_env",
+            )
+        key, raw_value = raw.split("=", 1)
+        key = key.strip()
+        if key in seen:
+            raise ConfigEditError(
+                f"Duplicate ENV import key: {key}",
+                EXIT_INVALID_CONFIG,
+                "config.import.duplicate_key",
+            )
+        seen.add(key)
+        value_text = raw_value.strip()
+        if len(value_text) >= 2 and value_text[0] == value_text[-1] and value_text[0] in {"'", '"'}:
+            value_text = value_text[1:-1]
+        _add_import_update(updates, warnings, key, value_text, strict=strict)
+    return updates, warnings
+
+
+def _add_import_update(
+    updates: dict[ConfigItem, str],
+    warnings: list[str],
+    key: str,
+    value: Any,
+    *,
+    strict: bool,
+) -> None:
+    try:
+        item = get_item(key)
+    except KeyError as exc:
+        message = f"Unknown import setting ignored: {key}"
+        if strict:
+            raise ConfigEditError(
+                f"Unknown import setting: {key}",
+                EXIT_USAGE,
+                "config.import.unknown_key",
+            ) from exc
+        warnings.append(message)
+        return
+    if item in updates:
+        raise ConfigEditError(
+            f"Duplicate import setting for {item.key}.",
+            EXIT_INVALID_CONFIG,
+            "config.import.duplicate_key",
+        )
+    if value is None:
+        value = ""
+    validation = item.validator(item, str(value))
+    if not validation.is_valid:
+        first = validation.errors[0]
+        raise ConfigEditError(
+            f"Invalid import value for {item.key}: {first.message}",
+            EXIT_INVALID_CONFIG,
+            first.code,
+        )
+    updates[item] = _serialize_config_value(validation.value)
+
+
+def _serialize_env_for_export(
+    value: str,
+) -> str:
+    if value == "":
+        return '""'
+    if any(char.isspace() for char in value) or "#" in value or '"' in value:
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return value
 
 
 def _run_config_edit(
@@ -860,6 +1305,69 @@ def _print_edit_result(
             print(f"Backup: {result['backup_path']}")
     elif result.get("declined"):
         print("Change declined; no file was written.")
+
+
+def _print_import_result(
+    result: dict[str, Any],
+    *,
+    as_json: bool,
+) -> None:
+    if as_json:
+        print(json.dumps(result, sort_keys=True))
+        return
+
+    if result.get("errors"):
+        print("Configuration import rejected.")
+    elif not result["changed"]:
+        print("No configuration change is required.")
+    else:
+        print("Configuration import preview")
+    print()
+    print("Source file:")
+    print(f"  {result['source_file']}")
+    print("Target file:")
+    print(f"  {result['target_file']}")
+    print()
+    if result["changed_settings"]:
+        print("Settings changing:")
+        for change in result["changed_settings"]:
+            print(f"- {change['key']}")
+            print(f"  current: {_state_label(change['current'])}")
+            print(f"  proposed: {_state_label(change['proposed'])}")
+    else:
+        print("Settings changing:")
+        print("  none")
+    print()
+    if result["affected_services"]:
+        print("Restart required:")
+        for service in result["affected_services"]:
+            print(f"  {service}")
+    else:
+        print("Restart required:")
+        print("  none")
+    print()
+    for warning in result["warnings"]:
+        print(f"warning: {warning}")
+    for error in result["errors"]:
+        print(f"error: [{error['code']}] {error['key']}: {error['message']}")
+    if result["dry_run"]:
+        print("Dry run: no file was written.")
+    elif result["written"]:
+        print("Configuration import written.")
+        if result["backup_path"]:
+            print(f"Backup: {result['backup_path']}")
+    elif result.get("declined"):
+        print("Import declined; no file was written.")
+
+
+def _state_label(
+    state: dict[str, Any],
+) -> str:
+    if state.get("value") is None and state.get("configured"):
+        return "configured: ********"
+    if state.get("value") is None:
+        return "<unset>"
+    return str(state["value"])
 
 
 def _print_state(

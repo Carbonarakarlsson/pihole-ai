@@ -115,6 +115,8 @@ The first safe editing commands are now available:
 pihole-ai config set KEY VALUE --dry-run
 sudo pihole-ai config set KEY VALUE --yes
 sudo pihole-ai config unset KEY --yes
+pihole-ai config export --output backup.json
+pihole-ai config import backup.json --dry-run
 ```
 
 Use `--dry-run` to preview validation, effective source, and restart impact
@@ -127,6 +129,22 @@ warns that the file will change while the effective runtime value remains
 controlled by the environment. Secret values are masked in output, but passing
 secrets as command-line arguments may leave them in shell history or process
 inspection output.
+
+Configuration exports are JSON by default and include schema/version metadata.
+Use `--format env` for a generated managed-env representation. Normal exports
+omit secrets and mask sensitive values. `--secure` includes schema-approved
+secrets and should be written only to protected storage:
+
+```bash
+sudo pihole-ai config export --secure --output /root/pihole-ai-secure-backup.json
+```
+
+Imports validate schema compatibility, aliases, setting values, cross-setting
+rules, and restart impact before writing. Unknown settings are warnings by
+default and become errors with `--strict`. Always preview first with
+`--dry-run`; successful imports write atomically and create a `.bak` backup
+when replacing an existing env file. On persistence failure, the original file
+is left unchanged and temporary files are cleaned up.
 
 ## Threat-Intelligence Source Edits
 

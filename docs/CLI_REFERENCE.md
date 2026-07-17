@@ -64,10 +64,10 @@ pihole-ai config set KEY VALUE [--dry-run] [--json] [--yes]
                      [--config-file PATH]
 pihole-ai config unset KEY [--dry-run] [--json] [--yes]
                        [--config-file PATH]
-
-# Planned for later Epic 3.5 Configuration Center phases:
-pihole-ai config export [--output PATH] [--include-secrets] [--json]
-pihole-ai config import FILE [--dry-run] [--json]
+pihole-ai config export [--output PATH] [--format json|env] [--secure]
+                        [--json]
+pihole-ai config import FILE [--dry-run] [--yes] [--json] [--strict]
+                        [--config-file PATH]
 
 pihole-ai setup [status] [--json] [--non-interactive] [--dry-run]
                 [--install] [--start] [--enable] [--skip-ollama-check]
@@ -177,6 +177,12 @@ pihole-ai learn [--limit N] [--min-score N] [--no-audit]
   dry-run; `1` for permission, confirmation-declined, or persistence failures;
   `2` for unknown keys or invalid command usage; `3` for parse or validation
   failures.
+- `config export`: `0` on success, `1` when the output file cannot be written,
+  `3` when configuration cannot be read.
+- `config import`: `0` for a write, no-op, or successful dry-run; `1` for
+  permission, confirmation-declined, or persistence failures; `2` for strict
+  unknown-key rejection or invalid command usage; `3` for malformed input,
+  unsupported schema, parse, or validation failures.
 - Epic 3.5 Configuration Center command contracts are documented in
   [Configuration Center Design](CONFIGURATION_DESIGN.md).
 - `db status`/`db migrate`: `2` incompatible schema, `3` access error, `1`
@@ -208,6 +214,11 @@ pihole-ai config impact PIHOLE_AI_OLLAMA_URL
 pihole-ai config set PIHOLE_AI_OLLAMA_MODEL llama3.2:1b --dry-run
 pihole-ai config set PIHOLE_AI_OLLAMA_MODEL llama3.2:1b --yes
 pihole-ai config unset PIHOLE_AI_OLLAMA_MODEL --dry-run
+pihole-ai config export --output backup.json
+pihole-ai config export --format env
+pihole-ai config export --secure --output secure-backup.json
+pihole-ai config import backup.json --dry-run
+pihole-ai config import backup.json --yes
 ```
 
 `config show` prints settings in schema order with the canonical key, safe
@@ -259,6 +270,33 @@ controlled by the process environment.
 Secret settings remain masked in human and JSON output. Supplying secrets as
 command-line arguments can leave them in shell history or process listings;
 future phases may add stdin or prompt-based secret entry.
+
+`config export` writes a deterministic JSON export by default. JSON exports
+include schema version, PiHole-AI package version, export timestamp, format,
+secure-export marker, and schema-ordered settings. Normal exports omit secrets
+and mask sensitive non-secret values. `--format env` emits a generated
+managed-env representation with canonical environment names. `--secure` is an
+explicit opt-in that includes schema-approved secrets; protect secure exports
+with restrictive file permissions and avoid sharing them.
+
+`config import` accepts JSON or env exports, validates the schema version,
+resolves aliases, validates every imported setting, previews changed settings,
+reports restart impact, and writes atomically only after confirmation or
+`--yes`. Use `--dry-run` first:
+
+```bash
+pihole-ai config import backup.json --dry-run
+sudo pihole-ai config import backup.json --yes
+```
+
+Unknown imported settings are reported as warnings by default and ignored so
+older compatible imports remain usable. `--strict` turns unknown settings into
+an error. Newer unsupported schema versions are rejected with the imported and
+supported versions shown.
+
+On write failure, the original configuration remains unchanged and temporary
+files are removed. If a backup has already been created, it is retained for
+manual recovery.
 
 ## Threat-Intel Source Updates
 

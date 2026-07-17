@@ -213,6 +213,8 @@ pihole-ai config validate
 pihole-ai config impact PIHOLE_AI_OLLAMA_URL
 pihole-ai config set PIHOLE_AI_OLLAMA_MODEL llama3.2:1b --dry-run
 pihole-ai config unset PIHOLE_AI_OLLAMA_MODEL --dry-run
+pihole-ai config export --output backup.json
+pihole-ai config import backup.json --dry-run
 ```
 
 Configuration writes require confirmation unless `--yes` is supplied, create a

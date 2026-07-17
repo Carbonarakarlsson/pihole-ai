@@ -285,6 +285,24 @@ def build_parser() -> argparse.ArgumentParser:
     config_unset.add_argument("--json", action="store_true", help="Print result as JSON.")
     config_unset.add_argument("--yes", action="store_true", help="Apply without prompting.")
     config_unset.add_argument("--config-file", default="", help="Configuration file to edit.")
+    config_export = config_commands.add_parser(
+        "export",
+        help="Export effective configuration.",
+    )
+    config_export.add_argument("--output", default="", help="Output file. Defaults to stdout.")
+    config_export.add_argument("--format", choices=["json", "env"], default="json", help="Export format.")
+    config_export.add_argument("--secure", action="store_true", help="Include schema-approved secrets.")
+    config_export.add_argument("--json", action="store_true", help="Print JSON export.")
+    config_import = config_commands.add_parser(
+        "import",
+        help="Safely import configuration settings.",
+    )
+    config_import.add_argument("path", help="JSON or env configuration export.")
+    config_import.add_argument("--dry-run", action="store_true", help="Validate and preview without writing.")
+    config_import.add_argument("--yes", action="store_true", help="Apply without prompting.")
+    config_import.add_argument("--json", action="store_true", help="Print result as JSON.")
+    config_import.add_argument("--strict", action="store_true", help="Reject unknown imported settings.")
+    config_import.add_argument("--config-file", default="", help="Configuration file to edit.")
 
     doctor = subcommands.add_parser(
         "doctor",
@@ -1139,7 +1157,9 @@ def main(
         from pihole_ai.config_cli import (
             print_config_check,
             print_config_get,
+            print_config_export,
             print_config_impact,
+            print_config_import,
             print_config_set,
             print_config_show,
             print_config_unset,
@@ -1193,6 +1213,24 @@ def main(
                 dry_run=args.dry_run,
                 as_json=args.json,
                 yes=args.yes,
+                config_file=args.config_file,
+            )
+
+        if args.config_command == "export":
+            return print_config_export(
+                output=args.output,
+                export_format=args.format,
+                secure=args.secure,
+                as_json=args.json,
+            )
+
+        if args.config_command == "import":
+            return print_config_import(
+                import_path=args.path,
+                dry_run=args.dry_run,
+                yes=args.yes,
+                as_json=args.json,
+                strict=args.strict,
                 config_file=args.config_file,
             )
 
