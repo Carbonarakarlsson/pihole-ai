@@ -73,6 +73,9 @@ changes should remain conservative and appliance-safe.
 
 Planned features:
 
+- Phase 1A internal framework: typed schema registry, reusable validation,
+  preserving `.env` parser/writer, atomic write primitives, masking,
+  restart-impact metadata, and deterministic import/export primitives
 - dashboard settings for common appliance configuration
 - config validation before writes take effect
 - configuration import and export

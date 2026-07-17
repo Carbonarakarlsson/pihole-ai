@@ -4,6 +4,18 @@ Epic 3.5 Phase 1 will turn PiHole-AI configuration into an appliance-grade
 Configuration Center for CLI and dashboard users. This document inventories the
 current state and defines the target design before implementation.
 
+Phase 1A status: implemented as an internal framework. The schema registry,
+validation primitives, preserving `.env` model, atomic writer, masking helpers,
+restart-impact metadata, and import/export primitives live in:
+
+- `core/config_schema.py`
+- `core/config_validation.py`
+- `core/config_manager.py`
+
+These primitives are infrastructure only. Public CLI commands, dashboard
+Settings pages, config audit surfaces, and automatic service restarts remain
+deferred to later Phase 1 work.
+
 Related documentation:
 
 - [Configuration](CONFIGURATION.md)
@@ -240,8 +252,8 @@ should include:
 - documentation text
 - source attribution in effective config
 
-The registry should be code-owned and generated into documentation where
-possible, but implementation should wait until a later task.
+The registry is now code-owned in `core/config_schema.py`. Documentation
+generation remains deferred.
 
 ## Validation Model
 
@@ -273,6 +285,11 @@ Rules:
   warning
 - mutually dependent settings: AI enabled requires model; dashboard auth
   disabled requires loopback bind; proxy trust should warn on exposed bind
+
+Phase 1A includes reusable primitive validators for booleans, integers,
+floats, ports, URLs, hostnames/IPs, filesystem paths, enums, Ollama model
+names, and numeric ranges. Cross-setting runtime validation remains in
+`core/config.py` until public config-editing commands are added.
 
 Validation modes:
 
@@ -308,6 +325,11 @@ Writer requirements:
 - support dry-run and impact preview
 - never silently delete unknown keys
 - record audit rows for dashboard/CLI configuration changes where feasible
+
+Phase 1A provides the internal preserving writer and atomic replacement
+primitive. Managed-path ownership repair, dashboard/CLI validation before
+write, and audit rows remain deferred until the public write surfaces are
+implemented.
 
 Rejected alternatives for Phase 1:
 
@@ -538,14 +560,16 @@ remains authoritative.
 
 Implementation steps:
 
-1. Add a settings metadata registry.
-2. Generate inventory/docs from the registry where possible.
-3. Replace narrow dashboard settings writer with registry-backed validation.
-4. Keep current `config check` and `config show` compatibility.
-5. Add new CLI commands as wrappers around the registry and env writer.
-6. Add dashboard/API endpoints.
-7. Add audit events without storing secrets.
-8. Later, optionally add profile presets and secure export.
+1. Add a settings metadata registry. Done in Phase 1A.
+2. Add internal validation, env-file preservation, atomic-write, masking,
+   restart-impact, and import/export primitives. Done in Phase 1A.
+3. Generate inventory/docs from the registry where possible.
+4. Replace narrow dashboard settings writer with registry-backed validation.
+5. Keep current `config check` and `config show` compatibility.
+6. Add new CLI commands as wrappers around the registry and env writer.
+7. Add dashboard/API endpoints.
+8. Add audit events without storing secrets.
+9. Later, optionally add profile presets and secure export.
 
 Existing `/etc/pihole-ai/pihole-ai.env` files must continue to load unchanged.
 
