@@ -28,6 +28,18 @@ source attribution, and restart-impact previews. They do not write `.env`
 files, expose secrets, restart services, import/export configuration, or add
 dashboard Settings APIs.
 
+Phase 1C1 status: implemented as the first safe write-capable CLI surface:
+
+- `pihole-ai config set <key> <value>`
+- `pihole-ai config unset <key>`
+
+Both commands support `--dry-run`, `--json`, `--yes`, and `--config-file`.
+They validate the selected schema entry, preserve comments/blank lines/unknown
+keys, write atomically with backups, preview restart impact, and never restart
+services. JSON write mode requires `--dry-run` or `--yes`. Secret values remain
+masked, and process-environment overrides are called out explicitly in
+previews.
+
 Related documentation:
 
 - [Configuration](CONFIGURATION.md)
@@ -577,14 +589,15 @@ Implementation steps:
    restart-impact, and import/export primitives. Done in Phase 1A.
 3. Add read-only CLI inspection commands for show, get, validate, and impact.
    Done in Phase 1B.
-4. Generate inventory/docs from the registry where possible.
-5. Replace narrow dashboard settings writer with registry-backed validation.
-6. Keep current `config check` and `config show` compatibility.
-7. Add write-capable CLI commands as wrappers around the registry and env
+4. Add safe write-capable CLI commands for set and unset. Done in Phase 1C1.
+5. Generate inventory/docs from the registry where possible.
+6. Replace narrow dashboard settings writer with registry-backed validation.
+7. Keep current `config check` and `config show` compatibility.
+8. Add import/export CLI commands as wrappers around the registry and env
    writer.
-8. Add dashboard/API endpoints.
-9. Add audit events without storing secrets.
-10. Later, optionally add profile presets and secure export.
+9. Add dashboard/API endpoints.
+10. Add audit events without storing secrets.
+11. Later, optionally add profile presets and secure export.
 
 Existing `/etc/pihole-ai/pihole-ai.env` files must continue to load unchanged.
 

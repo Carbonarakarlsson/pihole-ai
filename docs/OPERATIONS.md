@@ -109,6 +109,25 @@ Epic 3.5 Phase 1 will expand configuration management beyond the current
 implementation-ready design is in
 [Configuration Center Design](CONFIGURATION_DESIGN.md).
 
+The first safe editing commands are now available:
+
+```bash
+pihole-ai config set KEY VALUE --dry-run
+sudo pihole-ai config set KEY VALUE --yes
+sudo pihole-ai config unset KEY --yes
+```
+
+Use `--dry-run` to preview validation, effective source, and restart impact
+without creating temp files or backups. Writes are atomic and create
+`pihole-ai.env.bak` when replacing an existing file. Editing does not restart
+services; restart the reported PiHole-AI service manually when ready.
+
+If a process environment variable overrides a persisted value, the preview
+warns that the file will change while the effective runtime value remains
+controlled by the environment. Secret values are masked in output, but passing
+secrets as command-line arguments may leave them in shell history or process
+inspection output.
+
 ## Threat-Intelligence Source Edits
 
 Use supported CLI edits instead of direct SQLite changes:

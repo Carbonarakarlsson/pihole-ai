@@ -266,6 +266,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print restart impact as JSON.",
     )
+    config_set = config_commands.add_parser(
+        "set",
+        help="Safely persist one configuration value.",
+    )
+    config_set.add_argument("key", help="Canonical key, environment variable, or alias.")
+    config_set.add_argument("value", help="Value to persist.")
+    config_set.add_argument("--dry-run", action="store_true", help="Validate and preview without writing.")
+    config_set.add_argument("--json", action="store_true", help="Print result as JSON.")
+    config_set.add_argument("--yes", action="store_true", help="Apply without prompting.")
+    config_set.add_argument("--config-file", default="", help="Configuration file to edit.")
+    config_unset = config_commands.add_parser(
+        "unset",
+        help="Safely remove one persisted configuration value.",
+    )
+    config_unset.add_argument("key", help="Canonical key, environment variable, or alias.")
+    config_unset.add_argument("--dry-run", action="store_true", help="Validate and preview without writing.")
+    config_unset.add_argument("--json", action="store_true", help="Print result as JSON.")
+    config_unset.add_argument("--yes", action="store_true", help="Apply without prompting.")
+    config_unset.add_argument("--config-file", default="", help="Configuration file to edit.")
 
     doctor = subcommands.add_parser(
         "doctor",
@@ -1121,7 +1140,9 @@ def main(
             print_config_check,
             print_config_get,
             print_config_impact,
+            print_config_set,
             print_config_show,
+            print_config_unset,
             print_config_validate,
         )
 
@@ -1154,6 +1175,25 @@ def main(
             return print_config_impact(
                 keys=args.keys,
                 as_json=args.json,
+            )
+
+        if args.config_command == "set":
+            return print_config_set(
+                key=args.key,
+                value=args.value,
+                dry_run=args.dry_run,
+                as_json=args.json,
+                yes=args.yes,
+                config_file=args.config_file,
+            )
+
+        if args.config_command == "unset":
+            return print_config_unset(
+                key=args.key,
+                dry_run=args.dry_run,
+                as_json=args.json,
+                yes=args.yes,
+                config_file=args.config_file,
             )
 
     if args.command == "doctor":

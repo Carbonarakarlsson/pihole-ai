@@ -106,6 +106,15 @@ class EnvDocument:
             if line.kind == "entry" and line.key is not None
         }
 
+    def entry_keys(
+        self,
+    ) -> list[str]:
+        return [
+            line.key
+            for line in self.lines
+            if line.kind == "entry" and line.key is not None
+        ]
+
     def set(
         self,
         key: str,
@@ -184,6 +193,7 @@ class ConfigurationManager:
         *,
         env: Mapping[str, str] | None = None,
         env_files: list[Path] | None = None,
+        env_file_values: list[tuple[Path, Mapping[str, str]]] | None = None,
         schema: tuple[ConfigItem, ...] = CONFIG_SCHEMA,
     ) -> None:
         self.env = dict(os.environ if env is None else env)
@@ -191,6 +201,7 @@ class ConfigurationManager:
             runtime_config.CONFIG_FILE,
             runtime_config.PROJECT_ROOT / ".env",
         ]
+        self.env_file_values = env_file_values
         self.schema = schema
         self._resolved: dict[str, ResolvedConfigValue] | None = None
 
@@ -198,10 +209,15 @@ class ConfigurationManager:
         self,
     ) -> dict[str, ResolvedConfigValue]:
         values: dict[str, tuple[str, str]] = {}
-        for path in self.env_files:
-            document = EnvDocument.from_path(path)
-            for key, value in document.values().items():
-                values[key] = (value, f"env_file:{path}")
+        if self.env_file_values is not None:
+            for path, file_values in self.env_file_values:
+                for key, value in file_values.items():
+                    values[key] = (value, f"env_file:{path}")
+        else:
+            for path in self.env_files:
+                document = EnvDocument.from_path(path)
+                for key, value in document.values().items():
+                    values[key] = (value, f"env_file:{path}")
         for key, value in self.env.items():
             values[key] = (str(value), "environment")
 
@@ -351,6 +367,46 @@ def write_env_file_atomic(
         raise
 
 
+def write_env_document_atomic(
+    path: Path,
+    document: EnvDocument,
+    *,
+    backup: bool = True,
+) -> Path | None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path = path.with_suffix(path.suffix + ".bak") if backup and path.exists() else None
+    mode = None
+    if path.exists():
+        mode = path.stat().st_mode & 0o777
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(document.to_text())
+            handle.flush()
+            os.fsync(handle.fileno())
+        if mode is not None:
+            os.chmod(temp_path, mode)
+        if backup_path is not None:
+            shutil.copy2(path, backup_path)
+        os.replace(temp_path, path)
+        _fsync_directory(path.parent)
+        return backup_path
+    except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
 def changed_key_impact(
     changed_keys: list[str] | tuple[str, ...] | set[str],
 ) -> dict[str, Any]:
@@ -411,4 +467,5 @@ __all__ = [
     "changed_key_impact",
     "mask_value",
     "write_env_file_atomic",
+    "write_env_document_atomic",
 ]

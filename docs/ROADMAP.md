@@ -78,6 +78,8 @@ Planned features:
   restart-impact metadata, and deterministic import/export primitives
 - Phase 1B read-only CLI: `config show`, `config get`, `config validate`, and
   `config impact`
+- Phase 1C1 safe editing CLI: `config set` and `config unset` with dry-run,
+  confirmation, validation, backups, and restart-impact preview
 - dashboard settings for common appliance configuration
 - config validation before writes take effect
 - configuration import and export

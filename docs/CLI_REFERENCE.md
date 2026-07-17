@@ -60,10 +60,12 @@ pihole-ai config show [--json] [--category CATEGORY] [--source SOURCE]
 pihole-ai config get KEY [--json] [--details]
 pihole-ai config validate [--json]
 pihole-ai config impact KEY [KEY ...] [--json]
+pihole-ai config set KEY VALUE [--dry-run] [--json] [--yes]
+                     [--config-file PATH]
+pihole-ai config unset KEY [--dry-run] [--json] [--yes]
+                       [--config-file PATH]
 
 # Planned for later Epic 3.5 Configuration Center phases:
-pihole-ai config set KEY VALUE [--dry-run] [--json]
-pihole-ai config unset KEY [--dry-run] [--json]
 pihole-ai config export [--output PATH] [--include-secrets] [--json]
 pihole-ai config import FILE [--dry-run] [--json]
 
@@ -171,6 +173,10 @@ pihole-ai learn [--limit N] [--min-score N] [--no-audit]
   unknown keys or invalid filters, `3` when configuration cannot be read or a
   resolved value is invalid.
 - `config validate`: `0` when valid, `3` when configuration validation fails.
+- `config set` and `config unset`: `0` for a write, no-op, or successful
+  dry-run; `1` for permission, confirmation-declined, or persistence failures;
+  `2` for unknown keys or invalid command usage; `3` for parse or validation
+  failures.
 - Epic 3.5 Configuration Center command contracts are documented in
   [Configuration Center Design](CONFIGURATION_DESIGN.md).
 - `db status`/`db migrate`: `2` incompatible schema, `3` access error, `1`
@@ -183,10 +189,11 @@ pihole-ai learn [--limit N] [--min-score N] [--no-audit]
 
 ## Configuration Inspection
 
-Epic 3.5 Phase 1B exposes read-only configuration inspection commands. These
-commands do not write `.env` files, restart services, or call `systemctl`.
-Secret values are masked by default and no `--show-secrets` option is provided
-in this phase.
+Epic 3.5 exposes configuration inspection and the first safe editing commands.
+Inspection commands do not write `.env` files, restart services, or call
+`systemctl`. `config set` and `config unset` write only the selected env file
+after validation and confirmation. Secret values are masked by default and no
+`--show-secrets` option is provided in this phase.
 
 Examples:
 
@@ -198,6 +205,9 @@ pihole-ai config get PIHOLE_AI_OLLAMA_MODEL
 pihole-ai config get ollama_model --details
 pihole-ai config validate
 pihole-ai config impact PIHOLE_AI_OLLAMA_URL
+pihole-ai config set PIHOLE_AI_OLLAMA_MODEL llama3.2:1b --dry-run
+pihole-ai config set PIHOLE_AI_OLLAMA_MODEL llama3.2:1b --yes
+pihole-ai config unset PIHOLE_AI_OLLAMA_MODEL --dry-run
 ```
 
 `config show` prints settings in schema order with the canonical key, safe
@@ -214,6 +224,41 @@ when validation fails.
 `config impact` accepts one or more hypothetical changed settings, deduplicates
 them, and reports the affected PiHole-AI services without inspecting or
 changing live service state.
+
+`config set` accepts canonical keys, environment-variable names, and aliases.
+It validates the proposed value, previews the persisted and effective result,
+reports affected services, and prompts with `Apply this change? [y/N]`.
+Non-interactive runs must use `--yes` or `--dry-run`. JSON write mode also
+requires `--yes` or `--dry-run` so scripts never hang on a prompt.
+
+`config unset` removes only the explicit persisted key from the selected env
+file. It does not remove process-environment overrides. Unsetting an already
+absent key is an idempotent no-op and does not rewrite the file.
+
+`--dry-run` performs validation and restart-impact calculation without
+creating files, temp files, or backups. Successful writes are atomic and create
+a `.bak` backup when the target file already existed. Backups can be used for
+manual recovery:
+
+```bash
+sudo cp /etc/pihole-ai/pihole-ai.env.bak /etc/pihole-ai/pihole-ai.env
+```
+
+Configuration editing does not restart services automatically. After changing
+a setting with restart impact, run the shown service restart command manually,
+for example:
+
+```bash
+sudo pihole-ai restart
+```
+
+If a process environment variable currently overrides the persisted value, the
+preview warns that the file will change but the effective value remains
+controlled by the process environment.
+
+Secret settings remain masked in human and JSON output. Supplying secrets as
+command-line arguments can leave them in shell history or process listings;
+future phases may add stdin or prompt-based secret entry.
 
 ## Threat-Intel Source Updates
 
