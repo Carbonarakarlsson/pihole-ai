@@ -26,12 +26,14 @@ import time
 import uuid
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Iterator
 
 from core.config import settings
 from core.migrations import (
     LATEST_SUPPORTED_SCHEMA_VERSION,
+    UnsupportedSchemaVersion,
     current_schema_version,
     migrate_database,
     open_database_readonly,
@@ -62,6 +64,91 @@ class ReadOnlyMigrationRequired(RuntimeError):
     def __init__(self, current_version: int) -> None:
         self.current_version = current_version
         super().__init__("migration required")
+
+
+class DatabaseAccessMode(str, Enum):
+    READ_ONLY = "read_only"
+    READ_WRITE = "read_write"
+    MIGRATION = "migration"
+
+
+class DatabaseError(RuntimeError):
+    """
+    Base runtime database access error.
+    """
+
+
+class DatabaseNotFoundError(DatabaseError):
+    """
+    Raised when read-only access targets a missing database.
+    """
+
+
+class DatabaseMigrationRequiredError(ReadOnlyMigrationRequired, DatabaseError):
+    """
+    Raised when read-only access sees an older supported schema.
+    """
+
+
+class DatabaseSchemaTooNewError(DatabaseError):
+    """
+    Raised when read-only access sees a schema from a newer PiHole-AI version.
+    """
+
+
+class DatabaseReadOnlyError(DatabaseError):
+    """
+    Raised when a read-only SQLite connection refuses an operation.
+    """
+
+
+class Database:
+    """
+    Explicit database access-mode entry points.
+    """
+
+    @staticmethod
+    def open_read_only(database_path: str | Path) -> sqlite3.Connection:
+        path = Path(database_path)
+        try:
+            conn = open_database_readonly(path)
+            version = current_schema_version(conn)
+            if version > LATEST_SUPPORTED_SCHEMA_VERSION:
+                conn.close()
+                raise DatabaseSchemaTooNewError(
+                    f"Database schema version {version} is newer than supported "
+                    f"{LATEST_SUPPORTED_SCHEMA_VERSION}."
+                )
+            if version < LATEST_SUPPORTED_SCHEMA_VERSION:
+                conn.close()
+                raise DatabaseMigrationRequiredError(version)
+            return conn
+        except FileNotFoundError as exc:
+            raise DatabaseNotFoundError(f"Database does not exist: {path}") from exc
+        except UnsupportedSchemaVersion as exc:
+            raise DatabaseSchemaTooNewError(str(exc)) from exc
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            if "readonly" in message or "attempt to write" in message:
+                raise DatabaseReadOnlyError(str(exc)) from exc
+            raise
+
+    @staticmethod
+    def open_read_write(database_path: str | Path) -> sqlite3.Connection:
+        path = Path(database_path)
+        _ensure_database_initialized(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path, timeout=30)
+        _configure_connection(conn)
+        return conn
+
+    @staticmethod
+    def open_for_migration(database_path: str | Path) -> sqlite3.Connection:
+        path = Path(database_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path, timeout=30)
+        _configure_connection(conn)
+        return conn
 
 
 def _database_path() -> Path:
@@ -116,24 +203,9 @@ def get_connection() -> sqlite3.Connection:
 
     database_path = _database_path()
     if _readonly_database_mode:
-        conn = open_database_readonly(database_path)
-        version = current_schema_version(conn)
-        if version < LATEST_SUPPORTED_SCHEMA_VERSION:
-            conn.close()
-            raise ReadOnlyMigrationRequired(version)
-        return conn
+        return Database.open_read_only(database_path)
 
-    _ensure_database_initialized(database_path)
-    database_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(
-        database_path,
-        timeout=30,
-    )
-
-    _configure_connection(conn)
-
-    return conn
+    return Database.open_read_write(database_path)
 
 
 @contextmanager
@@ -237,10 +309,7 @@ def query_all_readonly(
     """
 
     path = Path(database_path) if database_path is not None else _database_path()
-    with closing(open_database_readonly(path)) as conn:
-        version = current_schema_version(conn)
-        if version < LATEST_SUPPORTED_SCHEMA_VERSION:
-            raise ReadOnlyMigrationRequired(version)
+    with closing(Database.open_read_only(path)) as conn:
         cursor = conn.execute(sql, parameters)
         return cursor.fetchall()
 
@@ -270,10 +339,7 @@ def query_one_readonly(
     """
 
     path = Path(database_path) if database_path is not None else _database_path()
-    with closing(open_database_readonly(path)) as conn:
-        version = current_schema_version(conn)
-        if version < LATEST_SUPPORTED_SCHEMA_VERSION:
-            raise ReadOnlyMigrationRequired(version)
+    with closing(Database.open_read_only(path)) as conn:
         cursor = conn.execute(sql, parameters)
         return cursor.fetchone()
 
@@ -3697,7 +3763,7 @@ def database_stats_readonly(
     }
     stats: dict[str, int] = {key: 0 for key in queries}
 
-    with closing(open_database_readonly(path)) as conn:
+    with closing(Database.open_read_only(path)) as conn:
         for key, sql in queries.items():
             try:
                 row = conn.execute(sql).fetchone()

@@ -27,11 +27,12 @@ from werkzeug.security import check_password_hash
 
 from core.config import CONFIG_FILE, settings
 from core.db import (
-    database_stats,
+    database_stats_readonly as database_stats,
     decision_metrics as db_decision_metrics,
     get_recent_actions as db_get_recent_actions,
     list_intel_source_status,
-    query_all,
+    query_all_readonly,
+    readonly_database,
 )
 from core.logger import get_logger
 from pihole_ai.explain import (
@@ -2207,7 +2208,7 @@ def get_recent_events(
     if where:
         where_sql = "WHERE " + " AND ".join(where)
 
-    rows = query_all(
+    rows = query_all_readonly(
         f"""
         SELECT
 
@@ -2264,7 +2265,7 @@ def get_recent_analyses(
     if where:
         where_sql = "WHERE " + " AND ".join(where)
 
-    rows = query_all(
+    rows = query_all_readonly(
         """
         SELECT
 
@@ -2309,7 +2310,7 @@ def get_device_summary(
         pattern = f"%{search}%"
         params.extend([pattern, pattern])
 
-    rows = query_all(
+    rows = query_all_readonly(
         """
         SELECT
 
@@ -2347,15 +2348,16 @@ def get_recent_actions(
     Return recent action audit rows for the dashboard/API.
     """
 
-    return [
-        row_to_dict(row)
-        for row in db_get_recent_actions(
-            limit=limit,
-            search=search,
-            action=action,
-            status=status,
-        )
-    ]
+    with readonly_database():
+        return [
+            row_to_dict(row)
+            for row in db_get_recent_actions(
+                limit=limit,
+                search=search,
+                action=action,
+                status=status,
+            )
+        ]
 
 
 def get_domain_rules(
@@ -2367,11 +2369,12 @@ def get_domain_rules(
     Return active domain rules for the dashboard/API.
     """
 
-    return load_domain_rules(
-        limit=limit,
-        search=search,
-        decision=decision,
-    )
+    with readonly_database():
+        return load_domain_rules(
+            limit=limit,
+            search=search,
+            decision=decision,
+        )
 
 
 def get_reputations(
@@ -2383,11 +2386,12 @@ def get_reputations(
     Return learned reputation rows for the dashboard/API.
     """
 
-    return load_reputations(
-        limit=limit,
-        search=search,
-        min_score=min_score,
-    )
+    with readonly_database():
+        return load_reputations(
+            limit=limit,
+            search=search,
+            min_score=min_score,
+        )
 
 
 def get_decision_metrics() -> dict[str, Any]:
@@ -2395,7 +2399,8 @@ def get_decision_metrics() -> dict[str, Any]:
     Return aggregate decision metrics for the dashboard/API.
     """
 
-    return db_decision_metrics()
+    with readonly_database():
+        return db_decision_metrics()
 
 
 def _bool_text(value: bool) -> str:
@@ -3047,19 +3052,20 @@ def create_app() -> Flask:
     @app.get("/api/intel/sources")
     def intel_sources():
         sources = []
-        for row in list_intel_source_status():
-            sources.append(
-                {
-                    "source_id": row.get("source_id"),
-                    "name": row.get("name"),
-                    "enabled": bool(row.get("enabled")),
-                    "status": row.get("status") or "unknown",
-                    "entry_count": row.get("entry_count") or 0,
-                    "last_success_at": row.get("last_success_at"),
-                    "last_attempt_at": row.get("last_attempt_at"),
-                    "last_error_code": row.get("last_error_code") or "",
-                }
-            )
+        with readonly_database():
+            for row in list_intel_source_status():
+                sources.append(
+                    {
+                        "source_id": row.get("source_id"),
+                        "name": row.get("name"),
+                        "enabled": bool(row.get("enabled")),
+                        "status": row.get("status") or "unknown",
+                        "entry_count": row.get("entry_count") or 0,
+                        "last_success_at": row.get("last_success_at"),
+                        "last_attempt_at": row.get("last_attempt_at"),
+                        "last_error_code": row.get("last_error_code") or "",
+                    }
+                )
         response = jsonify({"sources": sources})
         response.headers["Cache-Control"] = "no-store"
         return response
@@ -3070,7 +3076,8 @@ def create_app() -> Flask:
             return jsonify({"error": "invalid domain"}), 400
 
         try:
-            explanation = explain_domain(domain)
+            with readonly_database():
+                explanation = explain_domain(domain)
         except ValueError:
             return jsonify({"error": "invalid domain"}), 400
 
@@ -3104,7 +3111,8 @@ def create_app() -> Flask:
             limit = parse_limit(request.args.get("limit"), default=20, maximum=100)
             before_raw = request.args.get("before")
             before = float(before_raw) if before_raw else None
-            payload = decision_history(domain, limit=limit, before=before)
+            with readonly_database():
+                payload = decision_history(domain, limit=limit, before=before)
         except ValueError:
             return jsonify({"error": "invalid request"}), 400
 
@@ -3118,7 +3126,8 @@ def create_app() -> Flask:
             return jsonify({"error": "invalid domain"}), 400
 
         try:
-            explanation = explain_domain(domain, decision_id=decision_id)
+            with readonly_database():
+                explanation = explain_domain(domain, decision_id=decision_id)
         except ValueError:
             return jsonify({"error": "invalid decision id"}), 400
         except LookupError:
@@ -3136,7 +3145,8 @@ def create_app() -> Flask:
             return jsonify({"error": "invalid domain"}), 400
 
         try:
-            payload = compare_domain_decisions(domain, older, newer)
+            with readonly_database():
+                payload = compare_domain_decisions(domain, older, newer)
         except ValueError:
             return jsonify({"error": "invalid decision id"}), 400
         except LookupError:

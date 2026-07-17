@@ -14,6 +14,7 @@ from tests.test_setup import (
     valid_config,
     db_status,
 )
+from core import migrations
 from ui.dashboard import create_app, parse_limit
 
 
@@ -38,6 +39,41 @@ class DashboardTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), stats)
+
+    def test_stats_endpoint_does_not_migrate_database(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "events.db"
+            migrations.migrate_database(database_path)
+
+            with (
+                patch("ui.dashboard.settings.events_db", database_path),
+                patch("core.db.migrate_database", side_effect=AssertionError("mutated")),
+            ):
+                response = self.client.get("/api/stats")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["events"], 0)
+
+    def test_repeated_stats_endpoint_produces_no_migration_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "events.db"
+            migrations.migrate_database(database_path)
+
+            with (
+                patch("ui.dashboard.settings.events_db", database_path),
+                patch("core.migrations.logger.info") as info,
+            ):
+                first = self.client.get("/api/stats")
+                second = self.client.get("/api/stats")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        migration_messages = [
+            call.args[0]
+            for call in info.call_args_list
+            if call.args and "migration" in str(call.args[0]).lower()
+        ]
+        self.assertEqual(migration_messages, [])
 
     def test_decision_metrics_endpoint_returns_summary(self) -> None:
         metrics = {

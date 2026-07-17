@@ -71,6 +71,83 @@ class DatabaseTests(unittest.TestCase):
         self.assertIsNotNone(migration)
         self.assertEqual(migration["version"], migrations.LATEST_SUPPORTED_SCHEMA_VERSION)
 
+    def test_read_only_open_current_schema_succeeds_without_mutating_mtime(self) -> None:
+        before = self.database_path.stat().st_mtime_ns
+
+        with closing(db.Database.open_read_only(self.database_path)) as conn:
+            row = conn.execute("SELECT COUNT(*) AS count FROM events").fetchone()
+
+        after = self.database_path.stat().st_mtime_ns
+        self.assertEqual(row["count"], 0)
+        self.assertEqual(after, before)
+
+    def test_read_only_open_missing_database_does_not_create_file(self) -> None:
+        missing = Path(self.tmpdir.name) / "missing.db"
+
+        with self.assertRaises(db.DatabaseNotFoundError):
+            db.Database.open_read_only(missing)
+
+        self.assertFalse(missing.exists())
+
+    def test_read_only_open_missing_tables_reports_migration_required(self) -> None:
+        path = Path(self.tmpdir.name) / "empty.db"
+        with closing(sqlite3.connect(path)) as conn:
+            conn.execute("CREATE TABLE placeholder (id INTEGER)")
+            conn.commit()
+
+        with self.assertRaises(db.DatabaseMigrationRequiredError):
+            db.Database.open_read_only(path)
+
+        with closing(sqlite3.connect(path)) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+        self.assertEqual(tables, {"placeholder"})
+
+    def test_read_only_open_old_schema_reports_migration_required(self) -> None:
+        path = Path(self.tmpdir.name) / "old.db"
+        with closing(sqlite3.connect(path)) as conn:
+            conn.execute(
+                """
+                CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (1, 'old', 'now')"
+            )
+            conn.commit()
+
+        with self.assertRaises(db.DatabaseMigrationRequiredError):
+            db.Database.open_read_only(path)
+
+    def test_read_only_open_newer_schema_reports_schema_too_new(self) -> None:
+        path = Path(self.tmpdir.name) / "future.db"
+        with closing(sqlite3.connect(path)) as conn:
+            conn.execute(
+                """
+                CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, 'future', 'now')",
+                (migrations.LATEST_SUPPORTED_SCHEMA_VERSION + 1,),
+            )
+            conn.commit()
+
+        with self.assertRaises(db.DatabaseSchemaTooNewError):
+            db.Database.open_read_only(path)
+
     def test_insert_event_updates_domain_memory(self) -> None:
         db.insert_event(
             device="device-a",

@@ -765,8 +765,8 @@ def _database_schema_step(config: Any) -> SetupStep:
             "pending",
             True,
             "Events database has pending migrations.",
-            "Run: pihole-ai db migrate",
-            SetupAction("run_migration", "Run database migration"),
+            "Run: sudo pihole-ai upgrade",
+            SetupAction("run_upgrade", "Upgrade PiHole-AI", True),
             asdict(status),
         )
     return SetupStep(
@@ -1089,6 +1089,8 @@ def _stage_for_steps(
         for step in required
     ):
         return SetupStage.INSTALLED_UNCONFIGURED
+    if any(step.id == "database_schema" and not step.complete for step in required):
+        return SetupStage.BLOCKED
     if any(step.id == "services" and not step.complete for step in required):
         return SetupStage.SERVICES_INACTIVE
     if any(not step.complete for step in required):

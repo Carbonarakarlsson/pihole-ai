@@ -239,6 +239,14 @@ class SetupStateTests(unittest.TestCase):
         self.assertEqual(report.overall_stage, SetupStage.BLOCKED.value)
         self.assertEqual(self._step(report, "database_schema").status, "blocked")
 
+    def test_pending_schema_migration_blocks_with_upgrade_guidance(self):
+        report = self.evaluate_with(database=db_status(pending=1))
+
+        self.assertEqual(report.overall_stage, SetupStage.BLOCKED.value)
+        schema = self._step(report, "database_schema")
+        self.assertEqual(schema.status, "pending")
+        self.assertEqual(schema.remediation, "Run: sudo pihole-ai upgrade")
+
     def test_inactive_service_blocks(self):
         report = self.evaluate_with(status=install_status(active=False))
         self.assertEqual(report.overall_stage, SetupStage.BLOCKED.value)
