@@ -102,6 +102,13 @@ Back up before upgrade or purge:
 
 PiHole-AI does not currently include a first-class backup/restore command.
 
+## Configuration Center Planning
+
+Epic 3.5 Phase 1 will expand configuration management beyond the current
+`config check`, `config show`, setup, and narrow dashboard settings flows. The
+implementation-ready design is in
+[Configuration Center Design](CONFIGURATION_DESIGN.md).
+
 ## Threat-Intelligence Source Edits
 
 Use supported CLI edits instead of direct SQLite changes:

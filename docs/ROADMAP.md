@@ -79,6 +79,8 @@ Planned features:
 - named configuration profiles
 - restart-aware changes that clearly show when services must restart
 
+Design: [Configuration Center Design](CONFIGURATION_DESIGN.md).
+
 #### Phase 2: Maintenance
 
 Planned features:

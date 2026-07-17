@@ -214,6 +214,8 @@ development plan.
   support, and exit-code notes
 - [Configuration](docs/CONFIGURATION.md): supported environment variables and
   defaults
+- [Configuration Center Design](docs/CONFIGURATION_DESIGN.md): Epic 3.5
+  configuration inventory, ownership, validation, and API plan
 - [Database](docs/DATABASE.md): schema versions, migrations, tables, and backup
   expectations
 - [Architecture](docs/ARCHITECTURE.md): process model, evidence contract,

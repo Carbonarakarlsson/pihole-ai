@@ -58,6 +58,15 @@ pihole-ai dashboard auth disable --confirm-disable-auth [--json]
 pihole-ai config check [--mode syntax|install|runtime] [--json]
 pihole-ai config show [--json]
 
+# Planned for Epic 3.5 Configuration Center:
+pihole-ai config get KEY [--json]
+pihole-ai config set KEY VALUE [--dry-run] [--json]
+pihole-ai config unset KEY [--dry-run] [--json]
+pihole-ai config validate [--mode syntax|install|runtime|preview] [--json]
+pihole-ai config export [--output PATH] [--include-secrets] [--json]
+pihole-ai config import FILE [--dry-run] [--json]
+pihole-ai config impact [--set KEY=VALUE] [--json]
+
 pihole-ai setup [status] [--json] [--non-interactive] [--dry-run]
                 [--install] [--start] [--enable] [--skip-ollama-check]
 
@@ -158,6 +167,8 @@ pihole-ai learn [--limit N] [--min-score N] [--no-audit]
 - `setup status`: `0` ready or degraded-ready, non-zero when required setup is
   incomplete or blocked.
 - `config check`: non-zero for validation failures.
+- Epic 3.5 Configuration Center command contracts are documented in
+  [Configuration Center Design](CONFIGURATION_DESIGN.md).
 - `db status`/`db migrate`: `2` incompatible schema, `3` access error, `1`
   migration failure.
 - lifecycle commands: `1` for preflight or system command failures.
