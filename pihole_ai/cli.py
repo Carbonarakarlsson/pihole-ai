@@ -215,6 +215,57 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print effective configuration as JSON.",
     )
+    config_show.add_argument(
+        "--category",
+        default="",
+        help="Filter settings by category.",
+    )
+    config_show.add_argument(
+        "--source",
+        default="",
+        help="Filter settings by source.",
+    )
+    config_get = config_commands.add_parser(
+        "get",
+        help="Print one safe resolved configuration value.",
+    )
+    config_get.add_argument(
+        "key",
+        help="Canonical key, environment variable, or supported alias.",
+    )
+    config_get.add_argument(
+        "--json",
+        action="store_true",
+        help="Print value as JSON.",
+    )
+    config_get.add_argument(
+        "--details",
+        action="store_true",
+        help="Include source, category, validation, and restart impact.",
+    )
+    config_validate = config_commands.add_parser(
+        "validate",
+        help="Validate resolved configuration.",
+    )
+    config_validate.add_argument(
+        "--json",
+        action="store_true",
+        help="Print validation result as JSON.",
+    )
+    config_impact = config_commands.add_parser(
+        "impact",
+        help="Show restart impact for changed settings.",
+    )
+    config_impact.add_argument(
+        "keys",
+        nargs="+",
+        help="Canonical keys, environment variables, or aliases.",
+    )
+    config_impact.add_argument(
+        "--json",
+        action="store_true",
+        help="Print restart impact as JSON.",
+    )
 
     doctor = subcommands.add_parser(
         "doctor",
@@ -1066,7 +1117,13 @@ def main(
         return exit_code_for_status(report.overall_status)
 
     if args.command == "config":
-        from pihole_ai.config_cli import print_config_check, print_config_show
+        from pihole_ai.config_cli import (
+            print_config_check,
+            print_config_get,
+            print_config_impact,
+            print_config_show,
+            print_config_validate,
+        )
 
         if args.config_command == "check":
             return print_config_check(
@@ -1076,6 +1133,26 @@ def main(
 
         if args.config_command == "show":
             return print_config_show(
+                as_json=args.json,
+                category=args.category,
+                source=args.source,
+            )
+
+        if args.config_command == "get":
+            return print_config_get(
+                key=args.key,
+                as_json=args.json,
+                details=args.details,
+            )
+
+        if args.config_command == "validate":
+            return print_config_validate(
+                as_json=args.json,
+            )
+
+        if args.config_command == "impact":
+            return print_config_impact(
+                keys=args.keys,
                 as_json=args.json,
             )
 

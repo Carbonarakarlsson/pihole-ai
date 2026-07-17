@@ -452,9 +452,14 @@ class ConfigTests(unittest.TestCase):
 
     def test_config_show_json_output(self) -> None:
         with patch(
-            "pihole_ai.config_cli.load_config",
-            return_value=Settings(env={}),
-        ), patch("sys.stdout") as stdout:
+            "pihole_ai.config_cli.ConfigurationManager",
+        ) as manager_cls, patch("sys.stdout") as stdout:
+            from core.config_manager import ConfigurationManager
+
+            manager = ConfigurationManager(env={}, env_files=[])
+            manager.resolve()
+            stdout.write.return_value = None
+            manager_cls.return_value = manager
             exit_code = cli.main(["config", "show", "--json"])
 
         self.assertEqual(exit_code, 0)
@@ -482,7 +487,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_protected_config_show_prints_sudo_guidance(self) -> None:
         with patch(
-            "pihole_ai.config_cli.load_config",
+            "pihole_ai.config_cli.ConfigurationManager",
             side_effect=ProtectedConfigurationAccessError(
                 CONFIG_FILE,
                 PermissionError("permission denied"),

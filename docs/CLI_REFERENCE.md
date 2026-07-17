@@ -56,16 +56,16 @@ pihole-ai dashboard auth enable [--json]
 pihole-ai dashboard auth disable --confirm-disable-auth [--json]
 
 pihole-ai config check [--mode syntax|install|runtime] [--json]
-pihole-ai config show [--json]
+pihole-ai config show [--json] [--category CATEGORY] [--source SOURCE]
+pihole-ai config get KEY [--json] [--details]
+pihole-ai config validate [--json]
+pihole-ai config impact KEY [KEY ...] [--json]
 
-# Planned for Epic 3.5 Configuration Center:
-pihole-ai config get KEY [--json]
+# Planned for later Epic 3.5 Configuration Center phases:
 pihole-ai config set KEY VALUE [--dry-run] [--json]
 pihole-ai config unset KEY [--dry-run] [--json]
-pihole-ai config validate [--mode syntax|install|runtime|preview] [--json]
 pihole-ai config export [--output PATH] [--include-secrets] [--json]
 pihole-ai config import FILE [--dry-run] [--json]
-pihole-ai config impact [--set KEY=VALUE] [--json]
 
 pihole-ai setup [status] [--json] [--non-interactive] [--dry-run]
                 [--install] [--start] [--enable] [--skip-ollama-check]
@@ -167,6 +167,10 @@ pihole-ai learn [--limit N] [--min-score N] [--no-audit]
 - `setup status`: `0` ready or degraded-ready, non-zero when required setup is
   incomplete or blocked.
 - `config check`: non-zero for validation failures.
+- `config show`, `config get`, and `config impact`: `0` on success, `2` for
+  unknown keys or invalid filters, `3` when configuration cannot be read or a
+  resolved value is invalid.
+- `config validate`: `0` when valid, `3` when configuration validation fails.
 - Epic 3.5 Configuration Center command contracts are documented in
   [Configuration Center Design](CONFIGURATION_DESIGN.md).
 - `db status`/`db migrate`: `2` incompatible schema, `3` access error, `1`
@@ -176,6 +180,40 @@ pihole-ai learn [--limit N] [--min-score N] [--no-audit]
   `1` for regressions or invalid comparisons such as fixture digest mismatch.
 - `calibration build --feedback`: currently returns non-zero because feedback
   rows do not yet provide trustworthy labeled calibration samples.
+
+## Configuration Inspection
+
+Epic 3.5 Phase 1B exposes read-only configuration inspection commands. These
+commands do not write `.env` files, restart services, or call `systemctl`.
+Secret values are masked by default and no `--show-secrets` option is provided
+in this phase.
+
+Examples:
+
+```bash
+pihole-ai config show
+pihole-ai config show --category Dashboard
+pihole-ai config show --source environment --json
+pihole-ai config get PIHOLE_AI_OLLAMA_MODEL
+pihole-ai config get ollama_model --details
+pihole-ai config validate
+pihole-ai config impact PIHOLE_AI_OLLAMA_URL
+```
+
+`config show` prints settings in schema order with the canonical key, safe
+value, source, category, and restart impact. JSON output uses a deterministic
+`schema_version` and `settings` payload.
+
+`config get` accepts canonical keys, environment-variable names, and supported
+aliases such as `LOG_LEVEL`.
+
+`config validate` validates the resolved configuration through the new
+configuration framework and existing runtime validation rules. It exits `3`
+when validation fails.
+
+`config impact` accepts one or more hypothetical changed settings, deduplicates
+them, and reports the affected PiHole-AI services without inspecting or
+changing live service state.
 
 ## Threat-Intel Source Updates
 

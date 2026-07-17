@@ -76,6 +76,8 @@ Planned features:
 - Phase 1A internal framework: typed schema registry, reusable validation,
   preserving `.env` parser/writer, atomic write primitives, masking,
   restart-impact metadata, and deterministic import/export primitives
+- Phase 1B read-only CLI: `config show`, `config get`, `config validate`, and
+  `config impact`
 - dashboard settings for common appliance configuration
 - config validation before writes take effect
 - configuration import and export

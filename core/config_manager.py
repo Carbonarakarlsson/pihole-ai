@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from core import config as runtime_config
+from core.config import ProtectedConfigurationAccessError
 from core.config_schema import CONFIG_SCHEMA
 from core.config_schema import SCHEMA_VERSION
 from core.config_schema import ConfigExportPolicy
@@ -90,6 +91,10 @@ class EnvDocument:
         try:
             return cls.parse(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
+            return cls(lines=[], trailing_newline=True)
+        except OSError as exc:
+            if path == runtime_config.CONFIG_FILE:
+                raise ProtectedConfigurationAccessError(path, exc) from exc
             return cls(lines=[], trailing_newline=True)
 
     def values(

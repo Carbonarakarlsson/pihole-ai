@@ -204,6 +204,15 @@ branding. Epic 3.5, Operations & User Experience, is now underway.
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full v0.5.x to v1.0
 development plan.
 
+Epic 3.5 has begun with read-only configuration inspection:
+
+```bash
+pihole-ai config show
+pihole-ai config get PIHOLE_AI_OLLAMA_MODEL
+pihole-ai config validate
+pihole-ai config impact PIHOLE_AI_OLLAMA_URL
+```
+
 ## Detailed Documentation
 
 - [Operations](docs/OPERATIONS.md): install, upgrade, uninstall, services,

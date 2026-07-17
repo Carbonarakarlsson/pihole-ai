@@ -16,6 +16,18 @@ These primitives are infrastructure only. Public CLI commands, dashboard
 Settings pages, config audit surfaces, and automatic service restarts remain
 deferred to later Phase 1 work.
 
+Phase 1B status: implemented as a read-only CLI surface:
+
+- `pihole-ai config show`
+- `pihole-ai config get <key>`
+- `pihole-ai config validate`
+- `pihole-ai config impact <key> [<key> ...]`
+
+These commands expose schema-backed inspection, lookup, validation, masking,
+source attribution, and restart-impact previews. They do not write `.env`
+files, expose secrets, restart services, import/export configuration, or add
+dashboard Settings APIs.
+
 Related documentation:
 
 - [Configuration](CONFIGURATION.md)
@@ -563,13 +575,16 @@ Implementation steps:
 1. Add a settings metadata registry. Done in Phase 1A.
 2. Add internal validation, env-file preservation, atomic-write, masking,
    restart-impact, and import/export primitives. Done in Phase 1A.
-3. Generate inventory/docs from the registry where possible.
-4. Replace narrow dashboard settings writer with registry-backed validation.
-5. Keep current `config check` and `config show` compatibility.
-6. Add new CLI commands as wrappers around the registry and env writer.
-7. Add dashboard/API endpoints.
-8. Add audit events without storing secrets.
-9. Later, optionally add profile presets and secure export.
+3. Add read-only CLI inspection commands for show, get, validate, and impact.
+   Done in Phase 1B.
+4. Generate inventory/docs from the registry where possible.
+5. Replace narrow dashboard settings writer with registry-backed validation.
+6. Keep current `config check` and `config show` compatibility.
+7. Add write-capable CLI commands as wrappers around the registry and env
+   writer.
+8. Add dashboard/API endpoints.
+9. Add audit events without storing secrets.
+10. Later, optionally add profile presets and secure export.
 
 Existing `/etc/pihole-ai/pihole-ai.env` files must continue to load unchanged.
 
