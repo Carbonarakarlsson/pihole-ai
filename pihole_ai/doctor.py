@@ -65,6 +65,7 @@ def run_doctor() -> DoctorReport:
         _safe_diagnostic("dashboard_exposure", _dashboard_exposure_diagnostic),
         _safe_diagnostic("database_schema", _database_diagnostic),
         _safe_diagnostic("threat_intel", _threat_intel_diagnostic),
+        _safe_diagnostic("reliability", _reliability_diagnostic),
         _safe_diagnostic(
             "events_database",
             lambda: _health_diagnostic("events_database", check_events_database),
@@ -419,6 +420,43 @@ def _threat_intel_diagnostic() -> Diagnostic:
         details={
             "stats": stats,
             "diagnostics": diagnostics,
+        },
+        remediation=remediation,
+    )
+
+
+def _reliability_diagnostic() -> Diagnostic:
+    from pihole_ai.calibration import reliability_metrics
+
+    metrics = reliability_metrics(window="all")
+    diagnostics = metrics.get("diagnostics", {})
+    stale_profiles = diagnostics.get("stale_active_calibration_profiles", [])
+    incomplete = diagnostics.get("incomplete_telemetry_runs", 0)
+
+    status = HealthStatus.HEALTHY
+    summary = "Reliability reporting data is consistent."
+    remediation = None
+    if stale_profiles:
+        status = HealthStatus.DEGRADED
+        summary = "Active calibration profile references missing or incomplete source data."
+        remediation = "Deactivate stale calibration profiles or rebuild from completed benchmarks."
+    elif incomplete:
+        status = HealthStatus.DEGRADED
+        summary = "Some telemetry runs are incomplete."
+        remediation = "Review telemetry writer errors and recent engine logs."
+
+    return Diagnostic(
+        name="reliability",
+        status=status.value,
+        summary=summary,
+        details={
+            "telemetry_stage_count": diagnostics.get("telemetry_stage_count", 0),
+            "benchmark_row_count": diagnostics.get("benchmark_row_count", 0),
+            "calibration_profile_count": diagnostics.get("calibration_profile_count", 0),
+            "estimated_telemetry_storage_bytes": diagnostics.get("estimated_telemetry_storage_bytes", 0),
+            "oldest_telemetry_timestamp": diagnostics.get("oldest_telemetry_timestamp"),
+            "incomplete_telemetry_runs": incomplete,
+            "stale_active_calibration_profiles": stale_profiles,
         },
         remediation=remediation,
     )

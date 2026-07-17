@@ -137,6 +137,21 @@ class DashboardTests(unittest.TestCase):
             "safety_evidence": [],
             "neutral_evidence": [],
             "classifier_trace": [],
+            "telemetry": {
+                "available": True,
+                "pipeline_timeline": [
+                    {
+                        "classifier_name": "AIClassifier",
+                        "ai_invoked": True,
+                    }
+                ],
+            },
+            "pipeline_timeline": [
+                {
+                    "classifier_name": "AIClassifier",
+                    "ai_invoked": True,
+                }
+            ],
             "conflicts": [],
         }
 
@@ -147,6 +162,11 @@ class DashboardTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["decision"]["risk_score"], 100)
         self.assertIn("decisive_evidence", payload)
+        self.assertTrue(payload["telemetry"]["available"])
+        self.assertEqual(
+            payload["pipeline_timeline"][0]["classifier_name"],
+            "AIClassifier",
+        )
         self.assertEqual(response.headers["Cache-Control"], "no-store")
 
     def test_explain_endpoint_rejects_invalid_domain(self) -> None:
@@ -282,6 +302,61 @@ class DashboardTests(unittest.TestCase):
                 "rules_reputation_ms": 30000,
             },
         )
+
+    def test_dashboard_renders_reliability_page(self) -> None:
+        response = self.client.get("/")
+        body = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('data-page="reliability"', body)
+        self.assertIn("Reliability</button>", body)
+        self.assertIn("Benchmark History", body)
+        self.assertIn("No benchmark runs yet", body)
+        self.assertIn("No active calibration profile yet", body)
+
+    def test_reliability_endpoint_returns_metrics(self) -> None:
+        payload = {
+            "summary": {
+                "telemetry_coverage_rate": 1.0,
+                "ai_invocation_rate": 0.5,
+                "cache_hit_rate": 0.25,
+                "average_latency_ms": 12.0,
+                "p95_latency_ms": 20,
+                "benchmark_runs": 1,
+                "active_calibration_profiles": 1,
+            },
+            "confidence": {
+                "raw_distribution": {"high": 1},
+                "calibrated_distribution": {},
+                "observed_accuracy_by_band": {},
+                "expected_calibration_error": 0.1,
+                "brier_score": 0.2,
+            },
+            "errors": {
+                "false_positive_count": 1,
+                "false_negative_count": 0,
+                "abstention_rate": 0.0,
+                "parse_failures": 0,
+                "timeouts": 0,
+            },
+            "utilization": {
+                "classifier_counts": {"heuristics": 1},
+                "model_counts": {},
+                "prompt_version_counts": {},
+                "stop_reasons": {},
+                "skip_reasons": {},
+            },
+            "diagnostics": {},
+            "benchmark_history": [],
+            "calibration_profiles": [],
+        }
+
+        with patch("ui.dashboard.reliability_metrics", return_value=payload) as metrics:
+            response = self.client.get("/api/reliability?window=7d")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), payload)
+        metrics.assert_called_once_with(window="7d")
 
     def test_setup_endpoint_returns_shared_report_shape(self) -> None:
         report = SimpleNamespace(

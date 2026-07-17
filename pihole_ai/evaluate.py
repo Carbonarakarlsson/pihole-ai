@@ -24,6 +24,8 @@ class BenchmarkCase:
     domain: str
     category: str
     risk: int
+    sample_id: str = ""
+    expected_action: str = ""
     query_count: int = 0
     device_count: int = 0
     recent_queries: int = 0
@@ -219,6 +221,8 @@ def _case_from_mapping(
         domain=domain,
         category=category,
         risk=int(values.get("risk", 0) or 0),
+        sample_id=str(values.get("sample_id", values.get("id", "")) or ""),
+        expected_action=str(values.get("expected_action", values.get("action", "")) or ""),
         query_count=int(values.get("query_count", 0) or 0),
         device_count=int(values.get("device_count", 0) or 0),
         recent_queries=int(values.get("recent_queries", 0) or 0),

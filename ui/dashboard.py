@@ -43,6 +43,7 @@ from pihole_ai.explain import (
     explain_domain,
     is_valid_domain_query,
 )
+from pihole_ai.calibration import reliability_metrics
 from pihole_ai.feedback import FEEDBACK_VERDICTS, record_feedback
 from pihole_ai.learn import get_reputations as load_reputations
 from pihole_ai.rules import (
@@ -89,6 +90,7 @@ ROUTE_SECURITY = {
     "GET /api/explain/<domain>/history": "authenticated_read",
     "GET /api/explain/<domain>/decision/<decision_id>": "authenticated_read",
     "GET /api/explain/<domain>/compare": "authenticated_read",
+    "GET /api/reliability": "authenticated_read",
     "POST /api/feedback": "authenticated_write_csrf",
     "POST /api/rules": "authenticated_write_csrf",
     "DELETE /api/rules/<domain>": "authenticated_write_csrf",
@@ -850,6 +852,7 @@ th {
         <button class="nav-link" type="button" data-page="domains">Domains</button>
         <button class="nav-link" type="button" data-page="devices">Devices</button>
         <button class="nav-link" type="button" data-page="intelligence">Intelligence</button>
+        <button class="nav-link" type="button" data-page="reliability">Reliability</button>
         <button class="nav-link" type="button" data-page="rules">Rules</button>
         <button class="nav-link" type="button" data-page="settings">Settings</button>
     </nav>
@@ -989,6 +992,52 @@ th {
                     <span class="muted">Models and local classifiers</span>
                 </div>
                 <section class="metrics" id="decision-metrics"></section>
+            </section>
+        </section>
+
+        <section class="tab-panel" id="page-reliability">
+            <section class="metrics" id="reliability-summary"></section>
+            <section class="panel">
+                <div class="panel-title">
+                    <h2>Confidence</h2>
+                    <span class="muted">Reporting only</span>
+                </div>
+                <section class="metrics" id="reliability-confidence"></section>
+                <div class="empty" id="calibration-empty">No active calibration profile yet</div>
+            </section>
+            <section class="panel">
+                <div class="panel-title">
+                    <h2>Errors</h2>
+                    <span class="muted">From benchmark labels and telemetry</span>
+                </div>
+                <section class="metrics" id="reliability-errors"></section>
+            </section>
+            <section class="panel">
+                <div class="panel-title">
+                    <h2>Utilization</h2>
+                    <span class="muted">Classifiers, models, prompts</span>
+                </div>
+                <section class="metrics" id="reliability-utilization"></section>
+            </section>
+            <section class="panel">
+                <div class="panel-title">
+                    <h2>Benchmark History</h2>
+                    <span class="muted">Recent persisted runs</span>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Run</th>
+                            <th>Status</th>
+                            <th>Samples</th>
+                            <th>Accuracy</th>
+                            <th>F1</th>
+                            <th>Fixture</th>
+                        </tr>
+                    </thead>
+                    <tbody id="benchmark-history"></tbody>
+                </table>
+                <div class="empty" id="benchmark-empty">No benchmark runs yet</div>
             </section>
         </section>
 
@@ -1356,6 +1405,11 @@ function metricPanel(title, rows) {
     return item;
 }
 
+function formatPercent(value) {
+    if (value === null || value === undefined) return "-";
+    return `${(Number(value) * 100).toFixed(1)}%`;
+}
+
 function objectRows(values) {
     const entries = Object.entries(values ?? {});
 
@@ -1364,6 +1418,77 @@ function objectRows(values) {
     }
 
     return entries;
+}
+
+function renderReliability(payload) {
+    const summary = payload.summary ?? {};
+    const confidence = payload.confidence ?? {};
+    const errors = payload.errors ?? {};
+    const utilization = payload.utilization ?? {};
+    const diagnostics = payload.diagnostics ?? {};
+    const profiles = payload.calibration_profiles ?? [];
+    const history = payload.benchmark_history ?? [];
+
+    const summaryTarget = document.getElementById("reliability-summary");
+    clear(summaryTarget);
+    summaryTarget.appendChild(metricPanel("Telemetry", [
+        ["Coverage", formatPercent(summary.telemetry_coverage_rate)],
+        ["AI Invocation", formatPercent(summary.ai_invocation_rate)],
+        ["Cache Hit", formatPercent(summary.cache_hit_rate)],
+    ]));
+    summaryTarget.appendChild(metricPanel("Latency", [
+        ["Average", summary.average_latency_ms == null ? "-" : `${Number(summary.average_latency_ms).toFixed(1)}ms`],
+        ["P95", summary.p95_latency_ms == null ? "-" : `${summary.p95_latency_ms}ms`],
+    ]));
+    summaryTarget.appendChild(metricPanel("Calibration", [
+        ["Active Profiles", summary.active_calibration_profiles ?? 0],
+        ["Profiles", diagnostics.calibration_profile_count ?? profiles.length],
+        ["Benchmark Runs", summary.benchmark_runs ?? 0],
+    ]));
+
+    const confidenceTarget = document.getElementById("reliability-confidence");
+    clear(confidenceTarget);
+    confidenceTarget.appendChild(metricPanel("Raw Distribution", objectRows(confidence.raw_distribution)));
+    confidenceTarget.appendChild(metricPanel("Calibrated Distribution", objectRows(confidence.calibrated_distribution)));
+    confidenceTarget.appendChild(metricPanel("Calibration Error", [
+        ["ECE", confidence.expected_calibration_error == null ? "-" : Number(confidence.expected_calibration_error).toFixed(4)],
+        ["Brier", confidence.brier_score == null ? "-" : Number(confidence.brier_score).toFixed(4)],
+    ]));
+    emptyState("calibration-empty", (summary.active_calibration_profiles ?? 0) === 0);
+
+    const errorTarget = document.getElementById("reliability-errors");
+    clear(errorTarget);
+    errorTarget.appendChild(metricPanel("Benchmark Errors", [
+        ["False Positives", errors.false_positive_count ?? 0],
+        ["False Negatives", errors.false_negative_count ?? 0],
+        ["Abstention Rate", formatPercent(errors.abstention_rate)],
+    ]));
+    errorTarget.appendChild(metricPanel("AI Runtime Errors", [
+        ["Parse Failures", errors.parse_failures ?? 0],
+        ["Timeouts", errors.timeouts ?? 0],
+        ["Incomplete Telemetry", diagnostics.incomplete_telemetry_runs ?? 0],
+    ]));
+
+    const utilizationTarget = document.getElementById("reliability-utilization");
+    clear(utilizationTarget);
+    utilizationTarget.appendChild(metricPanel("Classifiers", objectRows(utilization.classifier_counts)));
+    utilizationTarget.appendChild(metricPanel("Models", objectRows(utilization.model_counts)));
+    utilizationTarget.appendChild(metricPanel("Prompts", objectRows(utilization.prompt_version_counts)));
+
+    const historyTarget = document.getElementById("benchmark-history");
+    clear(historyTarget);
+    emptyState("benchmark-empty", history.length === 0);
+    history.forEach((run) => {
+        const metrics = run.metrics ?? {};
+        historyTarget.appendChild(row([
+            run.run_id,
+            run.status,
+            run.sample_count,
+            formatPercent(metrics.accuracy),
+            metrics.f1 == null ? "-" : Number(metrics.f1).toFixed(3),
+            String(run.fixture_digest ?? "").slice(0, 12),
+        ]));
+    });
 }
 
 function renderDecisionMetrics(metrics) {
@@ -2029,6 +2154,11 @@ async function loadMetrics() {
     renderIntelligence(metrics, status, intelSources);
 }
 
+async function loadReliability() {
+    const payload = await checkedFetch("/api/reliability?window=all").then((res) => res.json());
+    renderReliability(payload);
+}
+
 async function loadTables() {
     const suffix = paramsForTables();
     const [analysis, devices] = await Promise.all([
@@ -2070,6 +2200,7 @@ async function loadAll() {
         loadRules(),
         loadReputations(),
         loadSettings(),
+        loadReliability(),
     ]);
 }
 
@@ -2137,7 +2268,7 @@ document.getElementById("logout").addEventListener("click", async () => {
 setInterval(loadOverview, __OVERVIEW_POLL_INTERVAL_MS__);
 setInterval(loadMetrics, __METRICS_POLL_INTERVAL_MS__);
 setInterval(() => Promise.all([loadTables(), loadActivity()]), __TABLES_POLL_INTERVAL_MS__);
-setInterval(() => Promise.all([loadRules(), loadReputations()]), __SLOW_POLL_INTERVAL_MS__);
+setInterval(() => Promise.all([loadRules(), loadReputations(), loadReliability()]), __SLOW_POLL_INTERVAL_MS__);
 loadAll();
 </script>
 </body>
@@ -2990,6 +3121,15 @@ def create_app() -> Flask:
     @app.get("/api/metrics/decisions")
     def decision_metric_summary():
         return jsonify(get_decision_metrics())
+
+    @app.get("/api/reliability")
+    def reliability_summary():
+        window = request.args.get("window", "all")
+        if window not in {"24h", "7d", "30d", "all"}:
+            window = "all"
+        response = jsonify(reliability_metrics(window=window))
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/api/events")
     def events():

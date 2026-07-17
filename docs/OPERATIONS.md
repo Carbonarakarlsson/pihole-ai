@@ -142,6 +142,30 @@ pihole-ai install status
 
 Use `--json` on commands that support machine-readable output.
 
+## AI Reliability And Calibration
+
+Benchmark and calibration commands are appliance diagnostics. They help measure
+model and prompt behavior without changing runtime decisions.
+
+```bash
+pihole-ai benchmark run fixtures/domains.json --name "local check" --json
+pihole-ai benchmark list
+pihole-ai benchmark compare BASELINE_RUN_ID CANDIDATE_RUN_ID
+pihole-ai calibration build --benchmark RUN_ID --name "local calibration"
+pihole-ai calibration activate PROFILE_ID
+pihole-ai reliability metrics --window 7d
+```
+
+Calibration profiles are reporting-only. Explain output and the dashboard show
+raw confidence beside calibrated confidence when an active matching profile
+exists. The raw classifier confidence remains the value used by the engine, and
+profile activation does not alter blocking, allowing, cache, AI retry, timeout,
+or rate-limit behavior.
+
+`calibration build --feedback` is intentionally unavailable until feedback rows
+have reliable labeled-sample linkage. Use completed benchmark runs for
+calibration profiles.
+
 ## Reboot Validation
 
 After install or upgrade:

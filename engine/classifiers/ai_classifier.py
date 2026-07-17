@@ -29,6 +29,7 @@ from engine.models import (
 from engine.classifiers.base import BaseClassifier
 from engine.ollama_client import OllamaClient
 from engine.prompts import (
+    PROMPT_VERSION,
     SYSTEM_PROMPT,
     build_domain_prompt,
 )
@@ -57,25 +58,54 @@ class AIClassifier(BaseClassifier):
 
         if not settings.ai_enabled:
             increment_state_counter("ai.disabled_skips.total")
-            return self._safe_unknown(
+            return self._with_ai_telemetry(
+                self._safe_unknown(
+                    request,
+                    "ai_disabled",
+                ),
                 request,
-                "ai_disabled",
+                ai_invoked=False,
+                ai_invocation_reason="ai_disabled",
+                skip_reason="ai_disabled",
+                request_attempt_count=0,
+                parse_attempt_count=0,
+                fallback_reason="ai_disabled",
             )
 
         now = time.time()
 
         if self._in_cooldown(now):
             increment_state_counter("ai.cooldown_skips.total")
-            return self._safe_unknown(
+            return self._with_ai_telemetry(
+                self._safe_unknown(
+                    request,
+                    "ai_cooldown",
+                ),
                 request,
-                "ai_cooldown",
+                ai_invoked=False,
+                ai_invocation_reason="ai_cooldown",
+                skip_reason="ai_cooldown",
+                request_attempt_count=0,
+                parse_attempt_count=0,
+                cooldown_skip=True,
+                fallback_reason="ai_cooldown",
             )
 
         if not self._reserve_call(now):
             increment_state_counter("ai.rate_limit_skips.total")
-            return self._safe_unknown(
+            return self._with_ai_telemetry(
+                self._safe_unknown(
+                    request,
+                    "ai_rate_limited",
+                ),
                 request,
-                "ai_rate_limited",
+                ai_invoked=False,
+                ai_invocation_reason="ai_rate_limited",
+                skip_reason="ai_rate_limited",
+                request_attempt_count=0,
+                parse_attempt_count=0,
+                rate_limit_skip=True,
+                fallback_reason="ai_rate_limited",
             )
 
         self.logger.debug(
@@ -106,14 +136,34 @@ class AIClassifier(BaseClassifier):
 
             if self._is_timeout_exception(exc):
                 increment_state_counter("ai.timeouts.total")
-                return self._safe_unknown(
+                return self._with_ai_telemetry(
+                    self._safe_unknown(
+                        request,
+                        "ai_timeout",
+                    ),
                     request,
-                    "ai_timeout",
+                    ai_invoked=True,
+                    ai_invocation_reason="fallback_needed",
+                    skip_reason="ai_timeout",
+                    request_attempt_count=1,
+                    parse_attempt_count=0,
+                    timeout=True,
+                    inference_duration_ms=self._elapsed_ms(started_at),
+                    fallback_reason="ai_timeout",
                 )
 
-            return self._fallback(
+            return self._with_ai_telemetry(
+                self._fallback(
+                    request,
+                    "AI backend unavailable.",
+                ),
                 request,
-                "AI backend unavailable.",
+                ai_invoked=True,
+                ai_invocation_reason="fallback_needed",
+                request_attempt_count=1,
+                parse_attempt_count=0,
+                inference_duration_ms=self._elapsed_ms(started_at),
+                fallback_reason="AI backend unavailable.",
             )
 
         result = self._parse_response(
@@ -129,7 +179,23 @@ class AIClassifier(BaseClassifier):
             increment_state_counter("ai.slow_responses.total")
             self._start_cooldown(time.time())
 
-        return result
+        return self._with_ai_telemetry(
+            result,
+            request,
+            ai_invoked=True,
+            ai_invocation_reason="fallback_needed",
+            request_attempt_count=1,
+            parse_attempt_count=1,
+            parse_failure=result.reason == "AI returned invalid response",
+            inference_duration_ms=int(round(elapsed * 1000)),
+            final_ai_category=result.category,
+            final_ai_confidence=result.confidence,
+            fallback_reason=(
+                result.reason
+                if result.reason == "AI returned invalid response"
+                else None
+            ),
+        )
 
     def collect_evidence(
         self,
@@ -159,6 +225,20 @@ class AIClassifier(BaseClassifier):
         }:
             evidence_type = "ai_skipped"
 
+        ai_telemetry = (
+            dict(result.telemetry)
+            if isinstance(result.telemetry, dict)
+            else {}
+        )
+        metadata = {
+            "category": result.category,
+            "model": result.model,
+            "skip_reason": (
+                result.reason if evidence_type == "ai_skipped" else ""
+            ),
+        }
+        metadata.update(ai_telemetry)
+
         return [
             EvidenceItem(
                 evidence_id=f"ai:{request.domain.lower()}:{evidence_type}",
@@ -168,13 +248,7 @@ class AIClassifier(BaseClassifier):
                 score=score,
                 confidence=result.confidence / 100.0,
                 summary=result.reason,
-                metadata={
-                    "category": result.category,
-                    "model": result.model,
-                    "skip_reason": (
-                        result.reason if evidence_type == "ai_skipped" else ""
-                    ),
-                },
+                metadata=metadata,
             )
         ]
 
@@ -261,6 +335,57 @@ class AIClassifier(BaseClassifier):
 
         class_name = exc.__class__.__name__.lower()
         return isinstance(exc, TimeoutError) or "timeout" in class_name
+
+    def _with_ai_telemetry(
+        self,
+        result: AnalysisResult,
+        request: AnalysisRequest,
+        **values,
+    ) -> AnalysisResult:
+        """
+        Attach safe observational AI metadata to one classifier result.
+        """
+
+        actual_model = values.pop("actual_ai_model", None)
+        if actual_model is None and values.get("ai_invoked"):
+            actual_model = result.model if result.model != "ai" else self._current_model_safe()
+
+        result.telemetry = {
+            "ai_considered": True,
+            "ai_invoked": values.get("ai_invoked"),
+            "ai_invocation_reason": values.get("ai_invocation_reason"),
+            "configured_ai_model": self._configured_model(),
+            "actual_ai_model": actual_model,
+            "template_version": PROMPT_VERSION,
+            "request_attempt_count": values.get("request_attempt_count"),
+            "parse_attempt_count": values.get("parse_attempt_count"),
+            "retry_count": 0,
+            "timeout": bool(values.get("timeout", False)),
+            "parse_failure": bool(values.get("parse_failure", False)),
+            "rate_limit_skip": bool(values.get("rate_limit_skip", False)),
+            "cooldown_skip": bool(values.get("cooldown_skip", False)),
+            "inference_duration_ms": values.get("inference_duration_ms"),
+            "final_ai_category": values.get("final_ai_category", result.category),
+            "final_ai_confidence": values.get("final_ai_confidence", result.confidence),
+            "fallback_reason": values.get("fallback_reason"),
+            "skip_reason": values.get("skip_reason"),
+        }
+        return result
+
+    def _configured_model(self) -> str | None:
+        return str(getattr(settings, "ollama_model", "") or "") or None
+
+    def _current_model_safe(self) -> str | None:
+        try:
+            return self.client.current_model()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _elapsed_ms(
+        started_at: float,
+    ) -> int:
+        return int(round((time.monotonic() - started_at) * 1000))
 
     # ------------------------------------------------------------------
     # Response Parsing

@@ -34,6 +34,10 @@ appliance. JSON output is available only where noted.
 | `rules` | manage manual allow/block rules | mutating/read-only | user with DB write access | no |
 | `intel` | manage threat-intelligence imports and feeds | mutating/read-only | user with DB write access | selected subcommands |
 | `evaluate` | benchmark classifiers against fixtures | read-only | user | `--json` |
+| `telemetry` | inspect pipeline telemetry statistics | read-only | user | subcommands |
+| `benchmark` | persist and compare offline benchmark runs | mixed | user with DB write access for `run` | subcommands |
+| `calibration` | build and select reporting-only confidence calibration profiles | mixed | user with DB write access for mutations | subcommands |
+| `reliability` | inspect AI reliability, benchmark, and calibration metrics | read-only | user | subcommands |
 | `maintenance` | trim/vacuum events or retain decision history | mutating | user with DB write access | `decision-history --json` |
 | `export` | export rows from local datasets | read-only/write output | user | format option |
 | `learn` | update local reputation from history | mutating | user with DB write access | no |
@@ -114,6 +118,32 @@ pihole-ai intel rollback --source SOURCE_ID [--json]
 pihole-ai intel audit [--source SOURCE_ID] [--limit N] [--json]
 
 pihole-ai evaluate PATH [--risk-tolerance N] [--include-ai] [--json]
+pihole-ai telemetry stats [--json]
+pihole-ai benchmark run FIXTURE [--name NAME] [--model NAME]
+                         [--prompt-version VERSION]
+                         [--risk-tolerance N] [--threshold KEY=VALUE]
+                         [--notes TEXT] [--include-ai] [--no-persist]
+                         [--baseline RUN_ID] [--fail-on-regression] [--json]
+pihole-ai benchmark list [--limit N] [--json]
+pihole-ai benchmark show RUN_ID [--json]
+pihole-ai benchmark compare BASELINE_RUN_ID CANDIDATE_RUN_ID
+                             [--allow-different-fixture]
+                             [--max-accuracy-drop N] [--max-f1-drop N]
+                             [--max-false-positive-rate-increase N]
+                             [--max-false-negative-rate-increase N]
+                             [--max-latency-increase N]
+                             [--max-abstention-rate-increase N]
+                             [--json]
+pihole-ai calibration build --benchmark RUN_ID [--name NAME]
+                             [--classifier-source SOURCE]
+                             [--model NAME] [--prompt-version VERSION]
+                             [--bins N] [--notes TEXT] [--json]
+pihole-ai calibration build --feedback [--json]
+pihole-ai calibration list [--json]
+pihole-ai calibration show PROFILE_ID [--json]
+pihole-ai calibration activate PROFILE_ID [--json]
+pihole-ai calibration deactivate PROFILE_ID [--json]
+pihole-ai reliability metrics [--window 24h|7d|30d|all] [--json]
 pihole-ai export analysis|events|actions|reputations
                  [--format json|csv] [--output PATH] [--limit N]
                  [--q TEXT] [--min-risk N] [--category NAME]
@@ -131,6 +161,10 @@ pihole-ai learn [--limit N] [--min-score N] [--no-audit]
 - `db status`/`db migrate`: `2` incompatible schema, `3` access error, `1`
   migration failure.
 - lifecycle commands: `1` for preflight or system command failures.
+- `benchmark compare`: `0` when the candidate passes configured tolerances,
+  `1` for regressions or invalid comparisons such as fixture digest mismatch.
+- `calibration build --feedback`: currently returns non-zero because feedback
+  rows do not yet provide trustworthy labeled calibration samples.
 
 ## Threat-Intel Source Updates
 
@@ -174,6 +208,24 @@ Read-only intel commands such as `source list`, `source show`, `sources`,
 run migrations.
 Mutating commands such as `source add`, `source update`, `update`, `rollback`,
 and `source remove` may initialize or migrate the runtime database.
+
+## AI Reliability And Calibration
+
+`telemetry stats` summarizes observed pipeline runs and stages. `benchmark`
+commands persist offline fixture evaluation runs and compare candidates against
+baselines. `calibration build --benchmark RUN_ID` creates a reporting-only
+confidence calibration profile from a completed benchmark run; it never changes
+runtime classifier decisions, thresholds, AI calls, cache behavior, or actions.
+
+Calibration profile activation selects which profile explain/reliability views
+use for reporting. Activation is scoped by classifier source, model, and prompt
+version, allowing independent reporting profiles where enough benchmark samples
+exist. Raw confidence remains visible and authoritative.
+
+`reliability metrics` is read-only. It reports confidence distribution,
+observed accuracy by band, calibration error, Brier score, false-positive and
+false-negative counts, AI invocation rate, cache-hit rate, latency, classifier
+usage, benchmark history, and telemetry volume diagnostics.
 
 ## Security-Sensitive Input
 

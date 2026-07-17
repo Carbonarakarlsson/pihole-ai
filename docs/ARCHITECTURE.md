@@ -80,6 +80,10 @@ Current appliance schema includes:
 - v7 explicit reactivation audit fields for reused generations
 - v8 remote-generation identity in source state
 - v9 repair of legacy remote-generation identity after rollback workflows
+- v10 threat-intelligence operational metadata for feed diagnostics
+- v11 sidecar AI pipeline telemetry runs and per-classifier stages
+- v12 persisted benchmark runs and per-sample benchmark results
+- v13 reporting-only confidence calibration profiles and bins
 
 Evidence persistence is bounded. PiHole-AI stores the most influential evidence
 items first, redacts secret-bearing metadata, truncates oversized fields
@@ -122,6 +126,13 @@ Source metadata edits are separate from feed updates:
 only when URL or fetch settings change. Source-configuration edit auditing is
 follow-up debt; the current threat-intel audit table tracks feed update and
 rollback operations rather than metadata-only edits.
+
+AI reliability data is observational. Pipeline telemetry, benchmark history,
+and confidence calibration profiles are stored as sidecar records. They power
+explain output, reliability metrics, doctor diagnostics, and dashboard views,
+but do not change classifier order, thresholds, AI invocation rules, cache
+behavior, or enforcement actions. Calibration profile activation only selects a
+reporting profile by classifier source/model/prompt scope.
 
 ## Health, Doctor, And Setup
 

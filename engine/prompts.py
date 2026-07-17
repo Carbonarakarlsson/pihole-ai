@@ -23,6 +23,7 @@ CATEGORY_LIST = "\n".join(
     f"- {category}"
     for category in sorted(ALLOWED_CATEGORIES)
 )
+PROMPT_VERSION = "domain-classification-v1"
 
 # ============================================================================
 # System Prompt

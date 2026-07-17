@@ -10,6 +10,7 @@ from pihole_ai.doctor import (
     _database_diagnostic,
     _dashboard_auth_diagnostic,
     _dashboard_exposure_diagnostic,
+    _reliability_diagnostic,
     _systemd_diagnostic,
     run_doctor,
 )
@@ -47,6 +48,7 @@ class DoctorTests(unittest.TestCase):
              patch("pihole_ai.doctor._dashboard_auth_diagnostic", return_value=Diagnostic("dashboard_auth", "healthy", "ok", {})), \
              patch("pihole_ai.doctor._dashboard_exposure_diagnostic", return_value=Diagnostic("dashboard_exposure", "healthy", "ok", {})), \
              patch("pihole_ai.doctor._database_diagnostic", return_value=Diagnostic("database_schema", "healthy", "ok", {})), \
+             patch("pihole_ai.doctor._reliability_diagnostic", return_value=Diagnostic("reliability", "healthy", "ok", {})), \
              patch("pihole_ai.doctor._threat_intel_diagnostic", return_value=Diagnostic("threat_intel", "healthy", "ok", {})), \
              patch("pihole_ai.doctor.check_events_database", return_value=health_check("events_database")), \
              patch("pihole_ai.doctor.check_pihole_ftl_database", return_value=health_check("pihole_ftl_database")), \
@@ -110,6 +112,7 @@ class DoctorTests(unittest.TestCase):
              patch("pihole_ai.doctor._dashboard_auth_diagnostic", return_value=Diagnostic("dashboard_auth", "healthy", "ok", {})), \
              patch("pihole_ai.doctor._dashboard_exposure_diagnostic", return_value=Diagnostic("dashboard_exposure", "healthy", "ok", {})), \
              patch("pihole_ai.doctor._database_diagnostic", return_value=Diagnostic("database_schema", "healthy", "ok", {})), \
+             patch("pihole_ai.doctor._reliability_diagnostic", return_value=Diagnostic("reliability", "healthy", "ok", {})), \
              patch("pihole_ai.doctor.check_events_database", return_value=health_check("events_database")), \
              patch("pihole_ai.doctor.check_pihole_ftl_database", return_value=health_check("pihole_ftl_database")), \
              patch("pihole_ai.doctor.check_disk_space", return_value=health_check("disk_space")), \
@@ -131,6 +134,26 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(diagnostic.name, "database_schema")
         self.assertEqual(diagnostic.status, HealthStatus.HEALTHY.value)
         self.assertEqual(diagnostic.summary, "Events database schema is current.")
+
+    def test_reliability_diagnostic_reports_stale_active_profile(self) -> None:
+        metrics = {
+            "diagnostics": {
+                "telemetry_stage_count": 10,
+                "benchmark_row_count": 4,
+                "calibration_profile_count": 1,
+                "estimated_telemetry_storage_bytes": 1000,
+                "oldest_telemetry_timestamp": 1.0,
+                "incomplete_telemetry_runs": 0,
+                "stale_active_calibration_profiles": ["cal_stale"],
+            }
+        }
+
+        with patch("pihole_ai.calibration.reliability_metrics", return_value=metrics):
+            diagnostic = _reliability_diagnostic()
+
+        self.assertEqual(diagnostic.name, "reliability")
+        self.assertEqual(diagnostic.status, HealthStatus.DEGRADED.value)
+        self.assertIn("cal_stale", diagnostic.details["stale_active_calibration_profiles"])
 
     def test_database_diagnostic_handles_unparsed_config(self) -> None:
         result = type("Result", (), {"to_dict": lambda self: {"valid": False}})()

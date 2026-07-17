@@ -43,7 +43,9 @@ from core.db import (
     get_unprocessed_domains,
     mark_processed_by_domain,
     record_action,
+    record_cache_hit_telemetry,
     save_analysis_with_decision,
+    save_pipeline_telemetry,
 )
 from core.logger import get_logger
 
@@ -148,6 +150,8 @@ class AnalysisEngine:
                         domain,
                     )
 
+                    _persist_cache_hit_telemetry(domain)
+
                     processed += 1
                     continue
 
@@ -183,6 +187,11 @@ class AnalysisEngine:
                     analyzed_at=result.analyzed_at,
                     decision=result.decision,
                     trigger="cache_expired" if analysis is not None else "first_seen",
+                )
+
+                _persist_pipeline_telemetry(
+                    result,
+                    decision_id=decision_id,
                 )
 
                 if _is_ai_parse_error(result):
@@ -292,6 +301,39 @@ def _is_ai_parse_error(
         and result.risk == 0
         and result.reason == "AI returned invalid response"
     )
+
+
+def _persist_cache_hit_telemetry(
+    domain: str,
+) -> None:
+    try:
+        record_cache_hit_telemetry(domain)
+    except Exception:
+        logger.exception(
+            "Failed recording cache-hit telemetry for '%s'.",
+            domain,
+        )
+
+
+def _persist_pipeline_telemetry(
+    result: Any,
+    *,
+    decision_id: str | None,
+) -> None:
+    telemetry = getattr(result, "telemetry", None)
+    if telemetry is None:
+        return
+
+    try:
+        save_pipeline_telemetry(
+            telemetry,
+            final_decision_id=decision_id,
+        )
+    except Exception:
+        logger.exception(
+            "Failed recording pipeline telemetry for '%s'.",
+            result.domain,
+        )
 
 
 if __name__ == "__main__":

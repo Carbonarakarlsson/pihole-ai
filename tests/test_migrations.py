@@ -236,7 +236,9 @@ class MigrationTests(unittest.TestCase):
                         audit_generation="gen_b",
                     )
 
-            result = migrations.migrate_database(database_path)
+            with patch.object(migrations, "MIGRATIONS", migrations.MIGRATIONS[:10]), \
+                 patch.object(migrations, "LATEST_SUPPORTED_SCHEMA_VERSION", 10):
+                result = migrations.migrate_database(database_path)
 
             with closing(sqlite3.connect(database_path)) as conn:
                 state = conn.execute(
@@ -330,8 +332,10 @@ class MigrationTests(unittest.TestCase):
                         audit_generation="gen_b",
                     )
 
-            first = migrations.migrate_database(database_path)
-            second = migrations.migrate_database(database_path)
+            with patch.object(migrations, "MIGRATIONS", migrations.MIGRATIONS[:10]), \
+                 patch.object(migrations, "LATEST_SUPPORTED_SCHEMA_VERSION", 10):
+                first = migrations.migrate_database(database_path)
+                second = migrations.migrate_database(database_path)
 
             with closing(sqlite3.connect(database_path)) as conn:
                 state = conn.execute(
@@ -353,7 +357,9 @@ class MigrationTests(unittest.TestCase):
             database_path = Path(tmpdir) / "events.db"
             self._migrate_to_version(database_path, 9)
 
-            result = migrations.migrate_database(database_path)
+            with patch.object(migrations, "MIGRATIONS", migrations.MIGRATIONS[:10]), \
+                 patch.object(migrations, "LATEST_SUPPORTED_SCHEMA_VERSION", 10):
+                result = migrations.migrate_database(database_path)
 
             with closing(sqlite3.connect(database_path)) as conn:
                 state_columns = {
@@ -375,6 +381,169 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("last_update_duration_ms", state_columns)
         self.assertIn("expires_at", entry_columns)
         self.assertIn("pruned_at", generation_columns)
+
+    def test_migration_11_adds_pipeline_telemetry_without_rewriting_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "events.db"
+            self._migrate_to_version(database_path, 10)
+
+            with closing(sqlite3.connect(database_path)) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO analysis
+                    (
+                        domain,
+                        risk,
+                        confidence,
+                        category,
+                        reason,
+                        model,
+                        analyzed_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "existing.example",
+                        25,
+                        80,
+                        "benign",
+                        "Existing row.",
+                        "test",
+                        123.0,
+                    ),
+                )
+                conn.commit()
+
+            migrations.migrate_database(database_path)
+
+            with closing(sqlite3.connect(database_path)) as conn:
+                tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                analysis = conn.execute(
+                    "SELECT risk, confidence, category FROM analysis WHERE domain = ?",
+                    ("existing.example",),
+                ).fetchone()
+
+            self.assertIn("pipeline_telemetry_runs", tables)
+            self.assertIn("pipeline_telemetry_stages", tables)
+            self.assertEqual(analysis, (25, 80, "benign"))
+
+    def test_migration_12_adds_benchmark_history_without_rewriting_threat_intel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "events.db"
+            self._migrate_to_version(database_path, 11)
+
+            with closing(sqlite3.connect(database_path)) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO threat_intel
+                    (
+                        domain,
+                        source,
+                        category,
+                        confidence,
+                        first_seen,
+                        last_seen
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "known-bad.example",
+                        "legacy",
+                        "malware",
+                        95,
+                        123.0,
+                        456.0,
+                    ),
+                )
+                conn.commit()
+
+            with patch.object(migrations, "MIGRATIONS", migrations.MIGRATIONS[:12]), \
+                 patch.object(migrations, "LATEST_SUPPORTED_SCHEMA_VERSION", 12):
+                first = migrations.migrate_database(database_path)
+                second = migrations.migrate_database(database_path)
+
+            with closing(sqlite3.connect(database_path)) as conn:
+                tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                threat_intel = conn.execute(
+                    """
+                    SELECT source, category, confidence, first_seen, last_seen
+                    FROM threat_intel
+                    WHERE domain = ?
+                    """,
+                    ("known-bad.example",),
+                ).fetchone()
+
+            self.assertEqual([migration.version for migration in first.applied_migrations], [12])
+            self.assertFalse(second.changed)
+            self.assertIn("benchmark_runs", tables)
+            self.assertIn("benchmark_results", tables)
+            self.assertEqual(threat_intel, ("legacy", "malware", 95, 123.0, 456.0))
+
+    def test_migration_13_adds_calibration_tables_without_rewriting_benchmarks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            database_path = Path(tmpdir) / "events.db"
+            self._migrate_to_version(database_path, 12)
+
+            with closing(sqlite3.connect(database_path)) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO benchmark_runs
+                    (
+                        run_id, name, fixture_identifier, fixture_digest,
+                        started_at, completed_at, status, pihole_ai_version,
+                        threshold_config_json, risk_tolerance, sample_count,
+                        metrics_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "bench_existing",
+                        "Existing",
+                        "fixture.json",
+                        "digest",
+                        1.0,
+                        2.0,
+                        "completed",
+                        "test",
+                        "{}",
+                        15,
+                        0,
+                        "{}",
+                        3.0,
+                    ),
+                )
+                conn.commit()
+
+            first = migrations.migrate_database(database_path)
+            second = migrations.migrate_database(database_path)
+
+            with closing(sqlite3.connect(database_path)) as conn:
+                tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                benchmark = conn.execute(
+                    "SELECT name, status FROM benchmark_runs WHERE run_id = ?",
+                    ("bench_existing",),
+                ).fetchone()
+
+            self.assertEqual([migration.version for migration in first.applied_migrations], [13])
+            self.assertFalse(second.changed)
+            self.assertIn("calibration_profiles", tables)
+            self.assertIn("calibration_bins", tables)
+            self.assertEqual(benchmark, ("Existing", "completed"))
 
     def test_existing_unversioned_baseline_is_adopted_without_data_loss(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

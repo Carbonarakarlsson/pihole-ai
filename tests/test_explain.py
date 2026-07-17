@@ -79,6 +79,9 @@ class ExplainTests(unittest.TestCase):
                     "action": "alert",
                 },
             ],
+        ), patch(
+            "pihole_ai.explain.get_pipeline_telemetry_for_domain",
+            return_value=None,
         ):
             explanation = explain_domain("Bad.Example")
 
@@ -94,6 +97,7 @@ class ExplainTests(unittest.TestCase):
             ],
         )
         self.assertEqual(len(explanation["actions"]), 1)
+        self.assertFalse(explanation["telemetry"]["available"])
 
     def test_explain_domain_includes_stored_decision_evidence(self) -> None:
         with patch(
@@ -169,6 +173,28 @@ class ExplainTests(unittest.TestCase):
         ), patch(
             "pihole_ai.explain.get_recent_actions",
             return_value=[],
+        ), patch(
+            "pihole_ai.explain.get_pipeline_telemetry_for_domain",
+            return_value={
+                "available": True,
+                "run_id": "ptr_test",
+                "duration_ms": 4,
+                "cache_hit": False,
+                "final_decision_id": "dec_" + "1" * 32,
+                "pipeline_timeline": [
+                    {
+                        "execution_order": 1,
+                        "classifier_name": "ThreatIntelClassifier",
+                        "classifier_result": "malware",
+                        "confidence_raw": 95,
+                        "confidence_band": "very_high",
+                        "duration_ms": 1,
+                        "skipped": False,
+                        "cache_hit": False,
+                        "final_decision_id": "dec_" + "1" * 32,
+                    }
+                ],
+            },
         ):
             explanation = explain_domain("bad.example")
 
@@ -179,6 +205,11 @@ class ExplainTests(unittest.TestCase):
         self.assertEqual(
             explanation["summary"],
             "decisive evidence from threat-intel",
+        )
+        self.assertTrue(explanation["telemetry"]["available"])
+        self.assertEqual(
+            explanation["pipeline_timeline"][0]["classifier_name"],
+            "ThreatIntelClassifier",
         )
 
     def test_print_explanation_outputs_json(self) -> None:
@@ -198,6 +229,12 @@ class ExplainTests(unittest.TestCase):
                 "safety_evidence": [],
                 "neutral_evidence": [],
                 "classifier_trace": [],
+                "telemetry": {
+                    "available": False,
+                    "reason": "telemetry unavailable",
+                    "pipeline_timeline": [],
+                },
+                "pipeline_timeline": [],
                 "conflicts": [],
                 "legacy": False,
                 "legacy_analysis": False,
@@ -216,6 +253,106 @@ class ExplainTests(unittest.TestCase):
             json.loads(stdout.getvalue())["domain"],
             "example.com",
         )
+        self.assertIn("telemetry", json.loads(stdout.getvalue()))
+
+    def test_print_explanation_outputs_pipeline_timeline(self) -> None:
+        with patch(
+            "pihole_ai.explain.explain_domain",
+            return_value={
+                "domain": "example.com",
+                "summary": "stored decision risk 10 from 1 evidence item(s)",
+                "rule": None,
+                "threat_intel": None,
+                "reputation": None,
+                "analysis": {"risk": 10, "category": "benign"},
+                "evidence": [],
+                "decision": {
+                    "verdict": "safe",
+                    "risk_score": 10,
+                    "confidence": 0.9,
+                    "category": "benign",
+                    "source": "decision-engine",
+                    "explanation": "Safe.",
+                },
+                "decisive_evidence": [],
+                "risk_evidence": [],
+                "safety_evidence": [],
+                "neutral_evidence": [],
+                "classifier_trace": [],
+                "telemetry": {
+                    "available": True,
+                    "run_id": "ptr_test",
+                    "duration_ms": 12,
+                    "cache_hit": False,
+                    "final_decision_id": "dec_" + "1" * 32,
+                    "pipeline_timeline": [
+                        {
+                            "execution_order": 1,
+                            "classifier_name": "AIClassifier",
+                            "classifier_result": "benign",
+                            "confidence_raw": 88,
+                            "confidence_band": "high",
+                            "duration_ms": 12,
+                            "skipped": False,
+                            "cache_hit": False,
+                            "ai_invoked": True,
+                            "ai_model": "fake-ai-model",
+                            "prompt_version": "domain-classification-v1",
+                            "timeout": False,
+                            "parse_failure": False,
+                        }
+                    ],
+                },
+                "pipeline_timeline": [],
+                "conflicts": [],
+                "legacy": False,
+                "legacy_analysis": False,
+                "legacy_note": "",
+                "metadata": {},
+                "actions": [],
+            },
+        ), patch("sys.stdout", io.StringIO()) as stdout:
+            print_explanation("example.com")
+
+        output = stdout.getvalue()
+        self.assertIn("Pipeline telemetry", output)
+        self.assertIn("AIClassifier", output)
+        self.assertIn("ai_invoked=true", output)
+
+    def test_print_explanation_without_telemetry_is_clear(self) -> None:
+        with patch(
+            "pihole_ai.explain.explain_domain",
+            return_value={
+                "domain": "example.com",
+                "summary": "no local evidence found",
+                "rule": None,
+                "threat_intel": None,
+                "reputation": None,
+                "analysis": None,
+                "evidence": [],
+                "decision": None,
+                "decisive_evidence": [],
+                "risk_evidence": [],
+                "safety_evidence": [],
+                "neutral_evidence": [],
+                "classifier_trace": [],
+                "telemetry": {
+                    "available": False,
+                    "reason": "telemetry unavailable",
+                    "pipeline_timeline": [],
+                },
+                "pipeline_timeline": [],
+                "conflicts": [],
+                "legacy": False,
+                "legacy_analysis": False,
+                "legacy_note": "",
+                "metadata": {},
+                "actions": [],
+            },
+        ), patch("sys.stdout", io.StringIO()) as stdout:
+            print_explanation("example.com")
+
+        self.assertIn("telemetry unavailable", stdout.getvalue())
 
 
 if __name__ == "__main__":

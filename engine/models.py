@@ -78,6 +78,8 @@ class AnalysisResult:
 
     decision: "DecisionResult | None" = None
 
+    telemetry: Any | None = None
+
 
 # ============================================================================
 # Domain Metadata

@@ -362,6 +362,113 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print benchmark results as JSON.",
     )
 
+    telemetry = subcommands.add_parser(
+        "telemetry",
+        help="Inspect read-only pipeline telemetry.",
+    )
+    telemetry_commands = telemetry.add_subparsers(
+        dest="telemetry_command",
+        required=True,
+    )
+    telemetry_stats = telemetry_commands.add_parser(
+        "stats",
+        help="Show pipeline telemetry statistics.",
+    )
+    telemetry_stats.add_argument(
+        "--json",
+        action="store_true",
+        help="Print telemetry statistics as JSON.",
+    )
+
+    benchmark = subcommands.add_parser(
+        "benchmark",
+        help="Persist and compare classifier benchmark runs.",
+    )
+    benchmark_commands = benchmark.add_subparsers(
+        dest="benchmark_command",
+        required=True,
+    )
+    benchmark_run = benchmark_commands.add_parser(
+        "run",
+        help="Run a benchmark fixture.",
+    )
+    benchmark_run.add_argument("fixture", help="Path to a JSON or CSV benchmark fixture.")
+    benchmark_run.add_argument("--name", default="", help="Benchmark run name.")
+    benchmark_run.add_argument("--model", default="", help="Model label for benchmark metadata.")
+    benchmark_run.add_argument("--prompt-version", default="", help="Prompt version label for benchmark metadata.")
+    benchmark_run.add_argument("--risk-tolerance", type=int, default=15, help="Allowed risk-score error.")
+    benchmark_run.add_argument("--threshold", default="", help="Threshold configuration label.")
+    benchmark_run.add_argument("--notes", default="", help="Benchmark notes.")
+    benchmark_run.add_argument("--include-ai", action="store_true", help="Include the Ollama AI fallback.")
+    benchmark_run.add_argument("--no-persist", action="store_true", help="Run without saving benchmark history.")
+    benchmark_run.add_argument("--baseline", default="", help="Baseline run ID for regression comparison.")
+    benchmark_run.add_argument("--fail-on-regression", action="store_true", help="Exit nonzero if comparison regresses.")
+    benchmark_run.add_argument("--json", action="store_true", help="Print benchmark run as JSON.")
+
+    benchmark_list = benchmark_commands.add_parser("list", help="List benchmark runs.")
+    benchmark_list.add_argument("--limit", type=int, default=20, help="Maximum runs to show.")
+    benchmark_list.add_argument("--json", action="store_true", help="Print benchmark runs as JSON.")
+
+    benchmark_show = benchmark_commands.add_parser("show", help="Show one benchmark run.")
+    benchmark_show.add_argument("run_id", help="Benchmark run ID.")
+    benchmark_show.add_argument("--json", action="store_true", help="Print benchmark run as JSON.")
+
+    benchmark_compare = benchmark_commands.add_parser("compare", help="Compare two benchmark runs.")
+    benchmark_compare.add_argument("baseline_run_id", help="Baseline benchmark run ID.")
+    benchmark_compare.add_argument("candidate_run_id", help="Candidate benchmark run ID.")
+    benchmark_compare.add_argument("--allow-different-fixture", action="store_true", help="Allow comparison across fixture digests.")
+    benchmark_compare.add_argument("--max-accuracy-drop", type=float, default=None, help="Maximum allowed accuracy drop.")
+    benchmark_compare.add_argument("--max-f1-drop", type=float, default=None, help="Maximum allowed F1 drop.")
+    benchmark_compare.add_argument("--max-false-positive-rate-increase", type=float, default=None, help="Maximum allowed false-positive-rate increase.")
+    benchmark_compare.add_argument("--max-false-negative-rate-increase", type=float, default=None, help="Maximum allowed false-negative-rate increase.")
+    benchmark_compare.add_argument("--max-latency-increase", type=float, default=None, help="Maximum allowed relative latency increase.")
+    benchmark_compare.add_argument("--max-abstention-rate-increase", type=float, default=None, help="Maximum allowed abstention-rate increase.")
+    benchmark_compare.add_argument("--json", action="store_true", help="Print comparison as JSON.")
+
+    calibration = subcommands.add_parser(
+        "calibration",
+        help="Build and manage reporting-only confidence calibration profiles.",
+    )
+    calibration_commands = calibration.add_subparsers(
+        dest="calibration_command",
+        required=True,
+    )
+    calibration_build = calibration_commands.add_parser("build", help="Build a calibration profile.")
+    source = calibration_build.add_mutually_exclusive_group(required=True)
+    source.add_argument("--benchmark", default="", help="Completed benchmark run ID.")
+    source.add_argument("--feedback", action="store_true", help="Build from linked labeled feedback when available.")
+    calibration_build.add_argument("--name", default="", help="Calibration profile name.")
+    calibration_build.add_argument("--classifier-source", default="", help="Limit samples to one classifier source.")
+    calibration_build.add_argument("--model", default="", help="Model scope label.")
+    calibration_build.add_argument("--prompt-version", default="", help="Prompt version scope label.")
+    calibration_build.add_argument("--bins", type=int, default=5, help="Number of confidence bins, 2-20.")
+    calibration_build.add_argument("--notes", default="", help="Calibration notes.")
+    calibration_build.add_argument("--json", action="store_true", help="Print profile as JSON.")
+
+    calibration_list = calibration_commands.add_parser("list", help="List calibration profiles.")
+    calibration_list.add_argument("--json", action="store_true", help="Print profiles as JSON.")
+
+    calibration_show = calibration_commands.add_parser("show", help="Show one calibration profile.")
+    calibration_show.add_argument("profile_id", help="Calibration profile ID.")
+    calibration_show.add_argument("--json", action="store_true", help="Print profile as JSON.")
+
+    for command_name in ("activate", "deactivate"):
+        item = calibration_commands.add_parser(command_name, help=f"{command_name.title()} a reporting profile.")
+        item.add_argument("profile_id", help="Calibration profile ID.")
+        item.add_argument("--json", action="store_true", help="Print profile as JSON.")
+
+    reliability = subcommands.add_parser(
+        "reliability",
+        help="Inspect reliability and calibration reporting metrics.",
+    )
+    reliability_commands = reliability.add_subparsers(
+        dest="reliability_command",
+        required=True,
+    )
+    reliability_metrics = reliability_commands.add_parser("metrics", help="Show reliability metrics.")
+    reliability_metrics.add_argument("--window", choices=["24h", "7d", "30d", "all"], default="all")
+    reliability_metrics.add_argument("--json", action="store_true", help="Print metrics as JSON.")
+
     service = subcommands.add_parser(
         "service",
         help="Install or uninstall Linux systemd services.",
@@ -839,6 +946,7 @@ def main(
     from core.logger import configure_logging
 
     configure_logging()
+    from core.db import ReadOnlyMigrationRequired, readonly_database
 
     if args.command in {"collect", "collector"}:
         from collector.scan import main as collector_main
@@ -1179,6 +1287,169 @@ def main(
             as_json=args.json,
         )
         return 0
+
+    if args.command == "telemetry":
+        from core.db import ReadOnlyMigrationRequired, readonly_database
+        from pihole_ai.telemetry import print_telemetry_stats
+
+        try:
+            with readonly_database():
+                if args.telemetry_command == "stats":
+                    print_telemetry_stats(
+                        as_json=args.json,
+                    )
+                    return 0
+        except ReadOnlyMigrationRequired:
+            print_migration_required()
+            return 1
+
+    if args.command == "benchmark":
+        from pihole_ai.benchmark import (
+            compare_benchmark_runs,
+            get_benchmark_run,
+            list_benchmark_runs,
+            print_comparison,
+            print_list,
+            print_run,
+            run_benchmark_command,
+        )
+
+        if args.benchmark_command == "run":
+            run = run_benchmark_command(
+                args.fixture,
+                name=args.name,
+                model=args.model,
+                prompt_version=args.prompt_version,
+                risk_tolerance=args.risk_tolerance,
+                threshold=args.threshold,
+                notes=args.notes,
+                persist=not args.no_persist,
+                include_ai=args.include_ai,
+            )
+            print_run(run, as_json=args.json)
+            if run["status"] != "completed":
+                return 1
+            if args.baseline:
+                comparison = compare_benchmark_runs(
+                    args.baseline,
+                    run["run_id"],
+                )
+                if args.fail_on_regression and not comparison["passed"]:
+                    return 1
+            return 0
+
+        if args.benchmark_command == "list":
+            print_list(
+                list_benchmark_runs(args.limit),
+                as_json=args.json,
+            )
+            return 0
+
+        if args.benchmark_command == "show":
+            run = get_benchmark_run(args.run_id)
+            if run is None:
+                print(f"Benchmark run not found: {args.run_id}")
+                return 1
+            print_run(run, as_json=args.json)
+            return 0
+
+        if args.benchmark_command == "compare":
+            tolerances = {
+                key: value
+                for key, value in {
+                    "max_accuracy_drop": args.max_accuracy_drop,
+                    "max_f1_drop": args.max_f1_drop,
+                    "max_false_positive_rate_increase": args.max_false_positive_rate_increase,
+                    "max_false_negative_rate_increase": args.max_false_negative_rate_increase,
+                    "max_latency_increase": args.max_latency_increase,
+                    "max_abstention_rate_increase": args.max_abstention_rate_increase,
+                }.items()
+                if value is not None
+            }
+            comparison = compare_benchmark_runs(
+                args.baseline_run_id,
+                args.candidate_run_id,
+                tolerances=tolerances,
+                allow_different_fixture=args.allow_different_fixture,
+            )
+            print_comparison(comparison, as_json=args.json)
+            return 0 if comparison["passed"] else 1
+
+    if args.command == "calibration":
+        from pihole_ai.calibration import (
+            activate_calibration_profile,
+            build_calibration_profile_from_benchmark,
+            build_calibration_profile_from_feedback,
+            deactivate_calibration_profile,
+            get_calibration_profile,
+            list_calibration_profiles,
+            print_profile,
+            print_profiles,
+        )
+
+        try:
+            if args.calibration_command == "build":
+                if args.feedback:
+                    profile = build_calibration_profile_from_feedback(
+                        name=args.name,
+                        classifier_source=args.classifier_source,
+                        model=args.model,
+                        prompt_version=args.prompt_version,
+                        bins=args.bins,
+                        notes=args.notes,
+                    )
+                else:
+                    profile = build_calibration_profile_from_benchmark(
+                        args.benchmark,
+                        name=args.name,
+                        classifier_source=args.classifier_source,
+                        model=args.model,
+                        prompt_version=args.prompt_version,
+                        bins=args.bins,
+                        notes=args.notes,
+                    )
+                print_profile(profile, as_json=args.json)
+                return 0
+
+            if args.calibration_command == "list":
+                print_profiles(list_calibration_profiles(), as_json=args.json)
+                return 0
+
+            if args.calibration_command == "show":
+                profile = get_calibration_profile(args.profile_id)
+                if profile is None:
+                    print(f"Calibration profile not found: {args.profile_id}")
+                    return 1
+                print_profile(profile, as_json=args.json)
+                return 0
+
+            if args.calibration_command == "activate":
+                profile = activate_calibration_profile(args.profile_id)
+                print_profile(profile, as_json=args.json)
+                return 0
+
+            if args.calibration_command == "deactivate":
+                profile = deactivate_calibration_profile(args.profile_id)
+                print_profile(profile, as_json=args.json)
+                return 0
+        except ValueError as exc:
+            print(str(exc))
+            return 1
+
+    if args.command == "reliability":
+        from pihole_ai.calibration import print_reliability, reliability_metrics
+
+        try:
+            with readonly_database():
+                if args.reliability_command == "metrics":
+                    print_reliability(
+                        reliability_metrics(window=args.window),
+                        as_json=args.json,
+                    )
+                    return 0
+        except ReadOnlyMigrationRequired:
+            print_migration_required()
+            return 1
 
     if args.command == "service":
         from pihole_ai.service import ServiceError, service_install, service_uninstall

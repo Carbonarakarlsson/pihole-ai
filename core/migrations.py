@@ -1036,6 +1036,246 @@ def _apply_threat_intel_operational_metadata(conn: sqlite3.Connection) -> None:
     )
 
 
+def _apply_ai_reliability_pipeline_telemetry(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pipeline_telemetry_runs (
+            run_id TEXT PRIMARY KEY,
+            domain TEXT NOT NULL,
+            started_at REAL NOT NULL,
+            completed_at REAL,
+            duration_ms INTEGER,
+            cache_hit INTEGER,
+            stop_reason TEXT,
+            ai_considered INTEGER,
+            ai_invoked INTEGER,
+            ai_invocation_reason TEXT,
+            configured_ai_model TEXT,
+            ai_model TEXT,
+            prompt_version TEXT,
+            request_attempt_count INTEGER,
+            parse_attempt_count INTEGER,
+            retry_count INTEGER,
+            timeout INTEGER,
+            parse_failure INTEGER,
+            rate_limit_skip INTEGER,
+            cooldown_skip INTEGER,
+            inference_duration_ms INTEGER,
+            final_ai_category TEXT,
+            final_ai_confidence INTEGER,
+            fallback_reason TEXT,
+            final_decision_id TEXT,
+            created_at REAL NOT NULL,
+            FOREIGN KEY (final_decision_id)
+                REFERENCES decision_history(decision_id)
+                ON DELETE SET NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pipeline_telemetry_stages (
+            stage_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            domain TEXT NOT NULL,
+            classifier_name TEXT NOT NULL,
+            execution_order INTEGER NOT NULL,
+            started_at REAL,
+            duration_ms INTEGER,
+            classifier_result TEXT,
+            confidence_raw INTEGER,
+            confidence_band TEXT,
+            skipped INTEGER NOT NULL DEFAULT 0,
+            skip_reason TEXT,
+            stop_reason TEXT,
+            cache_hit INTEGER,
+            ai_considered INTEGER,
+            ai_invoked INTEGER,
+            ai_invocation_reason TEXT,
+            configured_ai_model TEXT,
+            ai_model TEXT,
+            prompt_version TEXT,
+            request_attempt_count INTEGER,
+            parse_attempt_count INTEGER,
+            retry_count INTEGER,
+            timeout INTEGER,
+            parse_failure INTEGER,
+            rate_limit_skip INTEGER,
+            cooldown_skip INTEGER,
+            inference_duration_ms INTEGER,
+            final_ai_category TEXT,
+            final_ai_confidence INTEGER,
+            fallback_reason TEXT,
+            final_decision_id TEXT,
+            created_at REAL NOT NULL,
+            FOREIGN KEY (run_id)
+                REFERENCES pipeline_telemetry_runs(run_id)
+                ON DELETE CASCADE,
+            FOREIGN KEY (final_decision_id)
+                REFERENCES decision_history(decision_id)
+                ON DELETE SET NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_pipeline_telemetry_runs_domain_started
+        ON pipeline_telemetry_runs(domain, started_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_pipeline_telemetry_runs_decision
+        ON pipeline_telemetry_runs(final_decision_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_pipeline_telemetry_stages_run_order
+        ON pipeline_telemetry_stages(run_id, execution_order)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_pipeline_telemetry_stages_classifier
+        ON pipeline_telemetry_stages(classifier_name, skipped, started_at DESC)
+        """
+    )
+
+
+def _apply_ai_benchmark_history(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS benchmark_runs (
+            run_id TEXT PRIMARY KEY,
+            name TEXT,
+            fixture_identifier TEXT NOT NULL,
+            fixture_digest TEXT NOT NULL,
+            started_at REAL NOT NULL,
+            completed_at REAL,
+            status TEXT NOT NULL,
+            pihole_ai_version TEXT NOT NULL,
+            git_commit TEXT,
+            model_name TEXT,
+            prompt_version TEXT,
+            classifier_config_id TEXT,
+            threshold_config_json TEXT NOT NULL DEFAULT '{}',
+            risk_tolerance INTEGER NOT NULL,
+            sample_count INTEGER NOT NULL DEFAULT 0,
+            notes TEXT,
+            duration_ms INTEGER,
+            error_summary TEXT,
+            metrics_json TEXT NOT NULL DEFAULT '{}',
+            created_at REAL NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS benchmark_results (
+            result_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            sample_id TEXT NOT NULL,
+            domain TEXT NOT NULL,
+            expected_category TEXT,
+            expected_action TEXT,
+            predicted_category TEXT,
+            predicted_action TEXT,
+            confidence INTEGER,
+            confidence_band TEXT,
+            classifier_source TEXT,
+            correct INTEGER,
+            false_positive INTEGER,
+            false_negative INTEGER,
+            abstained INTEGER,
+            duration_ms INTEGER,
+            error_summary TEXT,
+            telemetry_run_id TEXT,
+            created_at REAL NOT NULL,
+            FOREIGN KEY (run_id)
+                REFERENCES benchmark_runs(run_id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_benchmark_runs_created
+        ON benchmark_runs(created_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_benchmark_runs_fixture
+        ON benchmark_runs(fixture_digest, created_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_benchmark_results_run
+        ON benchmark_results(run_id, sample_id)
+        """
+    )
+
+
+def _apply_ai_confidence_calibration(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS calibration_profiles (
+            profile_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            dataset_identifier TEXT,
+            classifier_source TEXT,
+            model_name TEXT,
+            prompt_version TEXT,
+            sample_count INTEGER NOT NULL,
+            created_at REAL NOT NULL,
+            bins_json TEXT NOT NULL,
+            expected_calibration_error REAL,
+            maximum_calibration_error REAL,
+            brier_score REAL,
+            notes TEXT,
+            active INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'reporting'
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS calibration_bins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id TEXT NOT NULL,
+            bin_index INTEGER NOT NULL,
+            lower_bound REAL NOT NULL,
+            upper_bound REAL NOT NULL,
+            sample_count INTEGER NOT NULL,
+            average_confidence REAL,
+            observed_accuracy REAL,
+            brier_score REAL,
+            created_at REAL NOT NULL,
+            UNIQUE(profile_id, bin_index),
+            FOREIGN KEY (profile_id)
+                REFERENCES calibration_profiles(profile_id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_calibration_profiles_active
+        ON calibration_profiles(active, classifier_source, model_name, prompt_version)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_calibration_profiles_source
+        ON calibration_profiles(source_type, source_id)
+        """
+    )
+
+
 MIGRATIONS = [
     Migration(
         version=1,
@@ -1086,6 +1326,21 @@ MIGRATIONS = [
         version=10,
         name="threat_intel_operational_metadata",
         apply=_apply_threat_intel_operational_metadata,
+    ),
+    Migration(
+        version=11,
+        name="ai_reliability_pipeline_telemetry",
+        apply=_apply_ai_reliability_pipeline_telemetry,
+    ),
+    Migration(
+        version=12,
+        name="ai_benchmark_history",
+        apply=_apply_ai_benchmark_history,
+    ),
+    Migration(
+        version=13,
+        name="ai_confidence_calibration",
+        apply=_apply_ai_confidence_calibration,
     ),
 ]
 

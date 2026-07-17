@@ -940,6 +940,396 @@ def save_analysis_with_decision(
         )
 
 
+def _bool_to_int(value: bool | None) -> int | None:
+    if value is None:
+        return None
+    return 1 if value else 0
+
+
+def save_pipeline_telemetry(
+    telemetry: Any,
+    *,
+    final_decision_id: str | None = None,
+) -> None:
+    """
+    Persist observational pipeline telemetry in a short sidecar transaction.
+    """
+
+    now = time.time()
+    telemetry.final_decision_id = final_decision_id
+    with transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO pipeline_telemetry_runs
+            (
+                run_id,
+                domain,
+                started_at,
+                completed_at,
+                duration_ms,
+                cache_hit,
+                stop_reason,
+                ai_considered,
+                ai_invoked,
+                ai_invocation_reason,
+                configured_ai_model,
+                ai_model,
+                prompt_version,
+                request_attempt_count,
+                parse_attempt_count,
+                retry_count,
+                timeout,
+                parse_failure,
+                rate_limit_skip,
+                cooldown_skip,
+                inference_duration_ms,
+                final_ai_category,
+                final_ai_confidence,
+                fallback_reason,
+                final_decision_id,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                telemetry.run_id,
+                telemetry.domain,
+                telemetry.started_at,
+                telemetry.completed_at,
+                telemetry.duration_ms,
+                _bool_to_int(telemetry.cache_hit),
+                telemetry.stop_reason,
+                _bool_to_int(telemetry.ai_considered),
+                _bool_to_int(telemetry.ai_invoked),
+                telemetry.ai_invocation_reason,
+                telemetry.configured_ai_model,
+                telemetry.ai_model,
+                telemetry.prompt_version,
+                telemetry.request_attempt_count,
+                telemetry.parse_attempt_count,
+                telemetry.retry_count,
+                _bool_to_int(telemetry.timeout),
+                _bool_to_int(telemetry.parse_failure),
+                _bool_to_int(telemetry.rate_limit_skip),
+                _bool_to_int(telemetry.cooldown_skip),
+                telemetry.inference_duration_ms,
+                telemetry.final_ai_category,
+                telemetry.final_ai_confidence,
+                telemetry.fallback_reason,
+                final_decision_id,
+                now,
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO pipeline_telemetry_stages
+            (
+                stage_id,
+                run_id,
+                domain,
+                classifier_name,
+                execution_order,
+                started_at,
+                duration_ms,
+                classifier_result,
+                confidence_raw,
+                confidence_band,
+                skipped,
+                skip_reason,
+                stop_reason,
+                cache_hit,
+                ai_considered,
+                ai_invoked,
+                ai_invocation_reason,
+                configured_ai_model,
+                ai_model,
+                prompt_version,
+                request_attempt_count,
+                parse_attempt_count,
+                retry_count,
+                timeout,
+                parse_failure,
+                rate_limit_skip,
+                cooldown_skip,
+                inference_duration_ms,
+                final_ai_category,
+                final_ai_confidence,
+                fallback_reason,
+                final_decision_id,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    stage.stage_id,
+                    telemetry.run_id,
+                    telemetry.domain,
+                    stage.classifier_name,
+                    stage.execution_order,
+                    stage.started_at,
+                    stage.duration_ms,
+                    stage.classifier_result,
+                    stage.confidence_raw,
+                    stage.confidence_band,
+                    1 if stage.skipped else 0,
+                    stage.skip_reason,
+                    stage.stop_reason,
+                    _bool_to_int(stage.cache_hit),
+                    _bool_to_int(stage.ai_considered),
+                    _bool_to_int(stage.ai_invoked),
+                    stage.ai_invocation_reason,
+                    stage.configured_ai_model,
+                    stage.ai_model,
+                    stage.prompt_version,
+                    stage.request_attempt_count,
+                    stage.parse_attempt_count,
+                    stage.retry_count,
+                    _bool_to_int(stage.timeout),
+                    _bool_to_int(stage.parse_failure),
+                    _bool_to_int(stage.rate_limit_skip),
+                    _bool_to_int(stage.cooldown_skip),
+                    stage.inference_duration_ms,
+                    stage.final_ai_category,
+                    stage.final_ai_confidence,
+                    stage.fallback_reason,
+                    final_decision_id,
+                    now,
+                )
+                for stage in telemetry.stages
+            ],
+    )
+
+
+def _bool_from_db(value: Any) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
+
+
+def _telemetry_stage_to_dict(
+    row: sqlite3.Row,
+) -> dict[str, Any]:
+    item = dict(row)
+    for key in (
+        "skipped",
+        "cache_hit",
+        "ai_considered",
+        "ai_invoked",
+        "timeout",
+        "parse_failure",
+        "rate_limit_skip",
+        "cooldown_skip",
+    ):
+        item[key] = _bool_from_db(item.get(key))
+    return item
+
+
+def _telemetry_run_to_dict(
+    row: sqlite3.Row,
+    stages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    item = dict(row)
+    for key in (
+        "cache_hit",
+        "ai_considered",
+        "ai_invoked",
+        "timeout",
+        "parse_failure",
+        "rate_limit_skip",
+        "cooldown_skip",
+    ):
+        item[key] = _bool_from_db(item.get(key))
+    item["stages"] = stages
+    item["pipeline_timeline"] = stages
+    item["available"] = True
+    return item
+
+
+def _load_pipeline_telemetry(
+    conn: sqlite3.Connection,
+    where_sql: str,
+    parameters: tuple[Any, ...],
+) -> dict[str, Any] | None:
+    run = conn.execute(
+        f"""
+        SELECT *
+        FROM pipeline_telemetry_runs
+        WHERE {where_sql}
+        ORDER BY started_at DESC, created_at DESC
+        LIMIT 1
+        """,
+        parameters,
+    ).fetchone()
+    if run is None:
+        return None
+    stages = [
+        _telemetry_stage_to_dict(row)
+        for row in conn.execute(
+            """
+            SELECT *
+            FROM pipeline_telemetry_stages
+            WHERE run_id = ?
+            ORDER BY execution_order ASC, created_at ASC
+            """,
+            (run["run_id"],),
+        ).fetchall()
+    ]
+    return _telemetry_run_to_dict(run, stages)
+
+
+def get_pipeline_telemetry_by_decision_id(
+    decision_id: str,
+    database_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """
+    Return pipeline telemetry exactly linked to one immutable decision.
+    """
+
+    if not is_valid_decision_id(decision_id):
+        return None
+    path = Path(database_path) if database_path is not None else _database_path()
+    with closing(Database.open_read_only(path)) as conn:
+        return _load_pipeline_telemetry(
+            conn,
+            "final_decision_id = ?",
+            (decision_id,),
+        )
+
+
+def get_pipeline_telemetry_by_analysis_id(
+    analysis_id: str,
+    database_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """
+    Return pipeline telemetry by its analysis/run identifier.
+    """
+
+    path = Path(database_path) if database_path is not None else _database_path()
+    with closing(Database.open_read_only(path)) as conn:
+        return _load_pipeline_telemetry(
+            conn,
+            "run_id = ?",
+            (analysis_id,),
+        )
+
+
+def get_pipeline_telemetry_for_domain(
+    domain: str,
+    *,
+    decision_id: str | None = None,
+    database_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """
+    Return unambiguous telemetry for explain output.
+    """
+
+    if decision_id is not None:
+        return get_pipeline_telemetry_by_decision_id(
+            decision_id,
+            database_path=database_path,
+        )
+
+    path = Path(database_path) if database_path is not None else _database_path()
+    with closing(Database.open_read_only(path)) as conn:
+        rows = conn.execute(
+            """
+            SELECT run_id
+            FROM pipeline_telemetry_runs
+            WHERE domain = ?
+            ORDER BY started_at DESC, created_at DESC
+            LIMIT 2
+            """,
+            (domain,),
+        ).fetchall()
+        if len(rows) != 1:
+            return None
+        return _load_pipeline_telemetry(
+            conn,
+            "run_id = ?",
+            (rows[0]["run_id"],),
+        )
+
+
+def record_cache_hit_telemetry(
+    domain: str,
+) -> None:
+    """
+    Record that analysis processing stopped at the cache layer.
+    """
+
+    from engine.telemetry import PipelineTelemetry
+
+    save_pipeline_telemetry(
+        PipelineTelemetry.cache_hit_run(domain),
+        final_decision_id=None,
+    )
+
+
+def telemetry_stats_readonly(
+    database_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """
+    Return pipeline telemetry aggregates without mutating the database.
+    """
+
+    path = Path(database_path) if database_path is not None else _database_path()
+    with closing(Database.open_read_only(path)) as conn:
+        runs = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS analyses_recorded,
+                AVG(duration_ms) AS average_pipeline_duration_ms,
+                SUM(CASE WHEN cache_hit = 1 THEN 1 ELSE 0 END) AS cache_hits,
+                SUM(CASE WHEN ai_invoked = 1 THEN 1 ELSE 0 END) AS ai_invocations
+            FROM pipeline_telemetry_runs
+            """
+        ).fetchone()
+        stages = conn.execute(
+            """
+            SELECT COUNT(*) AS telemetry_rows
+            FROM pipeline_telemetry_stages
+            """
+        ).fetchone()
+        classifier_rows = conn.execute(
+            """
+            SELECT classifier_name, COUNT(*) AS count
+            FROM pipeline_telemetry_stages
+            GROUP BY classifier_name
+            ORDER BY classifier_name ASC
+            """
+        ).fetchall()
+
+    analyses_recorded = int(runs["analyses_recorded"] or 0) if runs else 0
+    cache_hits = int(runs["cache_hits"] or 0) if runs else 0
+    ai_invocations = int(runs["ai_invocations"] or 0) if runs else 0
+    telemetry_rows = int(stages["telemetry_rows"] or 0) if stages else 0
+
+    return {
+        "analyses_recorded": analyses_recorded,
+        "telemetry_rows": telemetry_rows,
+        "average_pipeline_duration_ms": (
+            float(runs["average_pipeline_duration_ms"])
+            if runs and runs["average_pipeline_duration_ms"] is not None
+            else None
+        ),
+        "ai_invocation_rate": (
+            ai_invocations / analyses_recorded
+            if analyses_recorded
+            else 0.0
+        ),
+        "cache_hit_rate": (
+            cache_hits / analyses_recorded
+            if analyses_recorded
+            else 0.0
+        ),
+        "classifier_counts": {
+            str(row["classifier_name"]): int(row["count"])
+            for row in classifier_rows
+        },
+    }
+
+
 def get_analysis(
     domain: str,
 ) -> sqlite3.Row | None:

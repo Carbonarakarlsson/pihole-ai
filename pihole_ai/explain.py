@@ -17,6 +17,7 @@ from core.db import (
     get_domain_metadata,
     get_domain_reputation,
     get_domain_rule,
+    get_pipeline_telemetry_for_domain,
     get_recent_actions,
     get_threat_intel,
     is_valid_decision_id,
@@ -27,6 +28,7 @@ from engine.evidence import (
     detect_conflicts,
     evidence_sort_key,
 )
+from pihole_ai.calibration import calibration_for_confidence
 
 
 DOMAIN_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,253}$")
@@ -184,6 +186,21 @@ def explain_domain(
         if decision_record is not None
         else []
     )
+    telemetry_decision_id = (
+        decision_record.get("decision_id")
+        if decision_record is not None
+        else None
+    )
+    telemetry = _safe_telemetry_lookup(
+        normalized,
+        decision_id=telemetry_decision_id,
+    )
+    explanation["telemetry"] = telemetry
+    explanation["pipeline_timeline"] = telemetry.get("pipeline_timeline", [])
+    explanation["calibration"] = _safe_calibration_lookup(
+        explanation["decision"],
+        telemetry,
+    )
     explanation["conflicts"] = (
         decision_record.get("conflicts", [])
         if decision_record is not None
@@ -208,6 +225,64 @@ def explain_domain(
     )
 
     return explanation
+
+
+def _safe_telemetry_lookup(
+    domain: str,
+    *,
+    decision_id: str | None,
+) -> dict[str, Any]:
+    try:
+        telemetry = get_pipeline_telemetry_for_domain(
+            domain,
+            decision_id=decision_id,
+        )
+    except Exception:
+        telemetry = None
+
+    if telemetry is None:
+        return {
+            "available": False,
+            "reason": "telemetry unavailable",
+            "pipeline_timeline": [],
+        }
+
+    telemetry.setdefault("available", True)
+    telemetry.setdefault("pipeline_timeline", telemetry.get("stages", []))
+    return telemetry
+
+
+def _safe_calibration_lookup(
+    decision: dict[str, Any] | None,
+    telemetry: dict[str, Any],
+) -> dict[str, Any]:
+    if decision is None:
+        return {
+            "available": False,
+            "observational": True,
+            "reason": "no decision confidence available",
+        }
+    try:
+        source = decision.get("source")
+        ai_model = telemetry.get("ai_model") if telemetry else None
+        prompt_version = telemetry.get("prompt_version") if telemetry else None
+        payload = calibration_for_confidence(
+            decision.get("confidence"),
+            classifier_source=source,
+            model_name=ai_model,
+            prompt_version=prompt_version,
+        )
+    except Exception:
+        return {
+            "available": False,
+            "observational": True,
+            "reason": "calibration unavailable",
+        }
+
+    payload["available"] = payload.get("profile_id") is not None
+    if not payload["available"]:
+        payload["reason"] = "no active matching calibration profile"
+    return payload
 
 
 def decision_history(
@@ -462,6 +537,10 @@ def print_explanation(
     else:
         print("    none")
 
+    _print_calibration(
+        explanation.get("calibration", {}),
+    )
+
     _print_evidence_group(
         "Decisive evidence",
         explanation.get("decisive_evidence", []),
@@ -480,6 +559,9 @@ def print_explanation(
     )
     _print_trace(
         explanation.get("classifier_trace", []),
+    )
+    _print_telemetry(
+        explanation.get("telemetry", {}),
     )
     _print_list("Conflicts", explanation.get("conflicts", []))
     if explanation.get("legacy"):
@@ -581,6 +663,100 @@ def _print_trace(
             f"evidence={item['evidence_count']} "
             f"latency={item['latency_ms']}ms{suffix}"
         )
+
+
+def _print_telemetry(
+    telemetry: dict[str, Any],
+) -> None:
+    print("  Pipeline telemetry:")
+    if not telemetry or not telemetry.get("available"):
+        reason = telemetry.get("reason", "telemetry unavailable") if telemetry else "telemetry unavailable"
+        print(f"    {reason}")
+        return
+
+    print(
+        "    "
+        f"analysis_id={telemetry.get('run_id')} "
+        f"duration={_format_nullable(telemetry.get('duration_ms'), 'ms')} "
+        f"cache_hit={_format_bool(telemetry.get('cache_hit'))} "
+        f"final_decision={telemetry.get('final_decision_id') or 'none'}"
+    )
+    timeline = telemetry.get("pipeline_timeline", [])
+    if not timeline:
+        print("    timeline: none")
+        return
+
+    print("    timeline:")
+    for item in timeline:
+        details = [
+            f"#{item.get('execution_order')}",
+            str(item.get("classifier_name") or "unknown"),
+            f"result={item.get('classifier_result') or 'none'}",
+            f"confidence={_format_nullable(item.get('confidence_raw'))}",
+            f"band={item.get('confidence_band') or 'none'}",
+            f"duration={_format_nullable(item.get('duration_ms'), 'ms')}",
+            f"skipped={_format_bool(item.get('skipped'))}",
+            f"cache_hit={_format_bool(item.get('cache_hit'))}",
+        ]
+        if item.get("skip_reason"):
+            details.append(f"skip_reason={item['skip_reason']}")
+        if item.get("stop_reason"):
+            details.append(f"stop_reason={item['stop_reason']}")
+        if item.get("ai_considered") is not None:
+            details.append(f"ai_considered={_format_bool(item.get('ai_considered'))}")
+        if item.get("ai_invoked") is not None:
+            details.append(f"ai_invoked={_format_bool(item.get('ai_invoked'))}")
+        if item.get("ai_model"):
+            details.append(f"ai_model={item['ai_model']}")
+        if item.get("prompt_version"):
+            details.append(f"prompt={item['prompt_version']}")
+        if item.get("timeout"):
+            details.append("timeout=true")
+        if item.get("parse_failure"):
+            details.append("parse_failure=true")
+        if item.get("fallback_reason"):
+            details.append(f"fallback={item['fallback_reason']}")
+        print("      " + " ".join(details))
+
+
+def _print_calibration(
+    calibration: dict[str, Any],
+) -> None:
+    print("  Confidence calibration:")
+    if not calibration or not calibration.get("available"):
+        print(f"    {calibration.get('reason', 'calibration unavailable') if calibration else 'calibration unavailable'}")
+        return
+    print(
+        "    "
+        f"raw={_format_nullable(calibration.get('raw_confidence'))} "
+        f"raw_band={calibration.get('raw_confidence_band') or 'unknown'} "
+        f"calibrated={_format_nullable(calibration.get('calibrated_confidence'))} "
+        f"calibrated_band={calibration.get('calibrated_confidence_band') or 'unknown'}"
+    )
+    print(
+        "    "
+        f"profile={calibration.get('profile_id')} "
+        f"name={calibration.get('profile_name')} "
+        f"samples={calibration.get('profile_sample_count')} "
+        f"source={calibration.get('source')} observational=true"
+    )
+
+
+def _format_bool(
+    value: Any,
+) -> str:
+    if value is None:
+        return "unknown"
+    return "true" if bool(value) else "false"
+
+
+def _format_nullable(
+    value: Any,
+    suffix: str = "",
+) -> str:
+    if value is None:
+        return "unknown"
+    return f"{value}{suffix}"
 
 
 def _print_list(

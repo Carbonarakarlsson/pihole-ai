@@ -5,7 +5,7 @@ FTL database as an external read-only input.
 
 ## Current Schema
 
-Latest supported schema version: `10`.
+Latest supported schema version: `13`.
 
 Registered migrations:
 
@@ -21,6 +21,9 @@ Registered migrations:
 | 8 | `threat_intel_remote_generation_state` |
 | 9 | `repair_remote_generation_identity` |
 | 10 | `threat_intel_operational_metadata` |
+| 11 | `ai_reliability_pipeline_telemetry` |
+| 12 | `ai_benchmark_history` |
+| 13 | `ai_confidence_calibration` |
 
 The migration registry lives in `core/migrations.py`. Versions must be unique,
 ascending, non-empty, and contiguous unless a gap is explicitly documented.
@@ -48,6 +51,16 @@ ascending, non-empty, and contiguous unless a gap is explicitly documented.
 - `threat_intel_generation_entries`: domains linked to one generation, with
   optional expiration metadata.
 - `threat_intel_update_audit`: feed update/rollback/reactivation audit trail.
+- `pipeline_telemetry_runs`: sidecar analysis/cache run telemetry.
+- `pipeline_telemetry_stages`: sidecar per-classifier execution telemetry.
+- `benchmark_runs`: persisted offline evaluation runs, fixture digests, model
+  and prompt identity, threshold metadata, status, and summary metrics.
+- `benchmark_results`: per-sample benchmark predictions, correctness flags,
+  latency, classifier source, and optional telemetry linkage.
+- `calibration_profiles`: reporting-only confidence calibration profiles built
+  from completed benchmark runs.
+- `calibration_bins`: persisted per-profile confidence bins with observed
+  accuracy, calibration error inputs, and Brier components.
 - `schema_migrations`: applied migration history.
 - `app_state`: small runtime state values.
 
@@ -111,3 +124,20 @@ rows.
 inspect managed feed state through read-only database connections. They are
 used by status, health, doctor, and dashboard views; they do not initialize,
 migrate, repair, fetch feeds, or mutate data.
+
+## AI Reliability Data
+
+Pipeline telemetry and benchmark history are sidecar data. They measure how a
+decision was produced, but they do not alter classifier ordering, thresholds,
+AI invocation rules, cache behavior, or enforcement actions.
+
+Confidence calibration profiles are also reporting-only. A profile records raw
+confidence bins from a completed benchmark run and the observed accuracy in
+each bin. Active profiles are used by explain, reliability metrics, and the
+dashboard to show calibrated confidence alongside the original raw confidence.
+The raw confidence remains the authoritative runtime value.
+
+Profile activation is scoped by classifier source, model, and prompt version so
+separate reporting profiles can coexist where enough benchmark samples exist.
+Feedback-based calibration is intentionally unavailable until feedback rows have
+trustworthy labeled-sample linkage.
