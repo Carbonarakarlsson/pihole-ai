@@ -26,6 +26,7 @@ from flask import (
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash
 
+from core import config_operations
 from core.config import CONFIG_FILE, settings
 from core.db import (
     database_stats_readonly as database_stats,
@@ -76,6 +77,12 @@ ROUTE_SECURITY = {
     "GET /api/stats": "authenticated_read",
     "GET /api/polling": "authenticated_read",
     "GET /api/settings": "authenticated_read",
+    "GET /api/config": "authenticated_read",
+    "POST /api/config/validate": "authenticated_write_csrf",
+    "PUT /api/config": "authenticated_write_csrf",
+    "GET /api/config/impact": "authenticated_read",
+    "GET /api/config/export": "authenticated_read",
+    "POST /api/config/import": "authenticated_write_csrf",
     "GET /api/setup": "authenticated_read",
     "POST /api/settings": "authenticated_write_csrf",
     "POST /api/services/<action>": "authenticated_write_csrf",
@@ -2855,6 +2862,58 @@ def json_error(status: int, code: str, message: str):
     return response
 
 
+def config_api_error(exc: config_operations.ConfigOperationError):
+    response = jsonify(exc.to_dict())
+    response.status_code = exc.status
+    return response
+
+
+def config_api_response(payload: dict[str, Any], *, status: int = 200):
+    response = jsonify(payload)
+    response.status_code = status
+    return response
+
+
+def request_json_payload() -> dict[str, Any]:
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise config_operations.ConfigOperationError(
+            "invalid_json",
+            "Request body must be a JSON object.",
+            status=400,
+        )
+    return payload
+
+
+def parse_bool_arg(value: str | None, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def dashboard_config_file() -> Path:
+    return Path(SETTINGS_ENV_PATH)
+
+
+def audit_config_change(action: str, result: dict[str, Any]) -> None:
+    try:
+        changed_keys = [
+            str(item.get("key"))
+            for item in result.get("changes", [])
+            if isinstance(item, dict) and item.get("key")
+        ]
+        logger.info(
+            "dashboard configuration %s: changed=%s written=%s keys=%s restart=%s",
+            action,
+            result.get("changed"),
+            result.get("written"),
+            ",".join(changed_keys),
+            result.get("restart_attempted"),
+        )
+    except Exception:
+        logger.debug("configuration audit logging failed", exc_info=True)
+
+
 def render_error_page(status: int, message: str):
     return (
         render_template_string(
@@ -2942,6 +3001,8 @@ def create_app() -> Flask:
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
         if request.path != "/live":
             response.headers["Cache-Control"] = "no-store"
+        if request.path.startswith("/api/config"):
+            response.headers["Pragma"] = "no-cache"
         return response
 
     @app.errorhandler(400)
@@ -3077,6 +3138,97 @@ def create_app() -> Flask:
     @app.get("/api/settings")
     def current_settings():
         return jsonify(_merged_settings())
+
+    @app.get("/api/config")
+    def config_inventory():
+        try:
+            return config_api_response(
+                config_operations.inspect_config(
+                    config_file=dashboard_config_file(),
+                    category=request.args.get("category", "").strip(),
+                )
+            )
+        except config_operations.ConfigOperationError as exc:
+            return config_api_error(exc)
+
+    @app.post("/api/config/validate")
+    def config_validate():
+        try:
+            payload = request_json_payload()
+            result = config_operations.validate_changes(
+                payload.get("changes", {}),
+                revision=payload.get("revision"),
+                config_file=dashboard_config_file(),
+            )
+            return config_api_response(result)
+        except config_operations.ConfigOperationError as exc:
+            return config_api_error(exc)
+
+    @app.put("/api/config")
+    def config_update():
+        try:
+            payload = request_json_payload()
+            result = config_operations.apply_changes(
+                payload.get("changes", {}),
+                revision=payload.get("revision"),
+                config_file=dashboard_config_file(),
+                dry_run=bool(payload.get("dry_run", False)),
+                restart=bool(payload.get("restart", False)),
+            )
+            audit_config_change("update", result)
+            return config_api_response(result)
+        except config_operations.ConfigOperationError as exc:
+            return config_api_error(exc)
+
+    @app.get("/api/config/impact")
+    def config_impact():
+        keys = [key.strip() for key in request.args.getlist("key") if key.strip()]
+        if not keys:
+            key = request.args.get("keys", "").strip()
+            keys = [item.strip() for item in key.split(",") if item.strip()]
+        try:
+            return config_api_response(config_operations.impact(keys))
+        except config_operations.ConfigOperationError as exc:
+            return config_api_error(exc)
+
+    @app.get("/api/config/export")
+    def config_export():
+        try:
+            content, mimetype, filename = config_operations.export_config(
+                export_format=request.args.get("format", "json").strip().lower() or "json",
+                secure=parse_bool_arg(request.args.get("secure")),
+                config_file=dashboard_config_file(),
+            )
+        except config_operations.ConfigOperationError as exc:
+            return config_api_error(exc)
+        response = current_app.response_class(content, mimetype=mimetype)
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        return response
+
+    @app.post("/api/config/import")
+    def config_import():
+        try:
+            payload = request_json_payload()
+            content = payload.get("content")
+            if not isinstance(content, str):
+                raise config_operations.ConfigOperationError(
+                    "missing_import_content",
+                    "Import content is required.",
+                    status=400,
+                )
+            result = config_operations.import_config(
+                content=content,
+                import_format=str(payload.get("format", "json")).strip().lower(),
+                revision=payload.get("revision"),
+                config_file=dashboard_config_file(),
+                dry_run=bool(payload.get("dry_run", False)),
+                restart=bool(payload.get("restart", False)),
+                strict=bool(payload.get("strict", False)),
+            )
+            audit_config_change("import", result)
+            return config_api_response(result)
+        except config_operations.ConfigOperationError as exc:
+            return config_api_error(exc)
 
     @app.get("/api/setup")
     def setup_status():

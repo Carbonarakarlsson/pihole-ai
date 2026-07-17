@@ -64,11 +64,26 @@ services from the typed restart-impact model. Configuration persistence happens
 before service restart. Restart failures are reported independently and never
 silently roll back a valid configuration write.
 
+Phase 1D status: implemented as a backend dashboard Configuration API:
+
+- `GET /api/config`
+- `POST /api/config/validate`
+- `PUT /api/config`
+- `GET /api/config/impact`
+- `GET /api/config/export`
+- `POST /api/config/import`
+
+The API reuses the shared configuration operations layer in
+`core/config_operations.py`. It is authenticated, CSRF-protected for mutating
+requests, revision-guarded for writes/imports, secret-safe by default, and
+does not add the Settings UI yet. Secure exports remain CLI-only in Phase 1D.
+
 Related documentation:
 
 - [Configuration](CONFIGURATION.md)
 - [Operations](OPERATIONS.md)
 - [CLI Reference](CLI_REFERENCE.md)
+- [API Reference](API_REFERENCE.md)
 - [Architecture](ARCHITECTURE.md)
 - [Database](DATABASE.md)
 
@@ -537,7 +552,7 @@ Validates partial updates without writing.
 Request:
 
 ```json
-{"updates": {"AI_ENABLED": "false"}, "mode": "preview"}
+{"revision": "sha256:...", "changes": {"AI_ENABLED": "false"}}
 ```
 
 Response includes normalized values, validation issues, and restart impact.
@@ -549,33 +564,36 @@ Writes partial updates after CSRF and authorization checks.
 Request requires the current revision to avoid overwriting concurrent edits:
 
 ```json
-{"revision": "sha256:...", "updates": {"AI_ENABLED": "false"}}
+{"revision": "sha256:...", "changes": {"AI_ENABLED": "false"}, "restart": false}
 ```
 
 Response includes changed keys, backup path, validation result, and restart
-impact. It should not restart services automatically unless a later explicit
-restart endpoint is used.
+impact. Service restarts are opt-in with `restart=true`; restart failure is
+reported separately and does not roll back a successful write.
 
 ### `GET /api/config/export`
 
-Exports non-secret config by default. Secure export requires an explicit query
-or POST confirmation in a later design.
+Exports non-secret config by default. Secure API export is rejected in Phase
+1D; use the CLI `--secure` flag for protected administrator backups.
 
 ### `POST /api/config/import`
 
-Accepts a config payload or uploaded file, validates, previews, and optionally
-writes. CSRF required.
+Accepts a JSON request containing `format`, `content`, `revision`, `dry_run`,
+`restart`, and `strict`. It validates, previews, and optionally writes. No
+uploaded file is persisted. CSRF required.
 
 ### `GET /api/config/impact`
 
-Read-only impact preview for current config or proposed query payload.
+Read-only impact preview for one or more `key=` query parameters.
 
 Dashboard authorization:
 
 - all endpoints require authenticated admin
 - mutating endpoints require CSRF
-- mutating endpoints require root-capable deployment or return exact sudo CLI
-  command guidance
+- write endpoints require the current revision and return `409` if the file
+  changed after it was loaded
+- all config responses use `Cache-Control: no-store`, `Pragma: no-cache`, and
+  `X-Content-Type-Options: nosniff`
 
 Audit:
 
@@ -621,7 +639,7 @@ Implementation steps:
    writer. Done in Phase 1C2.
 9. Add explicit restart orchestration for successful configuration writes.
    Done in Phase 1C3.
-10. Add dashboard/API endpoints.
+10. Add dashboard/API endpoints. Done in Phase 1D.
 11. Add audit events without storing secrets.
 12. Later, optionally add profile presets.
 

@@ -160,6 +160,13 @@ default and become errors with `--strict`. Always preview first with
 when replacing an existing env file. On persistence failure, the original file
 is left unchanged and temporary files are cleaned up.
 
+The dashboard exposes a backend Configuration API for authenticated operators.
+It uses the same validation, masking, revision, import/export, and restart
+orchestration primitives as the CLI. Mutating requests require CSRF, writes and
+imports require the current file revision, and secrets are never returned in
+plaintext by default. Secure exports remain CLI-only. See
+[API Reference](API_REFERENCE.md) for endpoint details.
+
 ## Threat-Intelligence Source Edits
 
 Use supported CLI edits instead of direct SQLite changes:
