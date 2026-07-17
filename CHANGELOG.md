@@ -24,6 +24,16 @@
 - Added typed threat-intelligence source models, managed source registry,
   source status APIs, source update CLI, rollback, audit records, and
   generation-aware classifier evidence.
+- Added AI pipeline telemetry, read-only telemetry stats, and richer explain
+  timelines for classifier stages, cache hits, AI attempts, skips, timeouts,
+  and parse failures.
+- Added persisted benchmark runs, fixture digest protection, benchmark history,
+  and deterministic regression comparison.
+- Added reporting-only confidence calibration profiles from completed
+  benchmark runs.
+- Added reliability CLI metrics and dashboard views for confidence
+  distributions, observed accuracy, latency, AI/cache utilization, benchmark
+  history, and telemetry volume diagnostics.
 
 ### Changed
 
@@ -45,6 +55,8 @@
   HTTP 200 update history over rollback-active state.
 - Read-only threat-intelligence commands now use read-only database access.
 - Source confidence CLI input is standardized as integer percentage `0-100`.
+- Explain output now reports raw and calibrated confidence separately when a
+  matching active calibration profile exists.
 
 ### Fixed
 
@@ -73,6 +85,9 @@
 
 - Database backup/restore commands and long-term retention policy are not yet
   implemented.
+- Feedback-based confidence calibration remains deferred until feedback rows
+  have trustworthy labeled-sample linkage.
+- Telemetry/calibration retention is not yet automatic.
 
 ## v0.4.0rc1
 

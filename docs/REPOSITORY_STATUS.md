@@ -1,12 +1,12 @@
 # Repository Status
 
-- Package version: `0.5.0b4`
+- Package version: `0.5.0b5`
 - Active branch: `v0.5-epic3.3`
 - Stable appliance baseline: v0.5 beta milestone preparation
-- Current epic: Epic 3.3 threat-intelligence feed diagnostics beta build
+- Current epic: Epic 3.4 AI reliability, evaluation, and explainability
 - Test suite: unittest discovery under `tests`
-- Latest schema version: `10`
-- Final automated test count: `480`
+- Latest schema version: `13`
+- Final automated test count: 529 normal / 529 ResourceWarning
 - Supported Python: 3.13+
 - Supported deployment: Linux/systemd appliance, Raspberry Pi target
 
@@ -32,7 +32,7 @@
 - protected config and service identity repair
 - dashboard authentication, sessions, CSRF, and security headers
 - health, doctor, setup, install status, and database diagnostics
-- schema migrations through v9
+- schema migrations through v13
 - evidence-based decision aggregation
 - stored explain evidence for CLI/API/dashboard
 - feedback audit linkage to stored decisions
@@ -43,6 +43,10 @@
   reactivation
 - updater systemd oneshot service and timer
 - read-only threat-intelligence list/status/audit/show commands
+- AI pipeline telemetry, explain timeline output, persisted benchmark run
+  history with regression comparison, and reporting-only confidence calibration
+- Reliability dashboard/API surfaces for accuracy, latency, confidence bands,
+  benchmark history, classifier usage, and telemetry volume diagnostics
 
 ## Systemd Updater
 
@@ -63,13 +67,15 @@
 - generation/audit retention policy needs refinement
 - controlled field validation used a small deterministic feed
 - backup/restore command remains future work
+- feedback-based confidence calibration is deferred until feedback rows have
+  trustworthy labeled-sample linkage
 
 ## Next Planned Epic
 
-Epic 3: Domain and device behavioral intelligence.
+Epic 3.4 Phase 5: reliability retention and operational hardening.
 
 ## Release Recommendation
 
-Epic 2 threat-intelligence generation lifecycle is accepted. The repository is
-ready for v0.5 milestone tagging after final versioned artifact validation and
-tag decision.
+Epic 3.4 Phases 1-4 are implementation-complete and validated for the
+`0.5.0b5` beta artifact. The repository should not be tagged until the
+maintainer accepts the generated artifacts.

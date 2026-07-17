@@ -5,9 +5,10 @@ query history, stores normalized events in its own SQLite database, classifies
 domains with deterministic evidence first, and uses local Ollama AI only as an
 optional fallback.
 
-The project is preparing the `0.5.0b4` beta after completing the
+The project is preparing the `0.5.0b5` beta after completing the
 evidence-based decision engine, physically validating managed
-threat-intelligence feed lifecycles, and adding feed diagnostics for Epic 3.3.
+threat-intelligence feed lifecycles, and adding AI reliability, benchmark,
+calibration, and dashboard diagnostics for Epic 3.4.
 Remaining v0.5 work is tracked under
 `Unreleased` in [CHANGELOG.md](CHANGELOG.md).
 
@@ -29,6 +30,8 @@ Remaining v0.5 work is tracked under
 - health, doctor, setup, status, and database diagnostics
 - evidence-based decisions with stored explain output
 - immutable decision history and decision comparison
+- AI pipeline telemetry, persisted benchmarks, confidence calibration, and
+  reliability dashboard diagnostics
 - manual rules, local reputation, threat-intelligence imports, and feedback
 
 ## Appliance Install
