@@ -1,6 +1,6 @@
 # Repository Status
 
-- Package version: `0.5.0b2`
+- Package version: `0.5.0b3`
 - Active branch: `v2-refactor`
 - Stable appliance baseline: v0.5 beta milestone preparation
 - Current epic: Epic 2 complete; Epic 3 planning
