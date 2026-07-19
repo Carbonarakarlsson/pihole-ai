@@ -218,6 +218,11 @@ the current schema state, validation result, and required migration command,
 then stop before service mutation when migration is required or validation
 fails.
 
+Phase 2C appliance integration tests exercise this sequence end to end with
+temporary roots and mocked service control: legacy refusal, migration dry-run,
+atomic migration write, backup verification, retrying install/upgrade, and
+status confirmation. See [Testing](TESTING.md).
+
 If the dashboard Settings page sees a legacy env file, it shows a
 migration-required API error instead of attempting to migrate during page load.
 Run the CLI migration command from a shell with appropriate permissions.
@@ -264,6 +269,10 @@ pihole-ai status
 Use `--json` on commands that support machine-readable output. `pihole-ai
 status` includes configuration schema version, validation state, migration
 requirement, config source, and warnings alongside service and database state.
+
+The integration test harness verifies lifecycle commands do not call real
+`systemctl`, `sudo`, or `pkexec`, and that config is preserved unless
+`--remove-config` is explicitly supplied.
 
 ## AI Reliability And Calibration
 

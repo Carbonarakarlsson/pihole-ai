@@ -1645,6 +1645,17 @@ def service_install(
     _enforce_preflight(plan, "install", dry_run)
 
     with lifecycle_lock("install", layout=layout, dry_run=dry_run):
+        config_report = _configuration_lifecycle_report(
+            project_dir=project,
+            env_file=environment_file,
+            runtime_db_path=database_path,
+            runtime_log_path=log_file,
+            dry_run=dry_run,
+        )
+        if config_report.status != "valid" or config_report.migration_required:
+            _print_configuration_report(config_report, created=False)
+        _enforce_lifecycle_config(config_report)
+
         actions.extend(
             _ensure_service_identity(
                 user=service_user,
@@ -1672,18 +1683,10 @@ def service_install(
             dry_run=dry_run,
         )
 
-        config_report = _configuration_lifecycle_report(
-            project_dir=project,
-            env_file=environment_file,
-            runtime_db_path=database_path,
-            runtime_log_path=log_file,
-            dry_run=dry_run,
-        )
         _print_configuration_report(
             config_report,
             created=not config_exists_before and not dry_run,
         )
-        _enforce_lifecycle_config(config_report)
         actions.append(
             "created configuration"
             if not config_exists_before and not dry_run

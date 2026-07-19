@@ -98,6 +98,10 @@ Planned features:
   creation, install/upgrade validation gates, legacy migration-required aborts,
   config-aware status output, and explicit uninstall config preservation or
   removal
+- Phase 2C appliance integration coverage: temporary-root lifecycle tests,
+  CLI/dashboard consistency, migration round trips, import/export, secret
+  masking, restart orchestration, partial-install recovery, and isolation
+  assertions
 - dashboard settings for common appliance configuration
 - config validation before writes take effect
 - configuration import and export

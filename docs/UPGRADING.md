@@ -64,6 +64,11 @@ sudo pihole-ai install --no-start
 sudo pihole-ai upgrade
 ```
 
+The appliance integration suite covers the supported migration sequence:
+legacy lifecycle refusal, `config migrate --dry-run`, `config migrate --yes`,
+backup verification, canonical alias rewrite, unknown-key/comment
+preservation, and successful lifecycle retry. See [Testing](TESTING.md).
+
 ## What Migration Does
 
 The schema `0 -> 1` migration:

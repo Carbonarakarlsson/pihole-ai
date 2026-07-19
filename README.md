@@ -254,6 +254,11 @@ state, and whether migration is required. Uninstall preserves
 `/etc/pihole-ai/pihole-ai.env` by default; use `--remove-config` only when you
 intentionally want to remove the appliance configuration.
 
+Appliance integration tests cover fresh install, legacy migration, config
+preservation, dashboard/CLI consistency, import/export, secret masking,
+restart orchestration, and partial-install recovery using temporary roots and
+mocked service control. See [docs/TESTING.md](docs/TESTING.md).
+
 ## Detailed Documentation
 
 - [Operations](docs/OPERATIONS.md): install, upgrade, uninstall, services,
@@ -275,6 +280,8 @@ intentionally want to remove the appliance configuration.
   lifecycle, and trust boundaries
 - [Development](docs/DEVELOPMENT.md): local setup, tests, build, audits, and
   contribution workflow
+- [Testing](docs/TESTING.md): appliance integration coverage and validation
+  commands
 - [Technical Debt](docs/TECHNICAL_DEBT.md): known deferred work
 - [Repository Status](docs/REPOSITORY_STATUS.md): current snapshot for the next
   epic
