@@ -262,7 +262,7 @@ absent key is an idempotent no-op and does not rewrite the file.
 configuration schema. It plans ordered migration steps, normalizes known
 aliases, adds `PIHOLE_AI_CONFIG_SCHEMA_VERSION`, validates the transformed
 file, creates a migration-specific backup, and writes atomically. It never
-restarts services in Phase 2A; restart explicitly after reviewing the result.
+restarts services automatically; restart explicitly after reviewing the result.
 
 `install` and `upgrade` validate the managed env file through the same
 Configuration Center model before service mutation. Fresh install creates a
@@ -330,6 +330,9 @@ and mask sensitive non-secret values. `--format env` emits a generated
 managed-env representation with canonical environment names. `--secure` is an
 explicit opt-in that includes schema-approved secrets; protect secure exports
 with restrictive file permissions and avoid sharing them.
+
+Secret-free example exports are available in `examples/pihole-ai.env` and
+`examples/pihole-ai.json`.
 
 `config import` accepts JSON or env exports, validates the schema version,
 resolves aliases, validates every imported setting, previews changed settings,

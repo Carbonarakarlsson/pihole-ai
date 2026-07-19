@@ -76,7 +76,7 @@ Phase 1D status: implemented as a backend dashboard Configuration API:
 The API reuses the shared configuration operations layer in
 `core/config_operations.py`. It is authenticated, CSRF-protected for mutating
 requests, revision-guarded for writes/imports, secret-safe by default, and
-does not add the Settings UI yet. Secure exports remain CLI-only in Phase 1D.
+serves the Settings UI added in Phase 1E. Secure exports remain CLI-only.
 
 Phase 1E status: implemented as the authenticated dashboard Settings UI. The
 page is a thin client over the Phase 1D API and supports category navigation,
@@ -104,12 +104,27 @@ and stop before writing systemd units, enabling services, or starting services.
 requirement, source, and warnings. Uninstall preserves configuration by
 default and removes it only with `--remove-config`.
 
+Phase 2C status: implemented as appliance integration and lifecycle coverage.
+The test harness uses temporary roots, fake systemd paths, mocked service
+control, isolated environments, and Flask test clients to validate fresh
+install, legacy migration, invalid config boundaries, CLI/dashboard
+consistency, import/export, secret masking, revision conflicts, restart
+orchestration, uninstall preservation/removal, and partial-install recovery.
+
+Phase 2D status: release-candidate hardening. Documentation, examples,
+administrator guidance, release and upgrade checklists, packaging metadata, and
+version references are aligned for `0.5.0rc1`. The configuration schema
+version remains `1`.
+
 Related documentation:
 
 - [Configuration](CONFIGURATION.md)
 - [Operations](OPERATIONS.md)
+- [Administration](ADMINISTRATION.md)
 - [CLI Reference](CLI_REFERENCE.md)
 - [API Reference](API_REFERENCE.md)
+- [Testing](TESTING.md)
+- [Upgrade Validation](UPGRADE_VALIDATION.md)
 - [Architecture](ARCHITECTURE.md)
 - [Database](DATABASE.md)
 

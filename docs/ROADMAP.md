@@ -57,7 +57,7 @@ Delivered:
 - reliability metrics for accuracy, confidence, latency, cache use, and AI use
 - dashboard reliability views and read-only APIs
 - official PiHole-AI branding across the dashboard, README, favicon, and wheel
-- published `v0.5.0b5` GitHub prerelease
+- prepared `v0.5.0rc1` release-candidate documentation and validation
 
 ## Current Epic
 
@@ -102,9 +102,9 @@ Planned features:
   CLI/dashboard consistency, migration round trips, import/export, secret
   masking, restart orchestration, partial-install recovery, and isolation
   assertions
-- dashboard settings for common appliance configuration
-- config validation before writes take effect
-- configuration import and export
+- Phase 2D release hardening: administrator guide, release checklist, upgrade
+  validation checklist, examples, changelog, packaging metadata review, and RC
+  version alignment
 - named configuration profiles
 - restart-aware changes that clearly show when services must restart
 

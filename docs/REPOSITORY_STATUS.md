@@ -1,12 +1,12 @@
 # Repository Status
 
-- Package version: `0.5.0b5`
-- Active branch: `v0.5-epic3.3`
-- Stable appliance baseline: v0.5 beta milestone preparation
-- Current epic: Epic 3.4 AI reliability, evaluation, and explainability
+- Package version: `0.5.0rc1`
+- Active branch: `v0.5-epic3.5`
+- Stable appliance baseline: v0.5 release-candidate preparation
+- Current epic: Epic 3.5 Operations & User Experience
 - Test suite: unittest discovery under `tests`
 - Latest schema version: `13`
-- Final automated test count: 529 normal / 529 ResourceWarning
+- Final automated test count: 666 normal / 666 ResourceWarning
 - Supported Python: 3.13+
 - Supported deployment: Linux/systemd appliance, Raspberry Pi target
 
@@ -47,6 +47,12 @@
   history with regression comparison, and reporting-only confidence calibration
 - Reliability dashboard/API surfaces for accuracy, latency, confidence bands,
   benchmark history, classifier usage, and telemetry volume diagnostics
+- Configuration Center schema, validation, masking, import/export, migration,
+  restart-impact, CLI, API, and Settings UI
+- Appliance lifecycle integration for configuration validation, migration
+  refusal, config-aware status, and uninstall config preservation/removal
+- Appliance configuration integration tests with temporary roots and mocked
+  service control
 
 ## Systemd Updater
 
@@ -69,13 +75,15 @@
 - backup/restore command remains future work
 - feedback-based confidence calibration is deferred until feedback rows have
   trustworthy labeled-sample linkage
+- first-class database backup/restore commands remain future work
 
 ## Next Planned Epic
 
-Epic 3.4 Phase 5: reliability retention and operational hardening.
+Epic 3.5 maintenance and monitoring follow-up: backup/restore, cleanup,
+vacuum, integrity checks, live service status, queue depth, and trends.
 
 ## Release Recommendation
 
-Epic 3.4 Phases 1-4 are implementation-complete and validated for the
-`0.5.0b5` beta artifact. The repository should not be tagged until the
-maintainer accepts the generated artifacts.
+Epic 3.5 Configuration Center release-candidate hardening is ready for
+`0.5.0rc1` artifact validation. The repository should not be tagged until the
+maintainer accepts the generated artifacts and physical-host checklist results.

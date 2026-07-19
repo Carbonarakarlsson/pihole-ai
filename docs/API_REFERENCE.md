@@ -41,6 +41,11 @@ The Settings page is available at `/settings` and in the authenticated
 dashboard sidebar. It does not embed configuration data in the initial HTML; it
 loads configuration through `GET /api/config` after the page is available.
 
+The `0.5.0rc1` appliance integration suite validates these endpoints through a
+real Flask test client with authenticated sessions, CSRF-protected writes,
+revision conflicts, import previews, real writes, export downloads, restart
+failure responses, cache-control headers, and secret-leak checks.
+
 If the managed env file is legacy/unversioned, configuration endpoints return a
 structured migration-required error and do not write the file:
 
@@ -207,7 +212,7 @@ Query parameters:
 - `format=env`
 
 Normal exports omit secrets and mask sensitive values. Secure exports are
-CLI-only in Phase 1D and return `403` from the dashboard API.
+CLI-only and return `403` from the dashboard API.
 
 The dashboard offers only normal JSON/env exports and states that secrets are
 omitted. Use `pihole-ai config export --secure` from the CLI for explicit

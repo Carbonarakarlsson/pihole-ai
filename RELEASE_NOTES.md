@@ -1,72 +1,90 @@
-# PiHole-AI v0.5.0b5 Release Notes
+# PiHole-AI v0.5.0rc1 Release Notes
 
-`v0.5.0b5` prepares the Epic 3.4 AI reliability, evaluation, and
-explainability work for appliance testing.
+`v0.5.0rc1` is the Configuration Center and appliance-operations release
+candidate for PiHole-AI v0.5.
 
 ## Highlights
 
-- Added observational AI pipeline telemetry for classifier order, timing,
-  cache hits, skipped stages, stop reasons, AI invocation state, timeout state,
-  parse-failure state, model identity, and prompt version.
-- Extended explain output with pipeline timelines and AI invocation
-  diagnostics while preserving existing decision output.
-- Added persisted benchmark runs with per-sample results, fixture digests,
-  model/prompt metadata, latency metrics, classifier-source counts, and JSON
-  output.
-- Added deterministic benchmark comparison with configurable regression
-  tolerances and fixture-digest protection.
-- Added reporting-only confidence calibration profiles from completed
-  benchmark runs.
-- Added reliability CLI metrics and dashboard/API views for accuracy,
-  confidence distributions, calibrated confidence, false-positive and
-  false-negative counts, latency, AI/cache utilization, benchmark history, and
-  telemetry volume diagnostics.
-- Added doctor diagnostics for stale calibration profiles and incomplete
-  telemetry runs.
+- Completed Epic 3.5 Configuration Center across CLI, dashboard API, and
+  Settings UI.
+- Added schema-backed configuration inventory, validation, source attribution,
+  masking, restart-impact metadata, atomic writes, backups, and deterministic
+  import/export.
+- Added `pihole-ai config migrate` for legacy/unversioned env files.
+- Integrated configuration validation into install, upgrade, enable, start,
+  restart, and status workflows.
+- Added explicit uninstall config preservation and `--remove-config`.
+- Added administrator, testing, release checklist, upgrade, and example
+  configuration documentation.
 
-## Database Migrations
+## Configuration Migration
 
-This beta adds additive, idempotent migrations:
+Configuration schema remains `1`.
 
-- `11` - `ai_reliability_pipeline_telemetry`
-- `12` - `ai_benchmark_history`
-- `13` - `ai_confidence_calibration`
-
-The migrations preserve existing decisions, evidence, threat-intelligence
-generations, rules, reputation, feedback, and benchmark data.
-
-## Upgrade Notes
-
-Upgrade the appliance wheel in the stable virtual environment, then run:
+Legacy or unversioned files are treated as schema `0`. Lifecycle commands do
+not silently migrate them. Use:
 
 ```bash
+pihole-ai config migrate --dry-run
+sudo pihole-ai config migrate --yes
+pihole-ai config validate
+sudo pihole-ai restart
+```
+
+Migration preserves comments, blank lines, unknown keys, and secrets, rewrites
+known aliases to canonical keys, validates before writing, and creates a
+migration-specific backup.
+
+## Upgrade
+
+```bash
+sudo /opt/pihole-ai/venv/bin/pip install --upgrade dist/pihole_ai-0.5.0rc1-py3-none-any.whl
 sudo /usr/local/bin/pihole-ai upgrade
 sudo /usr/local/bin/pihole-ai restart
 ```
 
-Run diagnostics after upgrade:
+If upgrade reports migration required, run the migration workflow and retry
+upgrade.
 
-```bash
-pihole-ai db status
-pihole-ai doctor
-pihole-ai telemetry stats
-pihole-ai reliability metrics
-```
+## New And Hardened Commands
 
-## Calibration Safety
+- `pihole-ai config show`
+- `pihole-ai config get`
+- `pihole-ai config validate`
+- `pihole-ai config impact`
+- `pihole-ai config set`
+- `pihole-ai config unset`
+- `pihole-ai config export`
+- `pihole-ai config import`
+- `pihole-ai config migrate`
+- `pihole-ai uninstall --keep-config`
+- `pihole-ai uninstall --remove-config`
 
-Confidence calibration is reporting-only. It does not change classifier order,
-thresholds, AI retry behavior, AI timeout behavior, cooldowns, rate limits,
-cache behavior, blocking, allowing, or any enforcement action. Raw confidence
-remains visible and authoritative for runtime decisions.
+## Dashboard
+
+The Settings page is now backed by the same Configuration Center operations as
+the CLI. It supports category navigation, backend validation, dry-run previews,
+guarded saves, import/export, secret replace/unset flows, revision conflict
+handling, and optional Save & Restart.
+
+Secure secret-inclusive exports remain CLI-only.
+
+## Testing
+
+Release-candidate validation includes:
+
+- full unit/integration suite
+- ResourceWarning suite
+- appliance configuration integration tests
+- lifecycle integration tests
+- dashboard configuration API tests
+- dashboard Settings tests
+- build validation
 
 ## Known Limitations
 
-- Feedback-based calibration is intentionally disabled until feedback rows have
-  trustworthy labeled-sample linkage.
-- Telemetry and calibration retention is not yet automatic.
-- Benchmark and calibration execution remain CLI-only; the dashboard is
-  read-only for reliability data.
-- Calibration quality depends on the size and representativeness of benchmark
-  fixtures. Different classifiers may use confidence values with different
-  semantics, so scoped profiles should be preferred where enough samples exist.
+- Database backup/restore commands are still future work.
+- Telemetry/calibration retention is not automatic.
+- Feedback-based calibration remains deferred.
+- Physical Raspberry Pi/systemd validation is still required before stable
+  promotion.

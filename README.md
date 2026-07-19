@@ -9,12 +9,14 @@ query history, stores normalized events in its own SQLite database, classifies
 domains with deterministic evidence first, and uses local Ollama AI only as an
 optional fallback.
 
-The project is preparing the `0.5.0b5` beta after completing the
-evidence-based decision engine, physically validating managed
-threat-intelligence feed lifecycles, and adding AI reliability, benchmark,
-calibration, and dashboard diagnostics for Epic 3.4.
-Remaining v0.5 work is tracked under
-`Unreleased` in [CHANGELOG.md](CHANGELOG.md).
+The project is preparing the `0.5.0rc1` release candidate after completing
+Configuration Center, appliance lifecycle integration, AI reliability,
+benchmark, calibration, threat-intelligence, and dashboard diagnostics work for
+the v0.5 line. Release-candidate changes are tracked in
+[CHANGELOG.md](CHANGELOG.md).
+
+Python package artifacts use PEP 440 version `0.5.0rc1`; the planned Git tag
+name is `v0.5.0-rc1`.
 
 ## Supported Target
 
@@ -44,9 +46,12 @@ Install the built wheel into a stable appliance virtual environment:
 
 ```bash
 sudo python3 -m venv /opt/pihole-ai/venv
-sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-*-py3-none-any.whl
+sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-0.5.0rc1-py3-none-any.whl
 sudo /opt/pihole-ai/venv/bin/pihole-ai install --no-start
 ```
+
+For locally rebuilt artifacts, `dist/pihole_ai-*-py3-none-any.whl` can be used
+after verifying the wheel metadata version.
 
 Lifecycle contract: `pihole-ai install` installs files, enables services, and
 starts services. `pihole-ai install --no-start` installs files and enables
@@ -202,14 +207,15 @@ loopback is degraded but ready.
 
 ## Project Roadmap
 
-The published `v0.5.0b5` prerelease completed Epic 3.4: AI reliability,
+The `v0.5.0rc1` release candidate completes Epic 3.5 Configuration Center and
+appliance lifecycle readiness work on top of Epic 3.4 AI reliability,
 benchmarking, confidence calibration, reliability dashboard work, and official
-branding. Epic 3.5, Operations & User Experience, is now underway.
+branding.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full v0.5.x to v1.0
 development plan.
 
-Epic 3.5 has begun with read-only configuration inspection:
+Configuration Center commands include:
 
 ```bash
 pihole-ai config show
@@ -263,6 +269,8 @@ mocked service control. See [docs/TESTING.md](docs/TESTING.md).
 
 - [Operations](docs/OPERATIONS.md): install, upgrade, uninstall, services,
   permissions, diagnostics, backup expectations, and field checks
+- [Administration](docs/ADMINISTRATION.md): operator guide for install,
+  upgrades, configuration, recovery, and uninstall
 - [Security](docs/SECURITY.md): authentication, sessions, CSRF, protected config,
   service identity, and exposure guidance
 - [CLI Reference](docs/CLI_REFERENCE.md): command inventory, privileges, JSON
@@ -274,6 +282,9 @@ mocked service control. See [docs/TESTING.md](docs/TESTING.md).
 - [API Reference](docs/API_REFERENCE.md): dashboard configuration API contract
 - [Upgrading](docs/UPGRADING.md): safe configuration migration and upgrade
   workflow
+- [Upgrade Validation](docs/UPGRADE_VALIDATION.md): release-candidate
+  validation checklist
+- [Release Checklist](docs/RELEASE_CHECKLIST.md): release preparation checklist
 - [Database](docs/DATABASE.md): schema versions, migrations, tables, and backup
   expectations
 - [Architecture](docs/ARCHITECTURE.md): process model, evidence contract,

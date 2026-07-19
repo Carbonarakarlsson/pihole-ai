@@ -29,6 +29,12 @@ enablement, or startup and print the migration commands to run.
 
 ## Recommended Sequence
 
+Install the release-candidate wheel into the appliance environment:
+
+```bash
+sudo /opt/pihole-ai/venv/bin/pip install --upgrade dist/pihole_ai-0.5.0rc1-py3-none-any.whl
+```
+
 Preview the migration:
 
 ```bash

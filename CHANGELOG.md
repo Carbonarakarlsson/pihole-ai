@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- No unreleased changes yet.
+
+## v0.5.0rc1
+
+Release-candidate hardening for Epic 3.5 Configuration Center and appliance
+operations.
+
+Package version: `0.5.0rc1`. Planned Git tag: `v0.5.0-rc1`.
+
 ### Added
 
 - Added structured evidence models and a central decision engine.
@@ -34,6 +43,23 @@
 - Added reliability CLI metrics and dashboard views for confidence
   distributions, observed accuracy, latency, AI/cache utilization, benchmark
   history, and telemetry volume diagnostics.
+- Added the Configuration Center framework with schema-backed setting
+  metadata, validation, source attribution, masking, restart-impact metadata,
+  import/export primitives, and preserving env-file parsing.
+- Added configuration CLI commands: `config show`, `config get`,
+  `config validate`, `config impact`, `config set`, `config unset`,
+  `config export`, `config import`, and `config migrate`.
+- Added dashboard Configuration API endpoints and the authenticated Settings
+  page for validation, guarded writes, import/export, secret replace/unset,
+  revision conflict handling, and optional Save & Restart.
+- Added schema-v1 configuration migration for legacy/unversioned env files.
+- Added installer/lifecycle integration for config validation, migration
+  refusal, config-aware status, and uninstall config preservation/removal.
+- Added appliance integration coverage for install, migration, CLI/dashboard
+  consistency, import/export, secrets, restart orchestration, and partial
+  install recovery.
+- Added administrator, testing, release checklist, upgrade guidance, and
+  secret-free example configuration files.
 
 ### Changed
 
@@ -57,6 +83,14 @@
 - Source confidence CLI input is standardized as integer percentage `0-100`.
 - Explain output now reports raw and calibrated confidence separately when a
   matching active calibration profile exists.
+- Appliance install and upgrade now validate managed configuration before
+  service mutation. Legacy/unversioned configuration must be migrated
+  explicitly with `pihole-ai config migrate`.
+- Configuration writes are atomic, backed up when replacing existing files,
+  and do not restart services unless `--restart` or dashboard Save & Restart
+  is explicitly requested.
+- Normal configuration exports omit secrets. Secure exports are CLI-only and
+  require explicit `--secure`.
 
 ### Fixed
 
@@ -75,11 +109,53 @@
   integration, and automatic-disabled timer behavior.
 - Modernized package license metadata to avoid setuptools license-table
   deprecation warnings.
+- Fixed lifecycle dry-run and failure boundaries so invalid or legacy
+  configuration prevents later service mutation.
 
 ### Security
 
 - Documented the protected appliance configuration model, dashboard
   authentication, CSRF, session, proxy-trust, and exposure guidance.
+- Added secret masking across configuration CLI, API, Settings UI, imports,
+  exports, migration previews, and restart failure responses.
+
+### Migration Notes
+
+- Configuration schema remains `1`.
+- Existing unversioned `/etc/pihole-ai/pihole-ai.env` files are treated as
+  legacy schema `0`.
+- Run `pihole-ai config migrate --dry-run`, then
+  `sudo pihole-ai config migrate --yes`, then `pihole-ai config validate`.
+- Migration preserves comments, unknown keys, and secrets; rewrites known
+  aliases to canonical keys; creates a migration-specific backup; and never
+  restarts services automatically.
+
+### Upgrade Notes
+
+```bash
+sudo /opt/pihole-ai/venv/bin/pip install --upgrade dist/pihole_ai-0.5.0rc1-py3-none-any.whl
+sudo /usr/local/bin/pihole-ai upgrade
+sudo /usr/local/bin/pihole-ai restart
+```
+
+If upgrade reports configuration migration required, run the migration
+workflow first and retry `sudo /usr/local/bin/pihole-ai upgrade`.
+
+### Breaking Changes
+
+- No database downgrade support is added.
+- Dashboard secure configuration export is intentionally not supported; use
+  CLI `pihole-ai config export --secure`.
+- Legacy/unversioned configuration is no longer silently accepted by
+  installer/lifecycle mutation paths; migrate it explicitly first.
+
+### Testing Summary
+
+- `666` normal unit/integration tests passed.
+- `666` ResourceWarning tests passed.
+- Appliance configuration integration tests use temporary roots and mocked
+  service control; they do not touch real `/etc`, systemd, Pi-hole DBs, or
+  Ollama.
 
 ### Known Limitations
 
@@ -88,6 +164,8 @@
 - Feedback-based confidence calibration remains deferred until feedback rows
   have trustworthy labeled-sample linkage.
 - Telemetry/calibration retention is not yet automatic.
+- Physical Raspberry Pi/systemd validation remains required before promoting
+  the release candidate to a stable release.
 
 ## v0.4.0rc1
 

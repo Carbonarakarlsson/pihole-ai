@@ -1,0 +1,72 @@
+{
+  "format": "json",
+  "pihole_ai_version": "0.5.0rc1",
+  "schema_version": 1,
+  "secure": false,
+  "settings": [
+    {
+      "key": "events_db",
+      "value": "/var/lib/pihole-ai/events.db"
+    },
+    {
+      "key": "log_file",
+      "value": "/var/log/pihole-ai/pihole-ai.log"
+    },
+    {
+      "key": "alert_log",
+      "value": "/var/log/pihole-ai/alerts.log"
+    },
+    {
+      "key": "pihole_db",
+      "value": "/etc/pihole/pihole-FTL.db"
+    },
+    {
+      "key": "ai_enabled",
+      "value": true
+    },
+    {
+      "key": "ai_max_calls_per_minute",
+      "value": 2
+    },
+    {
+      "key": "ai_cooldown_seconds",
+      "value": 60
+    },
+    {
+      "key": "ai_timeout_seconds",
+      "value": 20
+    },
+    {
+      "key": "ollama_url",
+      "value": "http://127.0.0.1:11434"
+    },
+    {
+      "key": "ollama_model",
+      "value": "llama3.2:1b"
+    },
+    {
+      "key": "intel_auto_update_enabled",
+      "value": false
+    },
+    {
+      "key": "dashboard_host",
+      "value": "0.0.0.0"
+    },
+    {
+      "key": "dashboard_port",
+      "value": 8080
+    },
+    {
+      "key": "dashboard_auth_enabled",
+      "value": true
+    },
+    {
+      "key": "dashboard_username",
+      "value": "admin"
+    },
+    {
+      "key": "log_level",
+      "value": "INFO"
+    }
+  ]
+}

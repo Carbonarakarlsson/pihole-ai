@@ -26,7 +26,7 @@ Expected protected configuration metadata:
 
 ```bash
 sudo python3 -m venv /opt/pihole-ai/venv
-sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-*-py3-none-any.whl
+sudo /opt/pihole-ai/venv/bin/pip install dist/pihole_ai-0.5.0rc1-py3-none-any.whl
 sudo /opt/pihole-ai/venv/bin/pihole-ai install --no-start
 sudo /usr/local/bin/pihole-ai dashboard auth set-password
 sudo /usr/local/bin/pihole-ai start
@@ -114,12 +114,12 @@ Back up before upgrade or purge:
 
 PiHole-AI does not currently include a first-class backup/restore command.
 
-## Configuration Center Planning
+## Configuration Center
 
-Epic 3.5 Phase 1 will expand configuration management beyond the current
-`config check`, `config show`, setup, and narrow dashboard settings flows. The
-implementation-ready design is in
-[Configuration Center Design](CONFIGURATION_DESIGN.md).
+Epic 3.5 adds appliance-grade configuration management across the CLI,
+dashboard API, Settings UI, migration workflow, and installer lifecycle. The
+implementation design and status are in [Configuration Center
+Design](CONFIGURATION_DESIGN.md).
 
 The first safe editing commands are now available:
 
@@ -136,6 +136,8 @@ Use `--dry-run` to preview validation, effective source, and restart impact
 without creating temp files or backups. Writes are atomic and create
 `pihole-ai.env.bak` when replacing an existing file. Editing does not restart
 services; restart the reported PiHole-AI service manually when ready.
+
+Example non-secret configuration files are available in `examples/`.
 
 If a process environment variable overrides a persisted value, the preview
 warns that the file will change while the effective runtime value remains
