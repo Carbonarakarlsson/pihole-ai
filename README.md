@@ -53,6 +53,11 @@ starts services. `pihole-ai install --no-start` installs files and enables
 services without starting them. `pihole-ai install --no-enable` installs files
 without boot enablement.
 
+Install and upgrade are Configuration Center aware. A fresh install creates a
+schema-versioned `/etc/pihole-ai/pihole-ai.env`. If an existing env file is
+legacy or unversioned, install stops before writing systemd units and tells you
+to run `pihole-ai config migrate --dry-run`.
+
 Bootstrap the dashboard administrator password:
 
 ```bash
@@ -243,6 +248,11 @@ pihole-ai restart
 The migration command preserves comments, unknown keys, and secrets, creates a
 backup before writing, and does not restart services automatically. See
 [docs/UPGRADING.md](docs/UPGRADING.md).
+
+`pihole-ai status` includes the active config path, schema version, validation
+state, and whether migration is required. Uninstall preserves
+`/etc/pihole-ai/pihole-ai.env` by default; use `--remove-config` only when you
+intentionally want to remove the appliance configuration.
 
 ## Detailed Documentation
 

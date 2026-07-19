@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from core import migrations
+from core.config_schema import CONFIG_SCHEMA_ENV
 from pihole_ai import cli
 from pihole_ai import service as service_module
 from pihole_ai.service import (
@@ -340,7 +341,8 @@ class ApplianceLifecycleIntegrationTests(unittest.TestCase):
         with ApplianceHarness(self) as harness:
             harness.layout.config_dir.mkdir(parents=True)
             harness.layout.config_file.write_text(
-                service_module.MANAGED_FILE_HEADER + "CUSTOM_SECRET=keep-me\n",
+                service_module.MANAGED_FILE_HEADER
+                + f"{CONFIG_SCHEMA_ENV}=1\nCUSTOM_SECRET=keep-me\n",
                 encoding="utf-8",
             )
             harness.layout.data_dir.mkdir(parents=True)
@@ -381,7 +383,10 @@ class ApplianceLifecycleIntegrationTests(unittest.TestCase):
     def test_upgrade_failure_restores_managed_units_and_does_not_claim_success(self):
         with ApplianceHarness(self) as harness:
             harness.layout.config_dir.mkdir(parents=True)
-            harness.layout.config_file.write_text(service_module.MANAGED_FILE_HEADER, encoding="utf-8")
+            harness.layout.config_file.write_text(
+                service_module.MANAGED_FILE_HEADER + f"{CONFIG_SCHEMA_ENV}=1\n",
+                encoding="utf-8",
+            )
             harness.layout.data_dir.mkdir(parents=True)
             migrations.migrate_database(harness.layout.events_db)
             harness.layout.systemd_dir.mkdir(parents=True)
@@ -409,8 +414,24 @@ class ApplianceLifecycleIntegrationTests(unittest.TestCase):
                 return contextlib.nullcontext()
 
             lifecycle_patches = [
-                patch("pihole_ai.service.build_install_plan", return_value=SimpleNamespace(layout=harness.layout)),
+                patch(
+                    "pihole_ai.service.build_install_plan",
+                    return_value=SimpleNamespace(
+                        layout=harness.layout,
+                        project_dir=harness.root,
+                    ),
+                ),
                 patch("pihole_ai.service.lifecycle_lock", side_effect=fake_lifecycle_lock),
+                patch(
+                    "pihole_ai.service._configuration_lifecycle_report",
+                    return_value=service_module.ConfigLifecycleReport(
+                        exists=True,
+                        schema_version=1,
+                        status="valid",
+                        migration_required=False,
+                        config_file=str(harness.layout.config_file),
+                    ),
+                ),
             ]
             with contextlib.ExitStack() as stack:
                 for lifecycle_patch in lifecycle_patches:
@@ -434,9 +455,24 @@ class ApplianceLifecycleIntegrationTests(unittest.TestCase):
             def fake_lifecycle_lock(*args, **kwargs):
                 return contextlib.nullcontext()
 
-            with patch("pihole_ai.service.build_install_plan", return_value=SimpleNamespace(layout=failing.layout)), patch(
+            with patch(
+                "pihole_ai.service.build_install_plan",
+                return_value=SimpleNamespace(
+                    layout=failing.layout,
+                    project_dir=failing.root,
+                ),
+            ), patch(
                 "pihole_ai.service.lifecycle_lock",
                 side_effect=fake_lifecycle_lock,
+            ), patch(
+                "pihole_ai.service._configuration_lifecycle_report",
+                return_value=service_module.ConfigLifecycleReport(
+                    exists=True,
+                    schema_version=1,
+                    status="valid",
+                    migration_required=False,
+                    config_file=str(failing.layout.config_file),
+                ),
             ):
                 with self.assertRaises(ServiceError):
                     service_module.service_action("start")
@@ -603,9 +639,20 @@ class ApplianceLifecycleIntegrationTests(unittest.TestCase):
 
     def test_lifecycle_json_output_is_clean_and_does_not_leak_secrets(self):
         with ApplianceHarness(self) as harness:
+            original_install = service_module.service_install
+
+            def harness_install(**kwargs):
+                return original_install(
+                    **kwargs,
+                    **harness.kwargs(),
+                )
+
             stdout = io.StringIO()
             stderr = io.StringIO()
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with patch(
+                "pihole_ai.service.service_install",
+                side_effect=harness_install,
+            ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 exit_code = cli.main(["install", "--dry-run", "--json"])
 
             decoded = json.loads(stdout.getvalue())

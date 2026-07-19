@@ -37,6 +37,16 @@ sudo /usr/local/bin/pihole-ai start
 stopped. `pihole-ai install --no-enable` installs files without enabling boot
 startup.
 
+Install validates Configuration Center state before writing systemd units,
+enabling services, or starting services. A fresh appliance gets a current
+schema `1` env file. Existing current-schema files are preserved and validated.
+Legacy or unversioned files stop install with migration guidance:
+
+```bash
+pihole-ai config migrate --dry-run
+sudo pihole-ai config migrate --yes
+```
+
 ## Upgrade
 
 Install the new wheel into `/opt/pihole-ai/venv`, then run:
@@ -77,7 +87,9 @@ sudo /usr/local/bin/pihole-ai uninstall
 Default uninstall removes managed service files and the matching global
 launcher. It preserves configuration, database, learned reputation, rules,
 feedback, and logs. Destructive data removal requires `--purge` and
-`--confirm-purge`.
+`--confirm-purge`. Configuration is preserved by default; pass
+`--remove-config` only when you explicitly want to delete the managed env file.
+Use `--keep-config` to make preservation explicit in scripts.
 
 ## Database Ownership
 
@@ -201,6 +213,11 @@ known legacy aliases such as `OLLAMA_HOST` and `OLLAMA_MODEL`, preserves
 comments, blank lines, unknown keys, and secrets, creates a migration backup,
 and writes atomically. It does not restart services automatically.
 
+Appliance install and upgrade do not silently run this migration. They report
+the current schema state, validation result, and required migration command,
+then stop before service mutation when migration is required or validation
+fails.
+
 If the dashboard Settings page sees a legacy env file, it shows a
 migration-required API error instead of attempting to migrate during page load.
 Run the CLI migration command from a shell with appropriate permissions.
@@ -241,9 +258,12 @@ pihole-ai doctor
 pihole-ai setup status
 pihole-ai db status
 pihole-ai install status
+pihole-ai status
 ```
 
-Use `--json` on commands that support machine-readable output.
+Use `--json` on commands that support machine-readable output. `pihole-ai
+status` includes configuration schema version, validation state, migration
+requirement, config source, and warnings alongside service and database state.
 
 ## AI Reliability And Calibration
 

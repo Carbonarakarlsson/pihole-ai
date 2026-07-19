@@ -25,6 +25,16 @@ from pathlib import Path
 from typing import Any
 
 from core.config import ValidationMode, load_config_with_result
+from core.config_manager import EnvDocument
+from core.config_migrations import (
+    CURRENT_CONFIG_SCHEMA_VERSION,
+    ConfigMigrationError,
+    DEPRECATED_KEYS,
+    MigrationPlan,
+    detect_config_version,
+    validate_migrated_document,
+)
+from core.config_schema import CONFIG_SCHEMA_ENV, CONFIG_SCHEMA_VERSION
 from core.migrations import (
     MigrationError,
     UnsupportedSchemaVersion,
@@ -223,6 +233,20 @@ class InstallResult:
     preserved_paths: list[str]
     removed_paths: list[str] = field(default_factory=list)
     status: str = "ok"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ConfigLifecycleReport:
+    exists: bool
+    schema_version: int | None
+    status: str
+    migration_required: bool
+    config_file: str
+    warnings: list[str] = field(default_factory=list)
+    errors: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1602,6 +1626,10 @@ def service_install(
     log_file = plan.layout.log_file
     service_user = plan.service_user
     service_group = plan.service_group
+    try:
+        config_exists_before = environment_file.exists()
+    except OSError:
+        config_exists_before = False
     units = generated_units(
         python_path=str(plan.python_path),
         project_dir=project,
@@ -1642,6 +1670,24 @@ def service_install(
             user=service_user,
             group=service_group,
             dry_run=dry_run,
+        )
+
+        config_report = _configuration_lifecycle_report(
+            project_dir=project,
+            env_file=environment_file,
+            runtime_db_path=database_path,
+            runtime_log_path=log_file,
+            dry_run=dry_run,
+        )
+        _print_configuration_report(
+            config_report,
+            created=not config_exists_before and not dry_run,
+        )
+        _enforce_lifecycle_config(config_report)
+        actions.append(
+            "created configuration"
+            if not config_exists_before and not dry_run
+            else "validated configuration"
         )
 
         if not dry_run:
@@ -1697,6 +1743,11 @@ def service_install(
                 group=service_group,
             )
 
+        print("Services:")
+        print(f"  Unit files: {'would write' if dry_run else 'written'}")
+        print(f"  Boot enable: {'yes' if enable_services else 'no'}")
+        print(f"  Start now: {'yes' if start_services else 'no'}")
+
         _run_systemctl(
             ["daemon-reload"],
             dry_run=dry_run,
@@ -1751,6 +1802,8 @@ def service_uninstall(
     as_json: bool = False,
     purge: bool = False,
     confirm_purge: bool = False,
+    keep_config: bool = True,
+    remove_config: bool = False,
     systemd_dir: str | Path = SYSTEMD_DIR,
     python_path: str | None = None,
     project_dir: str | Path | None = None,
@@ -1773,6 +1826,8 @@ def service_uninstall(
             "Purge requires explicit confirmation.\n"
             "Run: sudo /usr/local/bin/pihole-ai uninstall --purge --confirm-purge"
         )
+    if keep_config and remove_config:
+        raise ServiceError("--keep-config and --remove-config cannot be used together.")
 
     plan = build_install_plan(
         python_path=python_path,
@@ -1840,7 +1895,29 @@ def service_uninstall(
                     shutil.rmtree(path)
                     removed.append(str(path))
 
-    print("Preserved configuration and data by default.")
+        if remove_config:
+            for path in (plan.layout.config_file,):
+                if dry_run:
+                    print(f"Would remove configuration file {path}.")
+                elif path.exists():
+                    _reject_symlink(path)
+                    path.unlink()
+                    print(f"Removed configuration file {path}.")
+                    removed.append(str(path))
+            if dry_run:
+                print(f"Would remove {plan.layout.config_dir} if empty.")
+            elif plan.layout.config_dir.exists():
+                try:
+                    plan.layout.config_dir.rmdir()
+                    removed.append(str(plan.layout.config_dir))
+                except OSError:
+                    pass
+
+    if remove_config:
+        print("Removed configuration because --remove-config was supplied.")
+    else:
+        print(f"Preserved configuration at {plan.layout.config_file}.")
+        print("Use --remove-config to remove it explicitly.")
 
     result = InstallResult(
         command="uninstall",
@@ -1905,6 +1982,17 @@ def service_upgrade(
 
     try:
         with lifecycle_lock("upgrade", layout=plan.layout, dry_run=dry_run):
+            config_report = _configuration_lifecycle_report(
+                project_dir=plan.project_dir,
+                env_file=plan.layout.config_file,
+                runtime_db_path=plan.layout.events_db,
+                runtime_log_path=plan.layout.log_file,
+                dry_run=dry_run,
+            )
+            _print_configuration_report(config_report, created=False)
+            _enforce_lifecycle_config(config_report)
+            actions.append("validated configuration")
+
             if not dry_run:
                 database_status(plan.layout.events_db)
 
@@ -2008,6 +2096,15 @@ def service_enable(
     )
 
     with lifecycle_lock("enable", layout=plan.layout, dry_run=dry_run):
+        config_report = _configuration_lifecycle_report(
+            project_dir=plan.project_dir,
+            env_file=plan.layout.config_file,
+            runtime_db_path=plan.layout.events_db,
+            runtime_log_path=plan.layout.log_file,
+            dry_run=dry_run,
+        )
+        _print_configuration_report(config_report, created=False)
+        _enforce_lifecycle_config(config_report)
         _run_systemctl(
             ["enable", *ENABLE_UNIT_NAMES],
             dry_run=dry_run,
@@ -2063,6 +2160,16 @@ def service_action(
     )
 
     with lifecycle_lock(action, layout=plan.layout, dry_run=dry_run):
+        if action in {"start", "restart"}:
+            config_report = _configuration_lifecycle_report(
+                project_dir=plan.project_dir,
+                env_file=plan.layout.config_file,
+                runtime_db_path=plan.layout.events_db,
+                runtime_log_path=plan.layout.log_file,
+                dry_run=dry_run,
+            )
+            _print_configuration_report(config_report, created=False)
+            _enforce_lifecycle_config(config_report)
         if action == "start":
             for name in START_ORDER:
                 _run_systemctl([action, name], dry_run=dry_run)
@@ -2111,6 +2218,18 @@ def service_status(
     print(f"  events_db: {config['events_db']}")
     print(f"  pihole_db: {config['pihole_db']}")
     print(f"  dashboard_port: {config['dashboard_port']}")
+    configuration = config.get("configuration", {})
+    print("Configuration:")
+    print(f"  config_file: {configuration.get('config_file', config.get('config_file', ''))}")
+    print(f"  schema_version: {configuration.get('schema_version')}")
+    print(f"  schema_status: {configuration.get('schema_status')}")
+    print(f"  valid: {configuration.get('valid')}")
+    print(f"  migration_required: {configuration.get('migration_required')}")
+    print(f"  validation_status: {configuration.get('last_validation_status')}")
+    for warning in configuration.get("warnings", []):
+        print(f"  warning: {warning}")
+    for error in configuration.get("errors", []):
+        print(f"  error: {error.get('code')}: {error.get('message')}")
     print("Database:")
     print(f"  events: {database['events']}")
     print(f"  processed: {database['processed']}")
@@ -2290,6 +2409,148 @@ def _prepare_runtime_layout(
         group=group,
         dry_run=dry_run,
     )
+
+
+def _configuration_lifecycle_report(
+    project_dir: Path,
+    env_file: Path,
+    runtime_db_path: Path,
+    runtime_log_path: Path,
+    *,
+    dry_run: bool,
+) -> ConfigLifecycleReport:
+    try:
+        state = detect_config_version(env_file)
+    except ConfigMigrationError as exc:
+        return ConfigLifecycleReport(
+            exists=True,
+            schema_version=None,
+            status="invalid",
+            migration_required=False,
+            config_file=str(env_file),
+            errors=[{"code": exc.code, "message": exc.message}],
+        )
+
+    if state.version is None:
+        content = MANAGED_FILE_HEADER + _runtime_env_content(
+            project_dir=project_dir,
+            runtime_db_path=runtime_db_path,
+            runtime_log_path=runtime_log_path,
+        )
+        document = EnvDocument.parse(content)
+        errors = _validate_lifecycle_document(env_file, document)
+        return ConfigLifecycleReport(
+            exists=False,
+            schema_version=CONFIG_SCHEMA_VERSION,
+            status="valid" if not errors else "invalid",
+            migration_required=False,
+            config_file=str(env_file),
+            errors=errors,
+        )
+
+    if state.version < CURRENT_CONFIG_SCHEMA_VERSION:
+        return ConfigLifecycleReport(
+            exists=True,
+            schema_version=state.version,
+            status="migration_required",
+            migration_required=True,
+            config_file=str(env_file),
+            warnings=[
+                "Run: pihole-ai config migrate --dry-run",
+                "Then: pihole-ai config migrate --yes",
+            ],
+        )
+
+    try:
+        document = EnvDocument.parse(env_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as exc:
+        return ConfigLifecycleReport(
+            exists=True,
+            schema_version=state.version,
+            status="invalid",
+            migration_required=False,
+            config_file=str(env_file),
+            errors=[{"code": exc.__class__.__name__, "message": "Configuration file cannot be read."}],
+        )
+    errors = _validate_lifecycle_document(env_file, document)
+    warnings = _deprecated_key_warnings(document)
+    return ConfigLifecycleReport(
+        exists=True,
+        schema_version=state.version,
+        status="valid" if not errors else "invalid",
+        migration_required=False,
+        config_file=str(env_file),
+        warnings=warnings,
+        errors=errors,
+    )
+
+
+def _validate_lifecycle_document(
+    env_file: Path,
+    document: EnvDocument,
+) -> list[dict[str, Any]]:
+    plan = MigrationPlan(
+        source_version=CONFIG_SCHEMA_VERSION,
+        source_label=f"schema {CONFIG_SCHEMA_VERSION}",
+        target_version=CONFIG_SCHEMA_VERSION,
+        steps=[],
+    )
+    return validate_migrated_document(env_file, document, plan)
+
+
+def _deprecated_key_warnings(document: EnvDocument) -> list[str]:
+    warnings: list[str] = []
+    for key in document.entry_keys():
+        if key in DEPRECATED_KEYS:
+            warning = DEPRECATED_KEYS[key][1]
+            if warning not in warnings:
+                warnings.append(warning)
+    return warnings
+
+
+def _print_configuration_report(report: ConfigLifecycleReport, *, created: bool) -> None:
+    print("Configuration:")
+    if created:
+        print("  [ok] Created")
+    elif report.exists:
+        print("  [ok] Preserved")
+    else:
+        print("  [ok] Would create")
+    print(f"  Schema: {report.schema_version if report.schema_version is not None else 'unknown'}")
+    if report.migration_required:
+        print("Migration:")
+        print("  Required")
+        print("  Run: pihole-ai config migrate --dry-run")
+        print("  Then: pihole-ai config migrate --yes")
+    else:
+        print("Migration:")
+        print("  Not required")
+    print("Validation:")
+    print(f"  {'[ok] Passed' if report.status == 'valid' else '[failed] Failed'}")
+    for warning in report.warnings:
+        print(f"  warning: {warning}")
+    for error in report.errors[:5]:
+        print(f"  error: [{error.get('code')}] {error.get('key', 'config')}: {error.get('message')}")
+
+
+def _enforce_lifecycle_config(report: ConfigLifecycleReport) -> None:
+    if report.migration_required:
+        raise ServiceError(
+            "Configuration migration required.\n\n"
+            "Run:\n\n"
+            "  pihole-ai config migrate --dry-run\n\n"
+            "Then:\n\n"
+            "  pihole-ai config migrate --yes\n\n"
+            "Finally:\n\n"
+            "  pihole-ai install"
+        )
+    if report.status != "valid":
+        raise ServiceError(
+            "Configuration validation failed.\n\n"
+            "Run:\n\n"
+            "  pihole-ai config validate\n\n"
+            "Correct the reported issues before installing."
+        )
 
 
 def _ensure_runtime_env(
@@ -2587,6 +2848,11 @@ def _runtime_env_content(
         lines=normalized,
         key="LOG_PATH",
         value=str(runtime_log_path),
+    )
+    normalized = _upsert_env_line(
+        lines=normalized,
+        key=CONFIG_SCHEMA_ENV,
+        value=str(CONFIG_SCHEMA_VERSION),
     )
     for key, value in {
         "PIHOLE_AI_DASHBOARD_AUTH_ENABLED": "true",

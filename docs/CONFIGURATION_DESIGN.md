@@ -95,6 +95,15 @@ steps, normalizes known aliases, adds the canonical
 creates a migration-specific backup, and writes atomically. Installer
 integration is deferred to Phase 2B.
 
+Phase 2B status: implemented as installer and appliance lifecycle integration.
+Fresh installs create a current schema-versioned managed env file. Install,
+upgrade, enable, start, and restart validate Configuration Center state before
+service mutation. Legacy or unversioned env files report migration required
+and stop before writing systemd units, enabling services, or starting services.
+`pihole-ai status` reports schema version, validation state, migration
+requirement, source, and warnings. Uninstall preserves configuration by
+default and removes it only with `--remove-config`.
+
 Related documentation:
 
 - [Configuration](CONFIGURATION.md)

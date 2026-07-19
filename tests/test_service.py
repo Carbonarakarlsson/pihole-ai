@@ -700,6 +700,15 @@ class ServiceTests(unittest.TestCase):
         ), patch(
             "pihole_ai.service._enforce_service_control_preflight",
         ), patch(
+            "pihole_ai.service._configuration_lifecycle_report",
+            return_value=service_module.ConfigLifecycleReport(
+                exists=True,
+                schema_version=1,
+                status="valid",
+                migration_required=False,
+                config_file="/etc/pihole-ai/pihole-ai.env",
+            ),
+        ), patch(
             "pihole_ai.service.lifecycle_lock",
             return_value=nullcontext(),
         ):
@@ -775,6 +784,15 @@ class ServiceTests(unittest.TestCase):
         ), patch(
             "pihole_ai.service._enforce_service_control_preflight",
         ), patch(
+            "pihole_ai.service._configuration_lifecycle_report",
+            return_value=service_module.ConfigLifecycleReport(
+                exists=True,
+                schema_version=1,
+                status="valid",
+                migration_required=False,
+                config_file="/etc/pihole-ai/pihole-ai.env",
+            ),
+        ), patch(
             "pihole_ai.service.lifecycle_lock",
             return_value=nullcontext(),
         ):
@@ -804,6 +822,15 @@ class ServiceTests(unittest.TestCase):
             ),
         ), patch("sys.stdout", io.StringIO()), patch(
             "pihole_ai.service._enforce_service_control_preflight",
+        ), patch(
+            "pihole_ai.service._configuration_lifecycle_report",
+            return_value=service_module.ConfigLifecycleReport(
+                exists=True,
+                schema_version=1,
+                status="valid",
+                migration_required=False,
+                config_file="/etc/pihole-ai/pihole-ai.env",
+            ),
         ), patch(
             "pihole_ai.service.lifecycle_lock",
             return_value=nullcontext(),

@@ -94,6 +94,10 @@ Planned features:
   migration planning, legacy alias normalization, schema marker persistence,
   atomic writes, backups, CLI migration workflow, and dashboard
   migration-required errors
+- Phase 2B installer and appliance integration: fresh schema-versioned config
+  creation, install/upgrade validation gates, legacy migration-required aborts,
+  config-aware status output, and explicit uninstall config preservation or
+  removal
 - dashboard settings for common appliance configuration
 - config validation before writes take effect
 - configuration import and export

@@ -4,9 +4,21 @@ Runtime status helpers for PiHole-AI.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+from core.config import CONFIG_FILE
 from core.config import settings
+from core.config_manager import EnvDocument
+from core.config_migrations import (
+    CURRENT_CONFIG_SCHEMA_VERSION,
+    ConfigMigrationError,
+    DEPRECATED_KEYS,
+    MigrationPlan,
+    detect_config_version,
+    validate_migrated_document,
+)
+from core.config_schema import CONFIG_SCHEMA_VERSION
 from core.db import database_stats_readonly as database_stats
 from core.db import get_state_readonly as get_state
 from core.db import threat_intel_stats
@@ -66,6 +78,124 @@ def threat_intel_metrics() -> dict[str, Any]:
         return _empty_threat_intel_stats(exc.__class__.__name__)
 
 
+def configuration_status(
+    config_file: str | None = None,
+) -> dict[str, Any]:
+    """
+    Return read-only Configuration Center status.
+    """
+
+    path = Path(config_file) if config_file else CONFIG_FILE
+    payload: dict[str, Any] = {
+        "config_file": str(path),
+        "schema_version": None,
+        "schema_status": "missing",
+        "valid": False,
+        "migration_required": False,
+        "source": "missing",
+        "last_validation_status": "missing",
+        "restart_pending": None,
+        "warnings": [],
+        "errors": [],
+    }
+
+    try:
+        state = detect_config_version(path)
+    except ConfigMigrationError as exc:
+        payload.update(
+            {
+                "schema_status": "error",
+                "source": "env_file",
+                "last_validation_status": "invalid",
+                "errors": [
+                    {
+                        "code": exc.code,
+                        "message": exc.message,
+                    }
+                ],
+            }
+        )
+        return payload
+
+    payload["schema_version"] = state.version
+    payload["source"] = "env_file" if state.exists else "missing"
+
+    if not state.exists:
+        return payload
+
+    if state.version is None or state.version < CURRENT_CONFIG_SCHEMA_VERSION:
+        payload.update(
+            {
+                "schema_status": "legacy",
+                "migration_required": True,
+                "last_validation_status": "migration_required",
+                "warnings": [
+                    "Run: pihole-ai config migrate --dry-run",
+                    "Then: pihole-ai config migrate --yes",
+                ],
+            }
+        )
+        return payload
+
+    if state.version > CURRENT_CONFIG_SCHEMA_VERSION:
+        payload.update(
+            {
+                "schema_status": "unsupported",
+                "last_validation_status": "invalid",
+                "errors": [
+                    {
+                        "code": "config.version.unsupported",
+                        "message": (
+                            "Configuration schema is newer than this PiHole-AI version."
+                        ),
+                    }
+                ],
+            }
+        )
+        return payload
+
+    try:
+        document = EnvDocument.parse(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        payload.update(
+            {
+                "schema_status": "error",
+                "last_validation_status": "invalid",
+                "errors": [
+                    {
+                        "code": "config.status.unreadable",
+                        "message": exc.__class__.__name__,
+                    }
+                ],
+            }
+        )
+        return payload
+
+    plan = MigrationPlan(
+        source_version=CONFIG_SCHEMA_VERSION,
+        source_label=f"schema {CONFIG_SCHEMA_VERSION}",
+        target_version=CONFIG_SCHEMA_VERSION,
+        steps=[],
+    )
+    errors = validate_migrated_document(path, document, plan)
+    warnings = [
+        message
+        for key in document.entry_keys()
+        if key in DEPRECATED_KEYS
+        for _policy, message in [DEPRECATED_KEYS[key]]
+    ]
+    payload.update(
+        {
+            "schema_status": "current",
+            "valid": not errors,
+            "last_validation_status": "valid" if not errors else "invalid",
+            "warnings": warnings,
+            "errors": errors,
+        }
+    )
+    return payload
+
+
 def get_ollama_health() -> dict[str, Any]:
     """
     Return Ollama health without making the CLI depend on eager imports.
@@ -107,6 +237,7 @@ def collect_status(
         "config": {
             "events_db": str(settings.events_db),
             "pihole_db": str(settings.pihole_db),
+            "config_file": str(settings.config_file),
             "ollama_url": settings.ollama_url,
             "ollama_model": settings.ollama_model,
             "ai_enabled": settings.ai_enabled,
@@ -115,6 +246,7 @@ def collect_status(
             "ai_timeout_seconds": settings.ai_timeout_seconds,
             "dashboard_port": settings.dashboard_port,
             "cache_ttl": settings.cache_ttl,
+            "configuration": configuration_status(str(settings.config_file)),
         },
     }
 
@@ -143,6 +275,18 @@ def print_status(
     print("PiHole-AI status")
     print(f"  events_db: {config['events_db']}")
     print(f"  pihole_db: {config['pihole_db']}")
+    configuration = config.get("configuration", {})
+    print("Configuration:")
+    print(f"  config_file: {configuration.get('config_file', config.get('config_file', ''))}")
+    print(f"  schema_version: {configuration.get('schema_version')}")
+    print(f"  schema_status: {configuration.get('schema_status')}")
+    print(f"  valid: {configuration.get('valid')}")
+    print(f"  migration_required: {configuration.get('migration_required')}")
+    print(f"  validation_status: {configuration.get('last_validation_status')}")
+    for warning in configuration.get("warnings", []):
+        print(f"  warning: {warning}")
+    for error in configuration.get("errors", []):
+        print(f"  error: {error.get('code')}: {error.get('message')}")
     print(f"  events: {database['events']}")
     print(f"  processed: {database['processed']}")
     print(f"  domains: {database['domains']}")

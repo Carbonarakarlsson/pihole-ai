@@ -81,6 +81,7 @@ pihole-ai db migrate [--json]
 pihole-ai install [status] [--dry-run] [--json] [--no-enable] [--no-start]
 pihole-ai upgrade [--dry-run] [--json]
 pihole-ai uninstall [--dry-run] [--json] [--purge] [--confirm-purge]
+                    [--keep-config|--remove-config]
 pihole-ai service install [--dry-run]
 pihole-ai service uninstall [--dry-run]
 
@@ -262,6 +263,21 @@ configuration schema. It plans ordered migration steps, normalizes known
 aliases, adds `PIHOLE_AI_CONFIG_SCHEMA_VERSION`, validates the transformed
 file, creates a migration-specific backup, and writes atomically. It never
 restarts services in Phase 2A; restart explicitly after reviewing the result.
+
+`install` and `upgrade` validate the managed env file through the same
+Configuration Center model before service mutation. Fresh install creates a
+schema-versioned env file. Legacy/unversioned config reports migration
+required and stops before writing systemd units, enabling services, or starting
+services. `--dry-run` previews config creation, validation, migration
+requirement, and service actions without creating files.
+
+`status` reports configuration file path, schema version, schema status,
+validation status, migration-required state, and warnings alongside service and
+database status.
+
+`uninstall` preserves the managed env file by default. Use `--remove-config`
+for explicit config removal, or `--keep-config` to document preservation in
+automation.
 
 `--dry-run` performs validation and restart-impact calculation without
 creating files, temp files, or backups. Successful writes are atomic and create

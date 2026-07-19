@@ -651,6 +651,17 @@ def build_parser() -> argparse.ArgumentParser:
                 help="Do not start services after install.",
             )
         if name == "uninstall":
+            config_group = command.add_mutually_exclusive_group()
+            config_group.add_argument(
+                "--keep-config",
+                action="store_true",
+                help="Preserve /etc/pihole-ai/pihole-ai.env (default).",
+            )
+            config_group.add_argument(
+                "--remove-config",
+                action="store_true",
+                help="Remove managed PiHole-AI configuration.",
+            )
             command.add_argument(
                 "--purge",
                 action="store_true",
@@ -1699,6 +1710,11 @@ def main(
                     uninstall_kwargs["purge"] = True
                 if args.confirm_purge:
                     uninstall_kwargs["confirm_purge"] = True
+                if getattr(args, "keep_config", False):
+                    uninstall_kwargs["keep_config"] = True
+                if getattr(args, "remove_config", False):
+                    uninstall_kwargs["keep_config"] = False
+                    uninstall_kwargs["remove_config"] = True
 
                 if args.json:
                     run_json_service_command(lambda: service_uninstall(**uninstall_kwargs))

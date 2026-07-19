@@ -22,6 +22,11 @@ Existing unversioned `.env` files are treated as legacy schema version `0`.
 They remain loadable by runtime configuration code where they were previously
 valid, but dashboard configuration editing requires migration first.
 
+`pihole-ai install` and `pihole-ai upgrade` are migration-aware but do not
+silently rewrite legacy configuration. If the managed appliance env file is
+legacy or unversioned, lifecycle commands stop before service creation,
+enablement, or startup and print the migration commands to run.
+
 ## Recommended Sequence
 
 Preview the migration:
@@ -50,6 +55,14 @@ pihole-ai restart
 
 The migration command does not invoke `sudo`, `pkexec`, `systemctl`, or service
 restart commands internally.
+
+After migration, rerun the lifecycle command that was blocked:
+
+```bash
+sudo pihole-ai install --no-start
+# or
+sudo pihole-ai upgrade
+```
 
 ## What Migration Does
 
@@ -116,4 +129,3 @@ storage.
 Imports ignore the schema marker as runtime configuration input and validate
 the destination settings before writing. Newer unsupported import schema
 versions are rejected.
-
