@@ -216,6 +216,7 @@ pihole-ai config set PIHOLE_AI_OLLAMA_MODEL llama3.2:1b --yes --restart
 pihole-ai config unset PIHOLE_AI_OLLAMA_MODEL --dry-run
 pihole-ai config export --output backup.json
 pihole-ai config import backup.json --dry-run
+pihole-ai config migrate --dry-run
 ```
 
 Configuration writes require confirmation unless `--yes` is supplied, create a
@@ -230,6 +231,19 @@ explicit secret replace/unset flows while keeping secrets masked by default.
 Secure secret-inclusive exports remain CLI-only. See
 [docs/API_REFERENCE.md](docs/API_REFERENCE.md) for endpoint details.
 
+Existing unversioned configuration files can be upgraded safely with:
+
+```bash
+pihole-ai config migrate --dry-run
+sudo pihole-ai config migrate --yes
+pihole-ai config validate
+pihole-ai restart
+```
+
+The migration command preserves comments, unknown keys, and secrets, creates a
+backup before writing, and does not restart services automatically. See
+[docs/UPGRADING.md](docs/UPGRADING.md).
+
 ## Detailed Documentation
 
 - [Operations](docs/OPERATIONS.md): install, upgrade, uninstall, services,
@@ -243,6 +257,8 @@ Secure secret-inclusive exports remain CLI-only. See
 - [Configuration Center Design](docs/CONFIGURATION_DESIGN.md): Epic 3.5
   configuration inventory, ownership, validation, and API plan
 - [API Reference](docs/API_REFERENCE.md): dashboard configuration API contract
+- [Upgrading](docs/UPGRADING.md): safe configuration migration and upgrade
+  workflow
 - [Database](docs/DATABASE.md): schema versions, migrations, tables, and backup
   expectations
 - [Architecture](docs/ARCHITECTURE.md): process model, evidence contract,

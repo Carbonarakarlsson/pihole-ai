@@ -87,6 +87,14 @@ It does not duplicate backend validation rules, does not restart by default,
 and does not expose raw secret values in initial markup, previews, or status
 messages.
 
+Phase 2A status: implemented as reusable configuration migration
+infrastructure and `pihole-ai config migrate`. The migration layer detects
+legacy/unversioned env files as schema version 0, plans ordered migration
+steps, normalizes known aliases, adds the canonical
+`PIHOLE_AI_CONFIG_SCHEMA_VERSION=1` marker, validates the transformed file,
+creates a migration-specific backup, and writes atomically. Installer
+integration is deferred to Phase 2B.
+
 Related documentation:
 
 - [Configuration](CONFIGURATION.md)
@@ -667,8 +675,9 @@ Implementation steps:
    Done in Phase 1C3.
 10. Add dashboard/API endpoints. Done in Phase 1D.
 11. Add dashboard Settings UI. Done in Phase 1E.
-12. Add audit events without storing secrets.
-13. Later, optionally add profile presets.
+12. Add configuration migration infrastructure and CLI. Done in Phase 2A.
+13. Add audit events without storing secrets.
+14. Later, optionally add profile presets.
 
 Existing `/etc/pihole-ai/pihole-ai.env` files must continue to load unchanged.
 

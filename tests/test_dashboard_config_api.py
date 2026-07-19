@@ -19,6 +19,7 @@ class DashboardConfigAPITests(unittest.TestCase):
         self.project_root = self.root / "project"
         self.project_root.mkdir()
         self.config_file.write_text(
+            "PIHOLE_AI_CONFIG_SCHEMA_VERSION=1\n"
             "PIHOLE_AI_OLLAMA_MODEL=llama3.2:1b\n"
             "PIHOLE_AI_DASHBOARD_SECRET_KEY=super-secret-session-key\n",
             encoding="utf-8",
@@ -84,6 +85,26 @@ class DashboardConfigAPITests(unittest.TestCase):
         bad = self.client.get("/api/config?category=NotAThing")
         self.assertEqual(bad.status_code, 400)
         self.assertEqual(bad.get_json()["error"]["code"], "invalid_config_filter")
+
+    def test_legacy_config_requires_migration_and_get_does_not_write(self) -> None:
+        self.config_file.write_text(
+            "OLLAMA_MODEL=legacy-model\n"
+            "PIHOLE_AI_DASHBOARD_SECRET_KEY=secret-value\n",
+            encoding="utf-8",
+        )
+        original = self.config_file.read_text(encoding="utf-8")
+
+        response = self.client.get("/api/config")
+
+        self.assertEqual(response.status_code, 409)
+        payload = response.get_json()
+        self.assertEqual(payload["error"]["code"], "configuration_migration_required")
+        self.assertEqual(
+            payload["error"]["details"][0],
+            {"source_version": 0, "target_version": 1},
+        )
+        self.assertEqual(self.config_file.read_text(encoding="utf-8"), original)
+        self.assertNotIn("secret-value", response.get_data(as_text=True))
 
     def test_auth_and_csrf_are_enforced_for_config_api(self) -> None:
         revision = self.revision()
@@ -230,7 +251,10 @@ class DashboardConfigAPITests(unittest.TestCase):
         self.assertIn("llama3.2:1b", self.config_file.read_text(encoding="utf-8"))
         self.assertFalse(self.config_file.with_suffix(".env.bak").exists())
 
-        self.config_file.write_text("PIHOLE_AI_OLLAMA_MODEL=external\n", encoding="utf-8")
+        self.config_file.write_text(
+            "PIHOLE_AI_CONFIG_SCHEMA_VERSION=1\nPIHOLE_AI_OLLAMA_MODEL=external\n",
+            encoding="utf-8",
+        )
         stale = self.client.put(
             "/api/config",
             json={

@@ -13,6 +13,9 @@ from typing import Any, Mapping
 
 from core import service_control
 from core.config import Settings, ValidationMode, ValidationSeverity, validate_config
+from core.config_migrations import CURRENT_CONFIG_SCHEMA_VERSION
+from core.config_migrations import ConfigMigrationError
+from core.config_migrations import detect_config_version
 from core.config_manager import (
     ConfigurationManager,
     EnvDocument,
@@ -23,6 +26,8 @@ from core.config_manager import (
 from core.config_schema import (
     CONFIG_SCHEMA,
     SCHEMA_VERSION,
+    CONFIG_SCHEMA_ENV,
+    CONFIG_SCHEMA_VERSION,
     ConfigExportPolicy,
     ConfigItem,
     ConfigSensitivity,
@@ -92,6 +97,7 @@ def inspect_config(
     category: str = "",
 ) -> dict[str, Any]:
     path = config_file or runtime_config.CONFIG_FILE
+    _ensure_current_schema(path)
     rows = _resolved_rows(path)
     if category:
         categories = {row["category"].lower() for row in rows}
@@ -134,6 +140,7 @@ def apply_changes(
     restart: bool = False,
 ) -> dict[str, Any]:
     path = config_file or runtime_config.CONFIG_FILE
+    _ensure_current_schema(path)
     _check_revision(path, revision)
     prepared = _prepare_changes(changes)
     document = _load_document(path)
@@ -258,6 +265,7 @@ def export_config(
             status=403,
         )
     path = config_file or runtime_config.CONFIG_FILE
+    _ensure_current_schema(path)
     rows = _raw_rows(path)
     payload = _export_payload(rows, export_format=export_format, secure=False)
     if export_format == "env":
@@ -287,16 +295,44 @@ def import_config(
         )
     if import_format not in {"json", "env"}:
         raise ConfigOperationError("unsupported_import_format", "Import format must be json or env.")
+    path = config_file or runtime_config.CONFIG_FILE
+    _ensure_current_schema(path)
     changes, warnings = _parse_import_content(content, import_format, strict=strict)
     result = apply_changes(
         changes,
         revision=revision,
-        config_file=config_file,
+        config_file=path,
         dry_run=dry_run,
         restart=restart,
     )
     result["warnings"] = [*warnings, *result.get("warnings", [])]
     return result
+
+
+def _ensure_current_schema(path: Path) -> None:
+    try:
+        state = detect_config_version(path)
+    except ConfigMigrationError as exc:
+        raise ConfigOperationError(
+            exc.code,
+            exc.message,
+            status=400,
+            details=exc.details,
+        ) from exc
+    if state.version is None:
+        return
+    if state.version < CURRENT_CONFIG_SCHEMA_VERSION:
+        raise ConfigOperationError(
+            "configuration_migration_required",
+            "The configuration must be migrated before it can be edited.",
+            status=409,
+            details=[
+                {
+                    "source_version": state.version,
+                    "target_version": CURRENT_CONFIG_SCHEMA_VERSION,
+                }
+            ],
+        )
 
 
 def _check_revision(
@@ -523,7 +559,13 @@ def _export_payload(rows: list[tuple[ConfigItem, str, str]], *, export_format: s
 
 
 def _export_env(rows: list[tuple[ConfigItem, str, str]], *, secure: bool) -> str:
-    lines = ["# Generated PiHole-AI configuration export", f"# schema_version={SCHEMA_VERSION}", f"# pihole_ai_version={get_version()}", "# secure=false"]
+    lines = [
+        "# Generated PiHole-AI configuration export",
+        f"# schema_version={SCHEMA_VERSION}",
+        f"# pihole_ai_version={get_version()}",
+        "# secure=false",
+        f"{CONFIG_SCHEMA_ENV}={CONFIG_SCHEMA_VERSION}",
+    ]
     for item, raw_value, _source in rows:
         if item.export_policy == ConfigExportPolicy.EXCLUDE:
             continue
@@ -589,6 +631,8 @@ def _parse_import_content(content: str, import_format: str, *, strict: bool) -> 
     warnings: list[str] = []
     seen: set[str] = set()
     for key, value in entries:
+        if str(key) == CONFIG_SCHEMA_ENV:
+            continue
         try:
             item = get_item(str(key))
         except KeyError as exc:

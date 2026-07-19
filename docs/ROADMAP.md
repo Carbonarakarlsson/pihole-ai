@@ -90,6 +90,10 @@ Planned features:
 - Phase 1E dashboard Settings UI: category browsing, source/override display,
   secret replace/unset controls, validation, dry-run preview, guarded saves,
   optional restart, import/export, and revision-conflict recovery
+- Phase 2A configuration migration support: version detection, ordered
+  migration planning, legacy alias normalization, schema marker persistence,
+  atomic writes, backups, CLI migration workflow, and dashboard
+  migration-required errors
 - dashboard settings for common appliance configuration
 - config validation before writes take effect
 - configuration import and export

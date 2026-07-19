@@ -29,7 +29,12 @@ from core.config_manager import changed_key_impact
 from core.config_manager import mask_value
 from core.config_manager import write_env_document_atomic
 from core.config_manager import runtime_config
+from core.config_migrations import CURRENT_CONFIG_SCHEMA_VERSION
+from core.config_migrations import ConfigMigrationError
+from core.config_migrations import migrate_configuration
 from core.config_schema import CONFIG_SCHEMA
+from core.config_schema import CONFIG_SCHEMA_ENV
+from core.config_schema import CONFIG_SCHEMA_VERSION
 from core.config_schema import SCHEMA_VERSION
 from core.config_schema import ConfigExportPolicy
 from core.config_schema import ConfigItem
@@ -581,6 +586,54 @@ def print_config_import(
     return restart_exit
 
 
+def print_config_migrate(
+    *,
+    dry_run: bool = False,
+    yes: bool = False,
+    as_json: bool = False,
+    config_file: str = "",
+    target_version: str = "",
+) -> int:
+    if as_json and not (dry_run or yes):
+        print("JSON migration mode requires --dry-run or --yes.", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        target = _parse_target_version(target_version)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_USAGE
+    path = Path(config_file).expanduser() if config_file else runtime_config.CONFIG_FILE
+    try:
+        preview = migrate_configuration(path, target_version=target, dry_run=True)
+    except ConfigMigrationError as exc:
+        _print_migration_error(exc, as_json=as_json)
+        return _migration_error_exit(exc)
+    if dry_run or not preview.plan.changed:
+        _print_migration_result(preview, as_json=as_json)
+        return EXIT_OK
+    if not yes:
+        if not _confirm_change():
+            preview.plan.warnings.append("Migration cancelled by user.")
+            _print_migration_result(preview, as_json=as_json)
+            return EXIT_ERROR
+    try:
+        result = migrate_configuration(path, target_version=target, dry_run=False)
+    except (ConfigMigrationError, OSError, PermissionError) as exc:
+        if isinstance(exc, ConfigMigrationError):
+            _print_migration_error(exc, as_json=as_json)
+            return _migration_error_exit(exc)
+        _print_migration_error(
+            ConfigMigrationError(
+                "config.migration.write_failed",
+                "Configuration migration could not be written.",
+            ),
+            as_json=as_json,
+        )
+        return EXIT_ERROR
+    _print_migration_result(result, as_json=as_json)
+    return EXIT_OK
+
+
 def _print_dict(
     values: dict[str, Any],
     indent: int = 0,
@@ -644,6 +697,7 @@ def _export_env(
         f"# schema_version={SCHEMA_VERSION}",
         f"# pihole_ai_version={get_version()}",
         f"# secure={'true' if secure else 'false'}",
+        f"{CONFIG_SCHEMA_ENV}={CONFIG_SCHEMA_VERSION}",
     ]
     for row in rows:
         item: ConfigItem = row["item"]
@@ -846,6 +900,8 @@ def _add_import_update(
     *,
     strict: bool,
 ) -> None:
+    if key == CONFIG_SCHEMA_ENV:
+        return
     try:
         item = get_item(key)
     except KeyError as exc:
@@ -1395,6 +1451,124 @@ def _print_import_result(
         _print_restart_outcome(result)
     elif result.get("declined"):
         print("Import declined; no file was written.")
+
+
+def _print_migration_result(
+    result,
+    *,
+    as_json: bool,
+) -> None:
+    payload = result.to_dict()
+    if as_json:
+        print(json.dumps(payload, sort_keys=True))
+        return
+
+    plan = result.plan
+    if result.written:
+        print("Configuration migration completed successfully.")
+    elif not plan.changed:
+        print("No configuration migration is required.")
+    elif result.dry_run:
+        print("Configuration migration preview")
+    else:
+        print("Configuration migration preview")
+    print()
+    print("Source schema:")
+    print(f"  {plan.source_label}")
+    print()
+    print("Target schema:")
+    print(f"  {plan.target_version}")
+    print()
+    print("Migration steps:")
+    if plan.steps:
+        for step in plan.steps:
+            print(f"  - {step.migration_id}")
+            print(f"    {step.description}")
+    else:
+        print("  none")
+    print()
+    print("Planned changes:")
+    if plan.renamed_keys:
+        for item in plan.renamed_keys:
+            print(f"  - {item['from']} -> {item['to']}")
+    if any(step.to_version == plan.target_version for step in plan.steps):
+        print(f"  - Add {CONFIG_SCHEMA_ENV}={plan.target_version}")
+    if not plan.renamed_keys and not plan.steps:
+        print("  none")
+    print()
+    for warning in plan.warnings:
+        print(f"warning: {warning}")
+    for conflict in plan.conflicts:
+        print(f"conflict: {conflict.get('code')} {conflict.get('key')}")
+    for error in plan.validation_errors:
+        print(f"error: [{error.get('code')}] {error.get('key')}: {error.get('message')}")
+    print(f"Would write configuration: {'yes' if plan.changed else 'no'}")
+    print(f"Would create backup: {'yes' if plan.changed else 'no'}")
+    print("Would restart services: no")
+    if plan.affected_services:
+        print("Services affected after migration:")
+        for service in plan.affected_services:
+            print(f"  - {service}")
+    else:
+        print("Services affected after migration:")
+        print("  none")
+    if result.written:
+        print()
+        print("Backup:")
+        print(f"  {result.backup_path}")
+        print()
+        print("No services were restarted.")
+        if plan.affected_services:
+            print()
+            print("To apply changed runtime settings:")
+            for command in _recovery_commands(plan.affected_services):
+                print(f"  {command}")
+
+
+def _print_migration_error(
+    exc: ConfigMigrationError,
+    *,
+    as_json: bool,
+) -> None:
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "error": {
+                        "code": exc.code,
+                        "message": exc.message,
+                        "details": exc.details,
+                    }
+                },
+                sort_keys=True,
+            )
+        )
+    else:
+        print(f"Configuration migration failed: {exc.message}", file=sys.stderr)
+
+
+def _migration_error_exit(exc: ConfigMigrationError) -> int:
+    if exc.code in {
+        "config.migration.invalid_target",
+        "config.migration.unsupported_target",
+        "config.migration.downgrade_rejected",
+    }:
+        return EXIT_USAGE
+    if "validation" in exc.code or "conflict" in exc.code or "version" in exc.code:
+        return EXIT_INVALID_CONFIG
+    return EXIT_ERROR
+
+
+def _parse_target_version(value: str) -> int:
+    if not value:
+        return CURRENT_CONFIG_SCHEMA_VERSION
+    try:
+        target = int(value)
+    except ValueError as exc:
+        raise ValueError("Target version must be an integer.") from exc
+    if target < 0:
+        raise ValueError("Target version must be non-negative.")
+    return target
 
 
 def _state_label(

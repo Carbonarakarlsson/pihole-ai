@@ -184,6 +184,27 @@ succeeded, lists affected or failed services, and shows backend recovery
 commands such as `sudo systemctl restart pihole-ai-engine.service`. The saved
 configuration is not rolled back automatically.
 
+### Configuration Migration
+
+Legacy or unversioned env files can be migrated to the current Configuration
+Center schema with:
+
+```bash
+pihole-ai config migrate --dry-run
+sudo pihole-ai config migrate --yes
+pihole-ai config validate
+pihole-ai restart
+```
+
+The migration command adds `PIHOLE_AI_CONFIG_SCHEMA_VERSION=1`, normalizes
+known legacy aliases such as `OLLAMA_HOST` and `OLLAMA_MODEL`, preserves
+comments, blank lines, unknown keys, and secrets, creates a migration backup,
+and writes atomically. It does not restart services automatically.
+
+If the dashboard Settings page sees a legacy env file, it shows a
+migration-required API error instead of attempting to migrate during page load.
+Run the CLI migration command from a shell with appropriate permissions.
+
 ## Threat-Intelligence Source Edits
 
 Use supported CLI edits instead of direct SQLite changes:

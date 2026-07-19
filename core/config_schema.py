@@ -25,7 +25,9 @@ from core.config_validation import validate_port
 from core.config_validation import validate_url
 
 
-SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_ENV = "PIHOLE_AI_CONFIG_SCHEMA_VERSION"
+SCHEMA_VERSION = CONFIG_SCHEMA_VERSION
 
 COLLECTOR_SERVICE = "pihole-ai-collector.service"
 ENGINE_SERVICE = "pihole-ai-engine.service"

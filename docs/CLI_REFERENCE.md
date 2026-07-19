@@ -69,6 +69,8 @@ pihole-ai config export [--output PATH] [--format json|env] [--secure]
 pihole-ai config import FILE [--dry-run] [--yes] [--json] [--strict]
                         [--restart]
                         [--config-file PATH]
+pihole-ai config migrate [--dry-run] [--yes] [--json]
+                         [--config-file PATH] [--target-version VERSION]
 
 pihole-ai setup [status] [--json] [--non-interactive] [--dry-run]
                 [--install] [--start] [--enable] [--skip-ollama-check]
@@ -226,6 +228,8 @@ pihole-ai config export --format env
 pihole-ai config export --secure --output secure-backup.json
 pihole-ai config import backup.json --dry-run
 pihole-ai config import backup.json --yes
+pihole-ai config migrate --dry-run
+pihole-ai config migrate --yes
 ```
 
 `config show` prints settings in schema order with the canonical key, safe
@@ -252,6 +256,12 @@ requires `--yes` or `--dry-run` so scripts never hang on a prompt.
 `config unset` removes only the explicit persisted key from the selected env
 file. It does not remove process-environment overrides. Unsetting an already
 absent key is an idempotent no-op and does not rewrite the file.
+
+`config migrate` upgrades legacy/unversioned env files to the current
+configuration schema. It plans ordered migration steps, normalizes known
+aliases, adds `PIHOLE_AI_CONFIG_SCHEMA_VERSION`, validates the transformed
+file, creates a migration-specific backup, and writes atomically. It never
+restarts services in Phase 2A; restart explicitly after reviewing the result.
 
 `--dry-run` performs validation and restart-impact calculation without
 creating files, temp files, or backups. Successful writes are atomic and create

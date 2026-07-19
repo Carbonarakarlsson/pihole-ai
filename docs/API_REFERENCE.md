@@ -41,6 +41,24 @@ The Settings page is available at `/settings` and in the authenticated
 dashboard sidebar. It does not embed configuration data in the initial HTML; it
 loads configuration through `GET /api/config` after the page is available.
 
+If the managed env file is legacy/unversioned, configuration endpoints return a
+structured migration-required error and do not write the file:
+
+```json
+{
+  "error": {
+    "code": "configuration_migration_required",
+    "message": "The configuration must be migrated before it can be edited.",
+    "details": [
+      {"source_version": 0, "target_version": 1}
+    ]
+  }
+}
+```
+
+Run `pihole-ai config migrate --dry-run` and then
+`sudo pihole-ai config migrate --yes` before editing from the dashboard.
+
 ### `GET /api/config`
 
 Returns the schema-backed effective configuration.
